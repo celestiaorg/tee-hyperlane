@@ -32,10 +32,23 @@ jqv() { python3 -c "import sys,json;print(json.load(open('$PROVED'))$1)"; }
 LAST_LOG=""
 
 # A tx that reports code 0 in CheckTx can still fail in DeliverTx, so wait for the result.
+#
+# CheckTx's own verdict has to be read first. A rejected tx still comes back with a txhash,
+# and polling for it then fails sixty seconds later as "timed out" - which names the symptom
+# and hides the cause. So a non-zero code here is reported as itself, immediately.
 send() {
-  local hash
-  hash=$("$APPD" tx $@ $TX --fees 10000utia --gas 800000 \
-    | python3 -c "import sys,json;print(json.load(sys.stdin)['txhash'])")
+  local out hash
+  out=$("$APPD" tx $@ $TX --fees 10000utia --gas 800000) || {
+    echo "  broadcast failed" >&2; return 1
+  }
+  hash=$(python3 -c "
+import sys, json
+d = json.loads(sys.argv[1])
+code = d.get('code', 0)
+if code:
+    print('  rejected at broadcast: code', code, d.get('raw_log', '')[:300], file=sys.stderr)
+    sys.exit(1)
+print(d['txhash'])" "$out") || return 1
   echo "  tx $hash"
   for _ in $(seq 1 20); do
     sleep 3
@@ -51,7 +64,10 @@ sys.exit(0 if d['code'] == 0 else 1)" "$out"
       return
     fi
   done
-  echo "  timed out waiting for $hash" >&2
+  # Accepted into the mempool but never included: almost always the fee, the sequence, or a
+  # node that dropped it. Say so, rather than leaving a bare hash to chase.
+  echo "  $hash accepted at broadcast but not included within 60s;" >&2
+  echo "  check the bridge account's balance and sequence against $NODE" >&2
   return 1
 }
 

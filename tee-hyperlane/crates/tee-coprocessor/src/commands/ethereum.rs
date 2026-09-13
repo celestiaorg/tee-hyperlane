@@ -242,6 +242,11 @@ pub async fn attest_ethereum(
         leaves = dispatched.len(),
         "attesting ethereum"
     );
+    super::check_scan(
+        super::claimed_count(&snapshot_proof)?,
+        super::claimed_count(&tree_proof)?,
+        dispatched.len(),
+    )?;
     anyhow::ensure!(!dispatched.is_empty(), "nothing to attest");
     // Sepolia's mailbox is Hyperlane's shared canonical one, so most of what lands in this
     // range belongs to other bridges entirely.

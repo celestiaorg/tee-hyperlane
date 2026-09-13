@@ -360,3 +360,35 @@ pub fn expand_home(path: &str) -> String {
         _ => path.to_string(),
     }
 }
+
+/// The leaf count an `eth_getProof` answer claims, read from the last of its 33 slots.
+///
+/// Untrusted - the enclave re-proves it against the state root. Used here only to check the
+/// log scan locally, before spending an attestation round trip on a batch that cannot match.
+pub(crate) fn claimed_count(proof: &tee_node::hyperlane_state::EvmTreeProof) -> Result<u32> {
+    let slot = proof
+        .storage_proof
+        .last()
+        .context("tree proof carries no slots")?;
+    Ok(slot.value.to::<u32>())
+}
+
+/// Fail a short log scan here, where the reason can be named.
+///
+/// A pruned endpoint answers `eth_getLogs` for a range it no longer holds with an empty array
+/// and no error, so a sweep across it silently drops every message in the pruned part. The
+/// enclave does catch it - the replayed branch cannot match the proven one - but it reports a
+/// count mismatch, which says nothing about which endpoint lied or why. The tree's own counts
+/// say exactly how many leaves the range must contain, so compare against them first.
+pub fn check_scan(snapshot_count: u32, head_count: u32, found: usize) -> Result<()> {
+    let expected = head_count.saturating_sub(snapshot_count) as usize;
+    anyhow::ensure!(
+        found == expected,
+        "the tree grew by {expected} leaves between the trusted height and the confirmed head, \
+         but the log scan found {found}; the logs endpoint is missing {} of them, almost \
+         certainly because it has pruned that range - point `logs_rpc` at an endpoint that \
+         retains logs for longer than this chain's confirmation delay",
+        expected.saturating_sub(found)
+    );
+    Ok(())
+}

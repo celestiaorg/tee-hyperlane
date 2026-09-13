@@ -255,6 +255,11 @@ pub async fn attest_l2(
         leaves = dispatched.len(),
         "attesting l2"
     );
+    super::check_scan(
+        super::claimed_count(&snapshot_proof)?,
+        super::claimed_count(&tree_proof)?,
+        dispatched.len(),
+    )?;
     anyhow::ensure!(!dispatched.is_empty(), "nothing to attest");
     let ours: Vec<Vec<u8>> = dispatched.iter().map(|d| d.message.clone()).collect();
     if !super::any_for_destination(&ours, destination_domain)
