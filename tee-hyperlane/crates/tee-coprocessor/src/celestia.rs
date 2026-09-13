@@ -13,9 +13,20 @@ use tendermint_rpc::{Client, HttpClient, Order, Paging};
 use tracing::debug;
 
 /// One Hyperlane message as the origin chain recorded it, in tree-insert order.
-/// Heights per `tx_search` call. Small enough that any one window stays inside a public
-/// node's response limits, large enough that catching up does not take thousands of requests.
-const HEIGHT_WINDOW: u64 = 500;
+/// Heights per `tx_search` call. Generous, because the query below is answered from the
+/// indexer and returns almost nothing; the window exists only so a very slow index cannot
+/// turn one catch-up into one enormous request.
+const HEIGHT_WINDOW: u64 = 50_000;
+
+/// The event a merkle tree hook emits for every leaf it inserts.
+///
+/// Asking the indexer for transactions carrying this, rather than for every transaction in a
+/// height range, is what makes catching up cheap. It is also exact: a leaf that did not emit
+/// this event is not a leaf, so unlike filtering on a message type it cannot miss one. If a
+/// node turns out not to index it the query returns nothing, which would be indistinguishable
+/// from a quiet range - the caller compares the result against the tree's own growth before
+/// trusting it, so that case fails loudly instead.
+const INSERT_EVENT: &str = "hyperlane.core.post_dispatch.v1.EventInsertedIntoTree";
 
 /// Attempts per RPC call before a tick gives up.
 const RPC_ATTEMPTS: u32 = 5;
@@ -155,17 +166,21 @@ impl CelestiaReader {
     ) -> Result<Vec<DispatchedMessage>> {
         // Scanned in windows, because the height range is unbounded in practice.
         //
-        // `tx.height >= a AND tx.height <= b` matches every transaction on the chain in that
-        // span, not just Hyperlane's. A route that had been idle for four days asked for
-        // 64,000 blocks, which is 120,000 transactions, which is 1,200 pages - and the search
-        // simply never returned, so the route could not catch up and stayed stuck. Windowing
-        // bounds the work per request no matter how far behind a route has fallen; the total
-        // is still proportional to the gap, but each step now completes.
+        // The height bounds alone match every transaction on the chain in that span, not just
+        // Hyperlane's: over one route's 114,000-block backlog that was 217,070 transactions,
+        // or 2,171 pages, and fourteen seconds to fetch the first of them. Windowing made each
+        // request finish but left the total proportional to the chain's whole traffic, so a
+        // route far enough behind still could not catch up before the next tick.
+        //
+        // Constraining the query to the insert event instead asks the indexer the question we
+        // actually have. The same backlog comes back as one transaction in a single call.
         let mut out = Vec::new();
         let mut start = from_height;
         while start <= to_height {
             let end = (start + HEIGHT_WINDOW - 1).min(to_height);
-            let query: Query = format!("tx.height >= {start} AND tx.height <= {end}").parse()?;
+            let query: Query =
+                format!("tx.height >= {start} AND tx.height <= {end} AND {INSERT_EVENT}.index EXISTS")
+                    .parse()?;
             let mut page = 1u32;
             loop {
                 // Retried per window rather than per sweep. Catching up across days is over a
