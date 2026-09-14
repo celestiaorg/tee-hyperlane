@@ -10,8 +10,54 @@ use tendermint::block::Height;
 use tendermint_light_client_verifier::types::LightBlock;
 use tendermint_rpc::query::Query;
 use tendermint_rpc::{Client, HttpClient, Order, Paging};
+use tracing::debug;
 
 /// One Hyperlane message as the origin chain recorded it, in tree-insert order.
+/// Heights per `tx_search` call. Generous, because the query below is answered from the
+/// indexer and returns almost nothing; the window exists only so a very slow index cannot
+/// turn one catch-up into one enormous request.
+const HEIGHT_WINDOW: u64 = 50_000;
+
+/// The event a merkle tree hook emits for every leaf it inserts.
+///
+/// Asking the indexer for transactions carrying this, rather than for every transaction in a
+/// height range, is what makes catching up cheap. It is also exact: a leaf that did not emit
+/// this event is not a leaf, so unlike filtering on a message type it cannot miss one. If a
+/// node turns out not to index it the query returns nothing, which would be indistinguishable
+/// from a quiet range - the caller compares the result against the tree's own growth before
+/// trusting it, so that case fails loudly instead.
+const INSERT_EVENT: &str = "hyperlane.core.post_dispatch.v1.EventInsertedIntoTree";
+
+/// Attempts per RPC call before a tick gives up.
+const RPC_ATTEMPTS: u32 = 5;
+
+/// Retry one public-node request, and name it if it still fails.
+///
+/// Every call in this file goes to a public Celestia node that answers most of the time. A
+/// route catching up makes hundreds of them per tick, so "most of the time" is not good
+/// enough: one refused connection used to fail the whole tick, and a route far enough behind
+/// then never finished a sweep at all. Retrying here rather than at the call sites also means
+/// the error that does escape says which call it was, instead of a bare "HTTP error".
+async fn retrying<T, F, Fut>(what: &str, call: F) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, tendermint_rpc::Error>>,
+{
+    let mut attempt = 1;
+    loop {
+        match call().await {
+            Ok(value) => return Ok(value),
+            Err(e) if attempt < RPC_ATTEMPTS => {
+                tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt)))
+                    .await;
+                debug!(call = what, attempt, error = %e, "retrying celestia rpc");
+                attempt += 1;
+            }
+            Err(e) => return Err(e).with_context(|| what.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DispatchedMessage {
     pub height: u64,
@@ -33,13 +79,8 @@ impl CelestiaReader {
     }
 
     pub async fn latest_height(&self) -> Result<u64> {
-        Ok(self
-            .rpc
-            .status()
-            .await?
-            .sync_info
-            .latest_block_height
-            .value())
+        let status = retrying("status", || self.rpc.status()).await?;
+        Ok(status.sync_info.latest_block_height.value())
     }
 
     /// Assemble the light block at `height`.
@@ -48,13 +89,17 @@ impl CelestiaReader {
     /// next, because that pair is what lets a light client step forward from here.
     pub async fn light_block(&self, height: u64) -> Result<LightBlock> {
         let h = Height::try_from(height)?;
-        let commit = self.rpc.commit(h).await?;
-        let validators = self.rpc.validators(h, Paging::All).await?;
-        let next = self
-            .rpc
-            .validators(Height::try_from(height + 1)?, Paging::All)
-            .await?;
-        let peer_id = self.rpc.status().await?.node_info.id;
+        let next_h = Height::try_from(height + 1)?;
+        let commit = retrying(&format!("commit at {height}"), || self.rpc.commit(h)).await?;
+        let validators = retrying(&format!("validators at {height}"), || {
+            self.rpc.validators(h, Paging::All)
+        })
+        .await?;
+        let next = retrying(&format!("validators at {}", height + 1), || {
+            self.rpc.validators(next_h, Paging::All)
+        })
+        .await?;
+        let peer_id = retrying("status", || self.rpc.status()).await?.node_info.id;
         Ok(LightBlock::new(
             commit.signed_header,
             tendermint::validator::Set::new(validators.validators, None),
@@ -73,16 +118,19 @@ impl CelestiaReader {
         height: u64,
     ) -> Result<(Vec<u8>, Vec<StoreProofOp>)> {
         let key = get_merkle_tree_hook_key(hook_id);
-        let response = self
-            .rpc
-            .abci_query(
-                Some("/store/hyperlane/key".to_string()),
-                key,
-                Some(Height::try_from(height)?),
-                true,
-            )
-            .await
-            .context("abci_query for the merkle tree hook")?;
+        let at = Height::try_from(height)?;
+        let response = retrying(
+            &format!("abci_query for the merkle tree hook at {height}"),
+            || {
+                self.rpc.abci_query(
+                    Some("/store/hyperlane/key".to_string()),
+                    key.clone(),
+                    Some(at),
+                    true,
+                )
+            },
+        )
+        .await?;
 
         anyhow::ensure!(
             response.height.value() == height,
@@ -116,27 +164,46 @@ impl CelestiaReader {
         from_height: u64,
         to_height: u64,
     ) -> Result<Vec<DispatchedMessage>> {
-        let query: Query =
-            format!("tx.height >= {from_height} AND tx.height <= {to_height}").parse()?;
-
+        // Scanned in windows, because the height range is unbounded in practice.
+        //
+        // The height bounds alone match every transaction on the chain in that span, not just
+        // Hyperlane's: over one route's 114,000-block backlog that was 217,070 transactions,
+        // or 2,171 pages, and fourteen seconds to fetch the first of them. Windowing made each
+        // request finish but left the total proportional to the chain's whole traffic, so a
+        // route far enough behind still could not catch up before the next tick.
+        //
+        // Constraining the query to the insert event instead asks the indexer the question we
+        // actually have. The same backlog comes back as one transaction in a single call.
         let mut out = Vec::new();
-        let mut page = 1u32;
-        loop {
-            let results = self
-                .rpc
-                .tx_search(query.clone(), false, page, 100, Order::Ascending)
-                .await
-                .context("tx_search")?;
-            if results.txs.is_empty() {
-                break;
+        let mut start = from_height;
+        while start <= to_height {
+            let end = (start + HEIGHT_WINDOW - 1).min(to_height);
+            let query: Query =
+                format!("tx.height >= {start} AND tx.height <= {end} AND {INSERT_EVENT}.index EXISTS")
+                    .parse()?;
+            let mut page = 1u32;
+            loop {
+                // Retried per window rather than per sweep. Catching up across days is over a
+                // hundred requests to a public node, and one flaky answer used to discard the
+                // whole sweep and start again next tick - which, for a route far enough
+                // behind, means it never finishes at all.
+                let results = retrying(&format!("tx_search over {start}..={end}"), || {
+                    self.rpc
+                        .tx_search(query.clone(), false, page, 100, Order::Ascending)
+                })
+                .await?;
+                if results.txs.is_empty() {
+                    break;
+                }
+                for tx in &results.txs {
+                    out.extend(inserts_in(tx.height.value(), &tx.tx_result.events)?);
+                }
+                if results.txs.len() < 100 {
+                    break;
+                }
+                page += 1;
             }
-            for tx in &results.txs {
-                out.extend(inserts_in(tx.height.value(), &tx.tx_result.events)?);
-            }
-            if results.txs.len() < 100 {
-                break;
-            }
-            page += 1;
+            start = end + 1;
         }
         out.sort_by_key(|m| m.tree_index);
         Ok(out)

@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::tasks::{cpu_prover_permit, run_route, ProofStore};
 
 mod celestia;
-mod ethereum;
+pub(crate) mod ethereum;
 mod ethereum_l2;
 
 pub use celestia::{attest_celestia, bootstrap_celestia};
@@ -49,6 +49,100 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Remember which checkpoint reproduces the store this route just committed to.
+///
+/// Searching for it afterwards cannot be made to work. The search walks finalized checkpoints
+/// back from the head, so its window has to exceed the store's age - but a route that is
+/// failing does not update, so its store ages without bound and outruns any window. Widening
+/// the constant chases a target that moves away faster than the chase. The coprocessor
+/// applied the finality update itself, so it already knows the answer: the store now commits
+/// to that update's finalized header, and the checkpoint is that header's root.
+pub(crate) fn record_checkpoint(out: Option<&str>, checkpoint: &str) {
+    let Some(dir) = out
+        .and_then(|o| std::path::Path::new(o).parent())
+        .and_then(|p| p.parent())
+    else {
+        return;
+    };
+    if let Err(e) = std::fs::write(dir.join("checkpoint"), checkpoint) {
+        debug!(error = %e, "could not record the checkpoint");
+    }
+}
+
+/// What `record_checkpoint` last wrote for this route, if anything.
+pub(crate) fn recorded_checkpoint(out: Option<&str>) -> Option<String> {
+    let dir = out
+        .and_then(|o| std::path::Path::new(o).parent())
+        .and_then(|p| p.parent())?;
+    let text = std::fs::read_to_string(dir.join("checkpoint")).ok()?;
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// How long a route may go without advancing before it proves anyway.
+///
+/// Routes only prove for their own destination, which is right - but it means a quiet route
+/// never moves, and a route that has not moved has to scan further every time it looks. Four
+/// days of that put every Celestia route beyond what its RPC would answer, and they stopped
+/// dead. Proving twice a day regardless keeps the distance small enough to stay recoverable,
+/// and costs one proof per route per twelve hours when nothing is happening.
+const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+
+/// Has this route gone long enough without advancing that it should prove regardless?
+///
+/// A heartbeat still needs a non-empty batch: the enclave refuses to attest nothing, and a
+/// chain that has dispatched nothing at all is not falling behind in any sense that matters.
+pub fn heartbeat_due(out: Option<&str>) -> bool {
+    let Some(dir) = out
+        .and_then(|o| std::path::Path::new(o).parent())
+        .and_then(|p| p.parent())
+    else {
+        return false;
+    };
+    match std::fs::metadata(dir.join("advanced")).and_then(|m| m.modified()) {
+        Ok(at) => at.elapsed().map(|d| d > HEARTBEAT).unwrap_or(false),
+        // Never advanced under this binary: take the heartbeat rather than wait a further
+        // twelve hours to discover the route is stuck.
+        Err(_) => true,
+    }
+}
+
+/// Note that this route just advanced, which is what the heartbeat measures from.
+pub fn record_advanced(out: Option<&str>) {
+    let Some(dir) = out
+        .and_then(|o| std::path::Path::new(o).parent())
+        .and_then(|p| p.parent())
+    else {
+        return;
+    };
+    let _ = std::fs::write(dir.join("advanced"), b"");
+}
+
+/// Remember how far a quiet route has checked, for the dashboard.
+pub(crate) fn record_scanned(out: Option<&str>, height: u64) {
+    record_attestable_head(out, height);
+}
+
+/// Is any of these messages addressed to `destination`?
+///
+/// The gate on whether to prove, and it has to look at the destination rather than just at
+/// whether anything was dispatched. An origin has one mailbox and one merkle tree shared by
+/// every outbound message, so all three Celestia-origin routes see every Celestia dispatch.
+/// Counting messages rather than *our* messages meant one transfer to Sepolia started three
+/// proofs of ninety minutes each, two of which existed only to reach the submission step and
+/// skip the message as somebody else's.
+///
+/// This does not narrow the batch. A batch must still carry every leaf in its range or the
+/// replay cannot reproduce the on-chain root, which is what stops a caller dropping messages
+/// selectively. Only the decision to start is narrowed.
+pub fn any_for_destination(messages: &[Vec<u8>], destination: u32) -> bool {
+    messages.iter().any(|raw| {
+        hyperlane_types::decode_hyperlane_message(raw)
+            .map(|m| m.destination == destination)
+            .unwrap_or(false)
+    })
 }
 
 /// Wrap an EVM tree proof as the enclave's internally-tagged `TreeInput`, whose variant
@@ -265,4 +359,36 @@ pub fn expand_home(path: &str) -> String {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
         _ => path.to_string(),
     }
+}
+
+/// The leaf count an `eth_getProof` answer claims, read from the last of its 33 slots.
+///
+/// Untrusted - the enclave re-proves it against the state root. Used here only to check the
+/// log scan locally, before spending an attestation round trip on a batch that cannot match.
+pub(crate) fn claimed_count(proof: &tee_node::hyperlane_state::EvmTreeProof) -> Result<u32> {
+    let slot = proof
+        .storage_proof
+        .last()
+        .context("tree proof carries no slots")?;
+    Ok(slot.value.to::<u32>())
+}
+
+/// Fail a short log scan here, where the reason can be named.
+///
+/// A pruned endpoint answers `eth_getLogs` for a range it no longer holds with an empty array
+/// and no error, so a sweep across it silently drops every message in the pruned part. The
+/// enclave does catch it - the replayed branch cannot match the proven one - but it reports a
+/// count mismatch, which says nothing about which endpoint lied or why. The tree's own counts
+/// say exactly how many leaves the range must contain, so compare against them first.
+pub fn check_scan(snapshot_count: u32, head_count: u32, found: usize) -> Result<()> {
+    let expected = head_count.saturating_sub(snapshot_count) as usize;
+    anyhow::ensure!(
+        found == expected,
+        "the tree grew by {expected} leaves between the trusted height and the confirmed head, \
+         but the log scan found {found}; the logs endpoint is missing {} of them, almost \
+         certainly because it has pruned that range - point `logs_rpc` at an endpoint that \
+         retains logs for longer than this chain's confirmation delay",
+        expected.saturating_sub(found)
+    );
+    Ok(())
 }

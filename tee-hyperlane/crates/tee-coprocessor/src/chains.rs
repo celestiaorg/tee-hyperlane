@@ -30,16 +30,49 @@ impl Destination {
     /// Ordering is forced by the ISM: `submitMessages` checks the batch against the *current*
     /// root, so the state has to move first.
     pub fn submit(&self, proved: &Path) -> Result<()> {
+        let (script, mut command) = self.script_command();
+        command.arg(proved);
+        info!(script, ism = %self.ism, "submitting");
+        let status = command
+            .status()
+            .with_context(|| format!("running {script}"))?;
+        anyhow::ensure!(status.success(), "{script} exited with {status}");
+        Ok(())
+    }
+
+    /// Check the relayer can actually pay to submit, before anything expensive happens.
+    ///
+    /// Proving is hours of CPU and submission is the step after it, so a route whose fee
+    /// account is empty burns those hours and then fails - repeatedly, because the next tick
+    /// starts over. Three routes here did exactly that for a day. The question is cheap to
+    /// ask and the answer does not change mid-proof, so ask it first.
+    pub fn preflight(&self) -> Result<()> {
+        let (script, mut command) = self.script_command();
+        command.arg("--preflight");
+        let output = command
+            .output()
+            .with_context(|| format!("running {script} --preflight"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let reason = String::from_utf8_lossy(&output.stderr);
+        let reason = reason.trim();
+        // An older script that does not know the flag must not block the route.
+        if reason.contains("usage:") || reason.is_empty() {
+            return Ok(());
+        }
+        anyhow::bail!("{reason}")
+    }
+
+    fn script_command(&self) -> (&'static str, Command) {
         let script = match self.chain {
             ChainConfig::Celestia { .. } => "submit-celestia.sh",
             _ => "submit-evm.sh",
         };
         let path = deploy_dir().join(script);
-        info!(script, ism = %self.ism, "submitting");
 
         let mut command = Command::new(&path);
         command
-            .arg(proved)
             .env("TEE_ISM", &self.ism)
             .env("CELESTIA_ISM", &self.ism);
 
@@ -80,12 +113,7 @@ impl Destination {
             }
         }
 
-        let status = command
-            .status()
-            .with_context(|| format!("running {}", path.display()))?;
-
-        anyhow::ensure!(status.success(), "{script} exited with {status}");
-        Ok(())
+        (script, command)
     }
 }
 

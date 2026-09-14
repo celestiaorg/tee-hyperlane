@@ -61,6 +61,48 @@ impl ProofStore {
     pub fn staging(&self, route: &str, name: &str) -> PathBuf {
         self.root.join(route).join("staging").join(name)
     }
+
+    /// Why this route last stopped, for the dashboard to show.
+    ///
+    /// A route whose proof is finished but whose submission keeps being rejected is, from the
+    /// outside, indistinguishable from one still grinding through a proof: both have a batch
+    /// in staging and neither has delivered. The difference is the error, and until it was
+    /// written down the only place it existed was the journal.
+    pub fn record_blocker(&self, route: &str, error: &str, failures: u32) {
+        let record = serde_json::json!({
+            "error": error,
+            "consecutiveFailures": failures,
+            "at": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default(),
+        });
+        if let Ok(body) = serde_json::to_vec_pretty(&record) {
+            std::fs::write(self.root.join(route).join("blocked.json"), body).ok();
+        }
+    }
+
+    pub fn clear_blocker(&self, route: &str) {
+        std::fs::remove_file(self.root.join(route).join("blocked.json")).ok();
+    }
+
+    /// Claim the "this route is on the CPU" marker until the returned guard drops.
+    pub fn mark_proving(&self, route: &str) -> ProvingMarker {
+        let path = self.root.join(route).join("proving");
+        std::fs::write(&path, b"").ok();
+        ProvingMarker { path }
+    }
+}
+
+/// Removes the proving marker however the tick ends, including on error.
+pub struct ProvingMarker {
+    path: PathBuf,
+}
+
+impl Drop for ProvingMarker {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).ok();
+    }
 }
 
 /// Drive one route forever.
@@ -77,15 +119,23 @@ pub async fn run_route(
         match advance(&route, &store, &cpu).await {
             Ok(Some(height)) => {
                 failures = 0;
+                store.clear_blocker(&route.name);
                 info!(route = %route.name, height, "batch delivered");
             }
-            Ok(None) => failures = 0,
+            Ok(None) => {
+                failures = 0;
+                store.clear_blocker(&route.name);
+            }
             // Most failures are transient: the head has not moved, an RPC is down, finality
             // has not caught up. A few are not, and a batch that can never succeed would
             // otherwise retry every tick forever. Backing off keeps the log readable and the
             // gas estimation calls rare, while still reporting every attempt.
             Err(e) => {
                 failures = failures.saturating_add(1);
+                // Recorded as well as logged. A route that has finished proving and cannot
+                // submit looks identical on the dashboard to one still working, unless the
+                // reason it stopped is carried somewhere the dashboard can read.
+                store.record_blocker(&route.name, &e.to_string(), failures);
                 warn!(
                     route = %route.name,
                     error = %e,
@@ -146,6 +196,7 @@ async fn advance(
                 archive_rpc.as_deref(),
                 &route.tee_node_url,
                 &trusted,
+                route.destination.domain(),
                 merkle_tree_hook_id,
                 DEFAULT_LAG,
                 Some(path_string(&attestation)),
@@ -178,6 +229,7 @@ async fn advance(
                 &route.tee_node_url,
                 route.checkpoint.as_deref(),
                 &trusted,
+                route.destination.domain(),
                 merkle_tree_hook,
                 mailbox,
                 merkle_tree_base_slot,
@@ -221,6 +273,7 @@ async fn advance(
                 logs_rpc.as_deref(),
                 &route.tee_node_url,
                 &trusted,
+                route.destination.domain(),
                 l1_anchor_contract,
                 merkle_tree_hook,
                 mailbox,
@@ -240,9 +293,16 @@ async fn advance(
         return if quiet { Ok(None) } else { Err(error) };
     }
 
+    // Hours of CPU are about to be spent on a batch that is no use unless it can be
+    // submitted, so establish that it can before spending them rather than after.
+    Destination::new(route.destination.clone(), route.ism_id.clone()).preflight()?;
+
     // Proving is minutes of CPU, so routes take turns rather than competing for cores.
     info!(route = %route.name, "waiting for the prover");
     let _permit = cpu.acquire().await?;
+    // Only one route holds this at a time, so the marker is what lets the dashboard say
+    // "proving" about the one that is, and "queued" about the ones that merely want to be.
+    let _proving = store.mark_proving(&route.name);
     let proved = store.staging(&route.name, "proved.json");
     commands::prove_for_route(
         &route.name,

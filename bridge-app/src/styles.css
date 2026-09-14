@@ -344,3 +344,156 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
 
 .quote dt { color: var(--muted); }
 .quote dd { margin: 0; text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* Send confirmation
+ *
+ * The dialog has to carry one idea: the transaction is real, and the slow part has not
+ * happened yet. So the tick lands quickly and firmly, and the queue bar underneath keeps
+ * moving after it, because that is the part the user is about to wait on.
+ */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(3px);
+  z-index: 50;
+  animation: overlay-in 0.18s ease-out both;
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+}
+
+.confirm-card {
+  width: min(26rem, 100%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.75rem 1.5rem 1.5rem;
+  text-align: center;
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.22);
+  animation: card-in 0.32s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+}
+
+/* The ring sweeps, then the tick draws into it. */
+
+.tick {
+  width: 60px;
+  height: 60px;
+  margin-bottom: 0.5rem;
+  fill: none;
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tick-ring {
+  stroke: var(--accent);
+  opacity: 0.28;
+  stroke-dasharray: 145;
+  stroke-dashoffset: 145;
+  animation: draw 0.5s ease-out 0.08s forwards;
+}
+
+.tick-mark {
+  stroke: var(--accent);
+  stroke-dasharray: 40;
+  stroke-dashoffset: 40;
+  animation: draw 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.42s forwards;
+}
+
+@keyframes draw {
+  to { stroke-dashoffset: 0; }
+}
+
+.confirm-card h3 {
+  margin: 0.35rem 0 0.15rem;
+  font-size: 1.125rem;
+  animation: rise 0.32s ease-out 0.5s both;
+}
+
+.confirm-lead {
+  margin: 0 0 1.1rem;
+  color: var(--accent);
+  font-weight: 600;
+  animation: rise 0.32s ease-out 0.58s both;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+.confirm-facts {
+  margin: 0 0 1.1rem;
+  padding: 0.75rem 0.9rem;
+  background: var(--field);
+  border-radius: 12px;
+  display: grid;
+  gap: 0.45rem;
+  text-align: left;
+  animation: rise 0.32s ease-out 0.64s both;
+}
+
+.confirm-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.confirm-facts dt { color: var(--muted); }
+.confirm-facts dd { margin: 0; font-weight: 500; }
+.confirm-facts .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+
+/* Three cells easing along a track: the queue, still moving after the tick has settled. */
+
+.queue-track {
+  display: flex;
+  gap: 5px;
+  justify-content: center;
+  margin-bottom: 0.6rem;
+  animation: rise 0.32s ease-out 0.7s both;
+}
+
+.queue-track span {
+  width: 26px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0.22;
+  animation: queue-pulse 1.5s ease-in-out infinite;
+}
+
+.queue-track span:nth-child(2) { animation-delay: 0.18s; }
+.queue-track span:nth-child(3) { animation-delay: 0.36s; }
+
+@keyframes queue-pulse {
+  0%, 100% { opacity: 0.22; }
+  40% { opacity: 1; }
+}
+
+.confirm-note { margin: 0 0 1.2rem; animation: rise 0.32s ease-out 0.76s both; }
+.confirm-card .primary { width: 100%; animation: rise 0.32s ease-out 0.82s both; }
+
+/* Motion is decoration here, never information: every element is legible at its end state. */
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .confirm-card,
+  .confirm-card h3,
+  .confirm-lead,
+  .confirm-facts,
+  .queue-track,
+  .confirm-note,
+  .confirm-card .primary { animation: none; }
+  .tick-ring,
+  .tick-mark { animation: none; stroke-dashoffset: 0; }
+  .queue-track span { opacity: 0.6; }
+}

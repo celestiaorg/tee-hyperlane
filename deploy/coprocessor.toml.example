@@ -146,8 +146,16 @@ domain = 84532
 rollup = "base"
 l2_rpc = "https://base-sepolia.g.alchemy.com/v2/<ALCHEMY_KEY>"
 # Alchemy's free tier caps eth_getLogs at ten blocks and a confirmed L2 head moves
-# thousands at a time; publicnode serves the whole span. Both are untrusted.
-logs_rpc = "https://base-sepolia-rpc.publicnode.com"
+# thousands at a time, so logs come from somewhere else. Both are untrusted.
+#
+# It has to be an endpoint that still holds logs older than Base's dispute window. The
+# trusted height trails the head by the whole ~5 days that window lasts, so the range this
+# route sweeps is *always* about 200,000 blocks old - it never gets easier. publicnode was
+# here and prunes well inside that: asked for the span, it returned 8 of the 18 insertions
+# and no error, which silently dropped ten messages until the enclave refused the batch.
+# Measured over that exact span, sepolia.base.org serves all 18, as does Tenderly's gateway
+# (in a single call, if rate limits here ever bite).
+logs_rpc = "https://sepolia.base.org"
 l1_anchor_contract = "0x2fF5cC82dBf333Ea30D8ee462178ab1707315355"
 mailbox = "0x6966b0E55883d49BFB24539356a2f8A673E02039"
 merkle_tree_hook = "0x86fb9F1c124fB20ff130C41a79a432F770f67AFD"

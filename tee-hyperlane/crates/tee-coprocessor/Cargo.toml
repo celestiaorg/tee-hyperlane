@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 hyperlane-types.workspace = true
+tree_hash = "0.10"
 tee-attestation.workspace = true
 tee-node.workspace = true
 alloy-primitives.workspace = true
@@ -34,3 +35,6 @@ tracing-subscriber.workspace = true
 [[bin]]
 name = "tee-hyperlane"
 path = "src/main.rs"
+
+[dev-dependencies]
+filetime = "0.2"

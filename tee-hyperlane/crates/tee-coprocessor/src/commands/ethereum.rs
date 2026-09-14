@@ -5,15 +5,29 @@
 
 use anyhow::{Context, Result};
 use tracing::{debug, info};
+use tree_hash::TreeHash;
 
 use crate::ethereum::SECONDS_PER_SLOT;
 
 use super::evm_tree_input;
 
-/// How far back to look for the checkpoint an L2-origin ISM's store was built from. Eight
-/// epochs is about 51 minutes, far longer than a tick.
+/// How far back to look for the checkpoint an L2-origin ISM's store was built from.
+///
+/// The window has to cover the age of the store, not the tick interval, and those are very
+/// different numbers. An L2-origin ISM commits to the store as it stood when the batch was
+/// *attested*, and the batch is submitted a proof later: the first Arbitrum delivery was
+/// attested at 01:57, proved at 03:25 and submitted at 04:56, so the next tick was looking
+/// for a store three hours old. Eight epochs is fifty-one minutes, so the search read the
+/// last hour of finalized checkpoints, found nothing, and wedged the route.
+///
+/// This is a recovery path now, not the mechanism. A healthy route records the checkpoint its
+/// last update produced and looks it up next tick, so the search only runs for a route that
+/// has never succeeded or has been broken across a restart. Sizing it is therefore about how
+/// far back a stuck route might need rescuing from, not about ordinary operation - five
+/// hundred and twelve epochs is a bit over two days. Each step is one beacon request and the
+/// loop stops at the first match.
 const SLOTS_PER_EPOCH: u64 = 32;
-const MAX_CHECKPOINT_SEARCH_EPOCHS: u64 = 8;
+const MAX_CHECKPOINT_SEARCH_EPOCHS: u64 = 512;
 
 /// Rebuild the exact light-client store an ISM committed to.
 ///
@@ -30,17 +44,27 @@ pub(super) async fn rebuild_ethereum_store(
     beacon: &crate::ethereum::EthereumReader,
     config: &crate::ethereum::ChainConfig,
     trusted: &tee_attestation::IsmState,
-    explicit: Option<&str>,
+    hints: &[&str],
 ) -> Result<(tee_node::origins::ethereum::EthereumStore, String)> {
     use tee_node::origins::ethereum::commit_ethereum_store;
 
-    if let Some(checkpoint) = explicit {
-        let store = bootstrap_store(beacon, config, checkpoint).await?;
-        anyhow::ensure!(
-            commit_ethereum_store(&store) == trusted.lc_store_commit,
-            "store rebuilt from {checkpoint} does not match the ISM's commitment"
-        );
-        return Ok((store, checkpoint.to_string()));
+    // A configured checkpoint is a hint, not an answer, and it stops being the right one the
+    // moment the route succeeds: the ISM's commitment is to whatever store the last update
+    // left behind, while this names the store the ISM was created with. It is still worth
+    // trying first, because that genesis store is the one case the search below cannot reach
+    // - the search only walks back eight finalized epochs, and a genesis anchor is usually
+    // older than that. So try it, and fall through rather than failing when it no longer
+    // matches, which is exactly what an advanced ISM looks like.
+    // Hints in order of how likely they are to be right: what this route recorded after its
+    // last successful update, then whatever is configured. Each is tried and discarded on
+    // mismatch rather than trusted, so a stale one costs a request and nothing else.
+    for checkpoint in hints {
+        if let Ok(store) = bootstrap_store(beacon, config, checkpoint).await {
+            if commit_ethereum_store(&store) == trusted.lc_store_commit {
+                return Ok((store, (*checkpoint).to_string()));
+            }
+            debug!(checkpoint, "hint does not reproduce this ISM's store");
+        }
     }
 
     if trusted.origin_domain == tee_node::origins::Origin::Ethereum.domain() {
@@ -76,6 +100,30 @@ pub(super) async fn rebuild_ethereum_store(
     )
 }
 
+/// Slots in a sync-committee period: 256 epochs of 32 slots.
+const SLOTS_PER_SYNC_PERIOD: u64 = 256 * 32;
+
+/// The committee updates needed to walk `store` up to the period `finality` belongs to.
+///
+/// Empty whenever both are already in the same period, which is the normal case; a route only
+/// needs these when a period boundary has passed since its last successful update.
+pub(super) async fn bridging_updates(
+    beacon: &crate::ethereum::EthereumReader,
+    store: &tee_node::origins::ethereum::EthereumStore,
+    finality: &helios_consensus_core::types::FinalityUpdate<crate::ethereum::Spec>,
+) -> Result<Vec<helios_consensus_core::types::Update<crate::ethereum::Spec>>> {
+    let store_period = store.store.finalized_header.beacon().slot / SLOTS_PER_SYNC_PERIOD;
+    let head_period = finality.finalized_header().beacon().slot / SLOTS_PER_SYNC_PERIOD;
+    if head_period <= store_period {
+        return Ok(Vec::new());
+    }
+    // From the store's own period: the first update rotates it out of that period, and each
+    // one after carries the next committee.
+    beacon
+        .updates(store_period, head_period - store_period)
+        .await
+}
+
 pub(super) async fn bootstrap_store(
     beacon: &crate::ethereum::EthereumReader,
     config: &crate::ethereum::ChainConfig,
@@ -108,6 +156,7 @@ pub async fn attest_ethereum(
     enclave_url: &str,
     checkpoint: Option<&str>,
     trusted_state_hex: &str,
+    destination_domain: u32,
     merkle_tree_hook: &str,
     mailbox: &str,
     base_slot: u64,
@@ -121,10 +170,37 @@ pub async fn attest_ethereum(
 
     let beacon_reader = EthereumReader::new(beacon);
     let config = beacon_reader.chain_config().await?;
+    let remembered = super::recorded_checkpoint(out.as_deref());
+    let hints: Vec<&str> = remembered
+        .as_deref()
+        .into_iter()
+        .chain(checkpoint)
+        .collect();
     let (store, _checkpoint) =
-        rebuild_ethereum_store(&beacon_reader, &config, &trusted, checkpoint).await?;
+        rebuild_ethereum_store(&beacon_reader, &config, &trusted, &hints).await?;
 
     let finality = beacon_reader.finality_update().await?;
+
+    // Sync-committee updates, without which the light client cannot cross a period boundary.
+    //
+    // This was hardcoded empty. A store follows the chain happily inside one sync-committee
+    // period and then stops: the enclave rejects the finality update with "invalid sync
+    // committee period", every tick, until the ISM is rebuilt. Sepolia's period is 256 epochs
+    // - about 27 hours - so every Ethereum-backed route wedged roughly daily, and it only
+    // looked intermittent because the cascades kept re-bootstrapping the stores.
+    //
+    // The updates that rotate the committee are what bridge the gap, and the beacon API
+    // serves them by period. Fetching only the periods actually missing keeps this a no-op in
+    // the common case.
+    let committee_updates = bridging_updates(&beacon_reader, &store, &finality)
+        .await
+        .unwrap_or_default();
+    if !committee_updates.is_empty() {
+        info!(
+            count = committee_updates.len(),
+            "carrying sync committee updates"
+        );
+    }
 
     let hook: alloy_primitives::Address = merkle_tree_hook.parse()?;
     let mailbox_address: alloy_primitives::Address = mailbox.parse()?;
@@ -166,7 +242,20 @@ pub async fn attest_ethereum(
         leaves = dispatched.len(),
         "attesting ethereum"
     );
+    super::check_scan(
+        super::claimed_count(&snapshot_proof)?,
+        super::claimed_count(&tree_proof)?,
+        dispatched.len(),
+    )?;
     anyhow::ensure!(!dispatched.is_empty(), "nothing to attest");
+    // Sepolia's mailbox is Hyperlane's shared canonical one, so most of what lands in this
+    // range belongs to other bridges entirely.
+    let ours: Vec<Vec<u8>> = dispatched.iter().map(|d| d.message.clone()).collect();
+    if !super::any_for_destination(&ours, destination_domain)
+        && !super::heartbeat_due(out.as_deref())
+    {
+        anyhow::bail!("nothing to attest; no messages for domain {destination_domain}");
+    }
 
     let mut tree_address = [0u8; 32];
     tree_address[12..].copy_from_slice(hook.as_slice());
@@ -181,7 +270,7 @@ pub async fn attest_ethereum(
         "origin": {
             "chain": "ethereum",
             "store": store,
-            "updates": { "committee_updates": [], "finality_update": finality },
+            "updates": { "committee_updates": committee_updates, "finality_update": finality },
         },
         "tree": tree_input,
         "tree_snapshot": snapshot_input,
@@ -191,6 +280,19 @@ pub async fn attest_ethereum(
 
     let attestation = EnclaveClient::new(enclave_url).attest(&request).await?;
     info!(messages = attestation.message_ids.len(), "enclave attested");
+    super::record_advanced(out.as_deref());
+
+    // The store the ISM is about to commit to is the one this finality update leaves behind,
+    // and its checkpoint is that header's root. Written now so the next tick is a lookup
+    // rather than a search back through finalized checkpoints, which cannot keep up with a
+    // route that has been failing.
+    super::record_checkpoint(
+        out.as_deref(),
+        &format!(
+            "0x{}",
+            hex::encode(finality.finalized_header().beacon().tree_hash_root())
+        ),
+    );
 
     if let Some(path) = out {
         let record = serde_json::json!({

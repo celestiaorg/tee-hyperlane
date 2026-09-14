@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use tracing::{debug, info};
+use tree_hash::TreeHash;
 
 use super::{bootstrap_store, evm_tree_input, rebuild_ethereum_store};
 
@@ -173,6 +174,7 @@ pub async fn attest_l2(
     logs_rpc: Option<&str>,
     enclave_url: &str,
     trusted_state_hex: &str,
+    destination_domain: u32,
     anchor: &str,
     merkle_tree_hook: &str,
     mailbox: &str,
@@ -188,8 +190,14 @@ pub async fn attest_l2(
 
     let beacon_reader = EthereumReader::new(beacon);
     let config = beacon_reader.chain_config().await?;
+    let remembered = super::recorded_checkpoint(out.as_deref());
+    let hints: Vec<&str> = remembered
+        .as_deref()
+        .into_iter()
+        .chain(checkpoint)
+        .collect();
     let (store, _checkpoint) =
-        rebuild_ethereum_store(&beacon_reader, &config, &trusted, checkpoint).await?;
+        rebuild_ethereum_store(&beacon_reader, &config, &trusted, &hints).await?;
 
     let finality = beacon_reader.finality_update().await?;
     let l1_block = *finality
@@ -247,10 +255,27 @@ pub async fn attest_l2(
         leaves = dispatched.len(),
         "attesting l2"
     );
+    super::check_scan(
+        super::claimed_count(&snapshot_proof)?,
+        super::claimed_count(&tree_proof)?,
+        dispatched.len(),
+    )?;
     anyhow::ensure!(!dispatched.is_empty(), "nothing to attest");
+    let ours: Vec<Vec<u8>> = dispatched.iter().map(|d| d.message.clone()).collect();
+    if !super::any_for_destination(&ours, destination_domain)
+        && !super::heartbeat_due(out.as_deref())
+    {
+        anyhow::bail!("nothing to attest; no messages for domain {destination_domain}");
+    }
 
     let mut tree_address = [0u8; 32];
     tree_address[12..].copy_from_slice(hook.as_slice());
+
+    // An L2 route rides Ethereum's light client, so it crosses sync-committee periods and
+    // wedges on them in exactly the same way. Same bridge, same no-op when nothing is missing.
+    let committee_updates = super::ethereum::bridging_updates(&beacon_reader, &store, &finality)
+        .await
+        .unwrap_or_default();
 
     let tree_input = evm_tree_input(&tree_proof)?;
     let snapshot_input = evm_tree_input(&snapshot_proof)?;
@@ -263,7 +288,7 @@ pub async fn attest_l2(
             "ethereum": {
                 "chain": "ethereum",
                 "store": store,
-                "updates": { "committee_updates": [], "finality_update": finality },
+                "updates": { "committee_updates": committee_updates, "finality_update": finality },
             },
             "proof": root_proof,
         },
@@ -275,6 +300,19 @@ pub async fn attest_l2(
 
     let attestation = EnclaveClient::new(enclave_url).attest(&request).await?;
     info!(messages = attestation.message_ids.len(), "enclave attested");
+    super::record_advanced(out.as_deref());
+
+    // The store the ISM is about to commit to is the one this finality update leaves behind,
+    // and its checkpoint is that header's root. Written now so the next tick is a lookup
+    // rather than a search back through finalized checkpoints, which cannot keep up with a
+    // route that has been failing.
+    super::record_checkpoint(
+        out.as_deref(),
+        &format!(
+            "0x{}",
+            hex::encode(finality.finalized_header().beacon().tree_hash_root())
+        ),
+    );
 
     if let Some(path) = out {
         let record = serde_json::json!({

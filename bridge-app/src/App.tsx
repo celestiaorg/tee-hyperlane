@@ -10,6 +10,7 @@ import {
 } from "./config";
 import type { ChainId, CosmosChain, EvmChain, TokenId } from "./config";
 import {
+  describeError,
   fetchBalance,
   formatAmount,
   formatFee,
@@ -67,6 +68,9 @@ export default function App() {
   const [fee, setFee] = useState<BridgeFee | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  // Shown once the origin transaction is in a block and the message id is known, which is the
+  // moment the relayer can actually see it. Anything earlier would be claiming more than we know.
+  const [confirmed, setConfirmed] = useState<Confirmation | null>(null);
 
   useEffect(() => saveTransfers(transfers), [transfers]);
 
@@ -151,7 +155,7 @@ export default function App() {
       if (chain.kind === "evm") setEvm(await connectMetaMask(chain));
       else setCosmos(await connectKeplr(chain));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeError(e));
     }
   }, []);
 
@@ -161,6 +165,18 @@ export default function App() {
     try {
       const target = recipient || defaultRecipient;
       if (!target) throw new Error("Enter a recipient address");
+
+      // Checked here rather than left to the chain. Sending more than you hold reverts inside
+      // transferRemote, and a revert reaches the browser as a provider object with the reason
+      // buried in it - the user sees a failed transaction and no idea they simply overdrew.
+      const wanted = toBaseUnits(amount, token);
+      if (wanted <= 0n) throw new Error("Enter an amount greater than zero");
+      if (sourceBalance !== undefined && wanted > sourceBalance) {
+        throw new Error(
+          `Not enough ${token} on ${source.name}: ` +
+            `you have ${formatAmount(sourceBalance, token)} and asked to send ${amount}`,
+        );
+      }
 
       let tx: string;
       let messageId: string;
@@ -172,7 +188,7 @@ export default function App() {
           token,
           destination: destination.domain,
           recipient: target,
-          amount: toBaseUnits(amount, token),
+          amount: wanted,
           sender: evm.address,
         });
         messageId = await waitForMessageId(source as EvmChain, tx);
@@ -188,7 +204,7 @@ export default function App() {
           token,
           destinationDomain: destination.domain,
           recipient: toRecipientBytes32(target),
-          amount: toBaseUnits(amount, token),
+          amount: wanted,
           sender: cosmos.address,
           quotedFee: quoted.amount,
         });
@@ -208,10 +224,18 @@ export default function App() {
         },
         ...current,
       ]);
+      setConfirmed({
+        messageId,
+        token,
+        amount,
+        origin: source.name,
+        destination: destination.name,
+        wait: describeDuration(expectedSeconds(from)),
+      });
       setAmount("");
       loadBalances();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeError(e));
     } finally {
       setSending(false);
     }
@@ -409,6 +433,7 @@ export default function App() {
             )}
         </section>
       </main>
+      {confirmed && <ConfirmedDialog confirmation={confirmed} onClose={() => setConfirmed(null)} />}
     </div>
   );
 }
@@ -538,6 +563,95 @@ async function waitForMessageId(chain: EvmChain, tx: string): Promise<string> {
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
   throw new Error("Transaction did not confirm in time; check the explorer");
+}
+
+/// What the dialog needs to say, captured at the moment the send succeeded.
+///
+/// Held separately from the transfer list rather than read back out of it: the list is the
+/// running record and re-renders as statuses change, and the dialog should describe the one
+/// send that just happened, frozen.
+type Confirmation = {
+  messageId: string;
+  token: TokenId;
+  amount: string;
+  origin: string;
+  destination: string;
+  wait: string;
+};
+
+/// Confirmation of a send, and an honest description of what happens next.
+///
+/// It says "added to the prover queue" rather than "sent", because that is the true state:
+/// the origin chain has the transaction, and the relayer will pick it up, attest it, and
+/// prove it. Calling it complete here is what would make the following hour feel broken.
+function ConfirmedDialog({
+  confirmation,
+  onClose,
+}: {
+  confirmation: Confirmation;
+  onClose: () => void;
+}) {
+  // Escape closes it, and so does the backdrop. A dialog with only one exit is a trap on
+  // whichever device the author did not test.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="overlay" onClick={onClose} role="presentation">
+      <div
+        className="confirm-card"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+      >
+        <svg className="tick" viewBox="0 0 52 52" aria-hidden="true">
+          <circle className="tick-ring" cx="26" cy="26" r="23" />
+          <path className="tick-mark" d="M15 27 l8 8 l15 -16" />
+        </svg>
+
+        <h3 id="confirm-title">Transaction confirmed</h3>
+        <p className="confirm-lead">Added to the prover queue</p>
+
+        <dl className="confirm-facts">
+          <div>
+            <dt>Sending</dt>
+            <dd>
+              {confirmation.amount} {confirmation.token}
+            </dd>
+          </div>
+          <div>
+            <dt>Route</dt>
+            <dd>
+              {confirmation.origin} to {confirmation.destination}
+            </dd>
+          </div>
+          <div>
+            <dt>Message</dt>
+            <dd className="mono">{shorten(confirmation.messageId, 8)}</dd>
+          </div>
+        </dl>
+
+        <div className="queue-track" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <p className="note confirm-note">
+          The enclave attests it, then two proofs run on CPU. About {confirmation.wait}.
+        </p>
+
+        <button className="primary" onClick={onClose}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
 }
 
 const STORAGE_KEY = "tee-bridge-transfers";
