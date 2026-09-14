@@ -67,12 +67,33 @@ pub struct RouteStatus {
     pub origin_head: Option<u64>,
     /// Set when the destination chain could not be reached this request.
     pub error: Option<String>,
+    /// Why this route's last tick failed, if it did. Distinct from `error`, which is about
+    /// this HTTP request rather than about the route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<Blocker>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Batch {
     pub height: u64,
     pub messages: Vec<String>,
+    /// Where this batch actually is: "proving" only for the one route holding the CPU,
+    /// "queued" for those waiting their turn, "awaiting submission" once the proof exists.
+    ///
+    /// Reporting all three as "proving" made a dashboard that showed six routes proving at
+    /// once, which one CPU semaphore makes impossible, and hid the routes that had finished
+    /// hours earlier and were failing to submit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<&'static str>,
+}
+
+/// Why a route stopped, as its tick loop last recorded it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Blocker {
+    pub error: String,
+    #[serde(rename = "consecutiveFailures")]
+    pub consecutive_failures: u64,
+    pub at: u64,
 }
 
 /// Attestations are read from the proof store, so the API has no state of its own and a
@@ -103,7 +124,7 @@ impl Api {
             .with_state(self)
     }
 
-    /// The batch this route is proving right now, read from its staging file.
+    /// The batch this route has in flight, and which stage it has actually reached.
     fn in_flight(&self, route: &str) -> Option<Batch> {
         let staged = self
             .root
@@ -115,6 +136,14 @@ impl Api {
         let state = hex::decode(record["attestation"]["new_state"].as_str()?).ok()?;
         let state = decode_ism_state(&state).ok()?;
         let messages = record["messages"].as_array()?;
+        let dir = self.root.join(route);
+        let stage = if dir.join("staging").join("proved.json").exists() {
+            "awaiting submission"
+        } else if dir.join("proving").exists() {
+            "proving"
+        } else {
+            "queued"
+        };
         Some(Batch {
             height: state.height,
             messages: messages
@@ -122,6 +151,18 @@ impl Api {
                 .filter_map(|m| m.as_str())
                 .map(message_id)
                 .collect(),
+            stage: Some(stage),
+        })
+    }
+
+    /// Why this route last stopped, if it is stopped.
+    fn blocker(&self, route: &str) -> Option<Blocker> {
+        let raw = std::fs::read(self.root.join(route).join("blocked.json")).ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        Some(Blocker {
+            error: value["error"].as_str()?.to_string(),
+            consecutive_failures: value["consecutiveFailures"].as_u64().unwrap_or(0),
+            at: value["at"].as_u64().unwrap_or(0),
         })
     }
 
@@ -149,6 +190,8 @@ impl Api {
             .map(|record| Batch {
                 height: record.height,
                 messages: record.batch,
+                // A filed batch has no stage left to be in; it landed.
+                stage: None,
             })
             .collect();
         batches.sort_by(|a, b| b.height.cmp(&a.height));
@@ -251,6 +294,7 @@ fn read_route(api: &Api, route: &RouteConfig) -> RouteStatus {
             .recorded_head(&route.name)
             .or_else(|| read_origin_head(&route.origin)),
         error: None,
+        blocked: api.blocker(&route.name),
     };
 
     match read_trusted_state(route) {
