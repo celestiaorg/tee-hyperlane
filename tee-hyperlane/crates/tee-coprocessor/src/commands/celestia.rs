@@ -114,7 +114,7 @@ pub async fn attest_celestia(
 
     // Everything inserted since the ISM's trusted height, in tree order.
     let inserted = history
-        .dispatched_messages(trusted.height + 1, target)
+        .dispatched_messages(trusted.height + 1, target, hook_id)
         .await?;
     // The tree says how many there should be, so a search that quietly returns too few is
     // caught here rather than by the enclave rejecting the replay an hour later.
