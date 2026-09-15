@@ -184,8 +184,24 @@
     return { behind, percent: Math.round((1 - behind / widest[r.name]) * 100) };
   }
 
+  /// What a batch is actually doing. Only one route can hold the prover, so a batch that is
+  /// merely staged is queued, and one whose proof is finished is waiting on the destination -
+  /// which is a different problem from a slow proof and should not look like one.
+  function stageLabel(stage) {
+    if (stage === "proving") return "Proving";
+    if (stage === "awaiting submission") return "Awaiting submission";
+    if (stage === "queued") return "Queued for the prover";
+    return "In flight";
+  }
+
   function summarise(routes) {
-    const proving = routes.filter((r) => r.proving).length;
+    // Count the route actually on the CPU, not every route with a batch in flight. One
+    // permit means at most one can be proving, and counting otherwise reported three at once.
+    const proving = routes.filter((r) => r.proving && r.proving.stage === "proving").length;
+    const queued = routes.filter((r) => r.proving && r.proving.stage === "queued").length;
+    const waiting = routes.filter(
+      (r) => r.proving && r.proving.stage === "awaiting submission",
+    ).length;
     const behind = routes.reduce(
       (n, r) => n + (r.originHead != null && r.height != null ? Math.max(0, r.originHead - r.height) : 0),
       0,
@@ -194,6 +210,8 @@
     document.getElementById("summary").innerHTML = `
       <div class="stat"><span>Routes</span><strong>${routes.length}</strong></div>
       <div class="stat"><span>Proving</span><strong>${proving}</strong></div>
+      <div class="stat"><span>Queued</span><strong>${queued}</strong></div>
+      ${waiting ? `<div class="stat"><span>Awaiting submission</span><strong>${waiting}</strong></div>` : ""}
       <div class="stat"><span>Batches proven</span><strong>${proven}</strong></div>
       <div class="stat"><span>Blocks to attest</span><strong>${num(behind)}</strong></div>`;
   }
@@ -223,8 +241,8 @@
         <div class="grid">
           <div class="cell"><span>Attestable to</span><strong>${num(r.originHead)}</strong></div>
           <div class="cell"><span>Last proven</span><strong>${batch(r.batches[0])}</strong></div>
-          <div class="cell ${r.proving ? "working" : ""}">
-            <span>${r.proving ? "Proving" : "Prover"}</span>
+          <div class="cell ${r.proving && r.proving.stage === "proving" ? "working" : ""}">
+            <span>${r.proving ? stageLabel(r.proving.stage) : "Prover"}</span>
             <strong>${r.proving ? batch(r.proving) : "nothing new to attest"}</strong>
           </div>
           <div class="cell"><span>State root</span><strong><code>${short(r.stateRoot)}</code></strong></div>
