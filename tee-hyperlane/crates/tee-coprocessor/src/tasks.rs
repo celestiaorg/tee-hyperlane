@@ -105,7 +105,21 @@ impl Drop for ProvingMarker {
     }
 }
 
-/// Drive one route forever.
+/// Drive one route forever, as two tasks that do not wait on each other.
+///
+/// They used to be one. A route attested, then blocked on the prover permit, then proved,
+/// then submitted - so for the whole of a proof it was not looking at the origin at all.
+/// Anything that arrived behind the batch being proved went unnoticed until the proof
+/// finished, which on this hardware meant hours. Detection was only ever as fast as the tick
+/// for a route that happened to be idle, and with one CPU shared by six routes, idle was the
+/// exception.
+///
+/// Splitting them costs nothing in safety because the constraint that made the loop
+/// sequential is not the loop: it is the chain. A route's trusted height moves one batch at a
+/// time, so there is never a second batch to prove ahead of the first. What the split buys is
+/// that noticing is no longer hostage to proving - the scanner records what is pending the
+/// moment it lands, and the prover starts the instant the CPU is free rather than at the next
+/// tick after it.
 pub async fn run_route(
     route: RouteConfig,
     store: Arc<ProofStore>,
@@ -114,35 +128,80 @@ pub async fn run_route(
     lag: u64,
 ) {
     store.prepare(&route.name).ok();
-    let mut failures: u32 = 0;
+    let scanning = tokio::spawn(scan_loop(route.clone(), store.clone(), tick, lag));
+    let proving = tokio::spawn(prove_loop(route, store, cpu, tick));
+    // Neither returns. If either ever does, the route is finished either way.
+    let _ = tokio::join!(scanning, proving);
+}
 
+/// Look for work and stage it. Never waits for the prover.
+async fn scan_loop(route: RouteConfig, store: Arc<ProofStore>, tick: Duration, lag: u64) {
+    let mut failures: u32 = 0;
     loop {
-        match advance(&route, &store, &cpu, lag).await {
+        // One batch in flight at a time, because the trusted height only moves one at a time.
+        // While one is staged there is nothing to stage, but the scan still runs: it is what
+        // keeps the attestable head current, which is how the dashboard shows a route as
+        // behind rather than idle.
+        if store.staging(&route.name, "attestation.json").exists()
+            || store.staging(&route.name, "proved.json").exists()
+        {
+            tokio::time::sleep(tick).await;
+            continue;
+        }
+        match attest_once(&route, &store, lag).await {
+            Ok(()) => {
+                failures = 0;
+                store.clear_blocker(&route.name);
+            }
+            Err(e) => {
+                let quiet = is_quiet(&e);
+                if !quiet {
+                    failures = failures.saturating_add(1);
+                    store.record_blocker(&route.name, &e.to_string(), failures);
+                    warn!(
+                        route = %route.name,
+                        error = %e,
+                        consecutive_failures = failures,
+                        retry_in_secs = backoff(tick, failures).as_secs(),
+                        "scan failed"
+                    );
+                } else {
+                    failures = 0;
+                }
+            }
+        }
+        tokio::time::sleep(backoff(tick, failures)).await;
+    }
+}
+
+/// Prove and submit whatever the scanner has staged.
+async fn prove_loop(
+    route: RouteConfig,
+    store: Arc<ProofStore>,
+    cpu: Arc<Semaphore>,
+    tick: Duration,
+) {
+    let mut failures: u32 = 0;
+    loop {
+        match prove_staged(&route, &store, &cpu).await {
             Ok(Some(height)) => {
                 failures = 0;
                 store.clear_blocker(&route.name);
                 info!(route = %route.name, height, "batch delivered");
+                // Straight round again: if the scanner has already staged the next batch
+                // there is no reason to wait a tick to notice.
+                continue;
             }
-            Ok(None) => {
-                failures = 0;
-                store.clear_blocker(&route.name);
-            }
-            // Most failures are transient: the head has not moved, an RPC is down, finality
-            // has not caught up. A few are not, and a batch that can never succeed would
-            // otherwise retry every tick forever. Backing off keeps the log readable and the
-            // gas estimation calls rare, while still reporting every attempt.
+            Ok(None) => failures = 0,
             Err(e) => {
                 failures = failures.saturating_add(1);
-                // Recorded as well as logged. A route that has finished proving and cannot
-                // submit looks identical on the dashboard to one still working, unless the
-                // reason it stopped is carried somewhere the dashboard can read.
                 store.record_blocker(&route.name, &e.to_string(), failures);
                 warn!(
                     route = %route.name,
                     error = %e,
                     consecutive_failures = failures,
                     retry_in_secs = backoff(tick, failures).as_secs(),
-                    "tick failed"
+                    "submit failed"
                 );
             }
         }
@@ -167,22 +226,19 @@ fn backoff(tick: Duration, failures: u32) -> Duration {
 const MAX_BACKOFF_DOUBLINGS: u32 = 8;
 const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
-/// One pass. Returns the height delivered, or `None` when there was nothing to do.
-///
-/// The stages are the same functions the `attest-*`, `prove` and submit subcommands call,
-/// so a route that misbehaves here can be stepped through by hand with identical results.
-async fn advance(
+/// "Nothing dispatched" is the common case and not worth a warning every tick.
+fn is_quiet(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("nothing to attest")
+        || text.contains("has not advanced")
+        || text.contains("has not passed")
+}
+
+async fn attest_once(
     route: &RouteConfig,
     store: &ProofStore,
-    cpu: &Arc<Semaphore>,
     lag: u64,
-) -> Result<Option<u64>> {
-    // A batch left over from a crash is finished first. Attesting past it would strand its
-    // messages permanently - see the module comment.
-    if let Some(height) = finish_staged_batch(route, store)? {
-        return Ok(Some(height));
-    }
-
+) -> Result<()> {
     let trusted = read_ism_state(&route.destination, &route.ism_id)?;
 
     let attestation = store.staging(&route.name, "attestation.json");
@@ -290,12 +346,25 @@ async fn advance(
         }
     };
 
-    // "Nothing dispatched" is the common case and not worth a warning every tick.
-    if let Err(error) = attested {
-        let quiet = error.to_string().contains("nothing to attest")
-            || error.to_string().contains("has not advanced")
-            || error.to_string().contains("has not passed");
-        return if quiet { Ok(None) } else { Err(error) };
+    attested?;
+    Ok(())
+}
+
+/// Prove whatever is staged and submit it. Runs alongside the scan, never in front of it.
+async fn prove_staged(
+    route: &RouteConfig,
+    store: &ProofStore,
+    cpu: &Arc<Semaphore>,
+) -> Result<Option<u64>> {
+    // A batch left over from a crash is finished first. Attesting past it would strand its
+    // messages permanently - see the module comment.
+    if let Some(height) = finish_staged_batch(route, store)? {
+        return Ok(Some(height));
+    }
+
+    let attestation = store.staging(&route.name, "attestation.json");
+    if !attestation.exists() {
+        return Ok(None);
     }
 
     // Hours of CPU are about to be spent on a batch that is no use unless it can be
