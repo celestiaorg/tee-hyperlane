@@ -145,6 +145,50 @@ pub fn any_for_destination(messages: &[Vec<u8>], destination: u32) -> bool {
     })
 }
 
+/// Does this batch carry a message for one of our warp routes on this destination?
+///
+/// Stricter than the domain alone, and the difference matters because an origin's tree is
+/// shared. One Celestia transfer bound for Sepolia used to start all three Celestia routes at
+/// once, and every other bridge's Celestia-bound traffic on Sepolia's canonical mailbox
+/// started ours. Matching the recipient against the routers we actually serve means a route
+/// proves for its own transfers and nobody else's.
+///
+/// With no routers configured this is the domain check, unchanged: a route that has not been
+/// told what belongs to it must not conclude that nothing does.
+///
+/// This narrows only the decision to start. The batch still carries every leaf in its range -
+/// that is what makes the replay reproduce the on-chain root - so a message that does not
+/// trigger a proof is still authorised by the next proof that runs, and the twelve-hour
+/// heartbeat bounds how long that can take. Gating affects latency, never delivery.
+pub fn any_for_route(messages: &[Vec<u8>], destination: u32, routers: &[String]) -> bool {
+    if routers.is_empty() {
+        return any_for_destination(messages, destination);
+    }
+    let ours: Vec<[u8; 32]> = routers.iter().filter_map(|r| parse_recipient(r)).collect();
+    if ours.is_empty() {
+        return any_for_destination(messages, destination);
+    }
+    messages.iter().any(|raw| {
+        hyperlane_types::decode_hyperlane_message(raw)
+            .map(|m| m.destination == destination && ours.contains(&m.recipient))
+            .unwrap_or(false)
+    })
+}
+
+/// A router as a Hyperlane message addresses it: 32 bytes, an EVM address left-padded.
+fn parse_recipient(value: &str) -> Option<[u8; 32]> {
+    let raw = hex::decode(value.trim_start_matches("0x")).ok()?;
+    match raw.len() {
+        32 => raw.as_slice().try_into().ok(),
+        20 => {
+            let mut out = [0u8; 32];
+            out[12..].copy_from_slice(&raw);
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 /// Wrap an EVM tree proof as the enclave's internally-tagged `TreeInput`, whose variant
 /// fields sit alongside `kind`.
 fn evm_tree_input(proof: &tee_node::hyperlane_state::EvmTreeProof) -> Result<serde_json::Value> {
@@ -322,6 +366,7 @@ pub fn enclave_measurements(attestation: &serde_json::Value) -> Result<crate::ap
 
 pub async fn run(config: Config) -> Result<()> {
     let tick = Duration::from_secs(config.tick_secs);
+    let lag = config.celestia_lag;
     let cpu = cpu_prover_permit();
     let store = std::sync::Arc::new(ProofStore::new(expand_home(&config.proof_dir)));
 
@@ -338,6 +383,7 @@ pub async fn run(config: Config) -> Result<()> {
             store.clone(),
             cpu.clone(),
             tick,
+            lag,
         )));
     }
     info!(

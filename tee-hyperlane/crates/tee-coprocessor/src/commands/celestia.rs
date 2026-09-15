@@ -57,6 +57,7 @@ pub async fn attest_celestia(
     enclave_url: &str,
     trusted_state_hex: &str,
     destination_domain: u32,
+    routers: &[String],
     merkle_tree_hook_hex: &str,
     lag: u64,
     out: Option<String>,
@@ -138,10 +139,10 @@ pub async fn attest_celestia(
     // question as "something was sent here". Proving on the former burned two extra proofs
     // per transfer.
     let ours: Vec<Vec<u8>> = inserted.iter().map(|m| m.message.clone()).collect();
-    if !super::any_for_destination(&ours, destination_domain)
+    if !super::any_for_route(&ours, destination_domain, routers)
         && !super::heartbeat_due(out.as_deref())
     {
-        anyhow::bail!("nothing to attest; no messages for domain {destination_domain}");
+        anyhow::bail!("nothing to attest; no messages for our routes on domain {destination_domain}");
     }
 
     anyhow::ensure!(

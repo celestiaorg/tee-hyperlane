@@ -310,6 +310,9 @@ async fn main() -> Result<()> {
                 checkpoint.as_deref(),
                 &trusted_state,
                 destination_domain,
+                // Invoked by hand: the destination asked for is the filter, and there is no
+                // route config here to narrow it against.
+                &[],
                 &merkle_tree_hook,
                 &mailbox,
                 base_slot,
@@ -333,6 +336,9 @@ async fn main() -> Result<()> {
                 &enclave,
                 &trusted_state,
                 destination_domain,
+                // Invoked by hand: the destination asked for is the filter, and there is no
+                // route config here to narrow it against.
+                &[],
                 &merkle_tree_hook,
                 lag,
                 out,
@@ -364,6 +370,8 @@ async fn main() -> Result<()> {
                 &enclave,
                 &trusted_state,
                 destination_domain,
+                // Invoked by hand: the destination asked for is the filter.
+                &[],
                 &anchor,
                 &merkle_tree_hook,
                 &mailbox,

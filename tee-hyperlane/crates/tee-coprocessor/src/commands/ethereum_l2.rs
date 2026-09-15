@@ -175,6 +175,7 @@ pub async fn attest_l2(
     enclave_url: &str,
     trusted_state_hex: &str,
     destination_domain: u32,
+    routers: &[String],
     anchor: &str,
     merkle_tree_hook: &str,
     mailbox: &str,
@@ -262,10 +263,10 @@ pub async fn attest_l2(
     )?;
     anyhow::ensure!(!dispatched.is_empty(), "nothing to attest");
     let ours: Vec<Vec<u8>> = dispatched.iter().map(|d| d.message.clone()).collect();
-    if !super::any_for_destination(&ours, destination_domain)
+    if !super::any_for_route(&ours, destination_domain, routers)
         && !super::heartbeat_due(out.as_deref())
     {
-        anyhow::bail!("nothing to attest; no messages for domain {destination_domain}");
+        anyhow::bail!("nothing to attest; no messages for our routes on domain {destination_domain}");
     }
 
     let mut tree_address = [0u8; 32];

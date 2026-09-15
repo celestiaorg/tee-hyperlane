@@ -111,12 +111,13 @@ pub async fn run_route(
     store: Arc<ProofStore>,
     cpu: Arc<Semaphore>,
     tick: Duration,
+    lag: u64,
 ) {
     store.prepare(&route.name).ok();
     let mut failures: u32 = 0;
 
     loop {
-        match advance(&route, &store, &cpu).await {
+        match advance(&route, &store, &cpu, lag).await {
             Ok(Some(height)) => {
                 failures = 0;
                 store.clear_blocker(&route.name);
@@ -174,6 +175,7 @@ async fn advance(
     route: &RouteConfig,
     store: &ProofStore,
     cpu: &Arc<Semaphore>,
+    lag: u64,
 ) -> Result<Option<u64>> {
     // A batch left over from a crash is finished first. Attesting past it would strand its
     // messages permanently - see the module comment.
@@ -197,8 +199,9 @@ async fn advance(
                 &route.tee_node_url,
                 &trusted,
                 route.destination.domain(),
+                &route.routers,
                 merkle_tree_hook_id,
-                DEFAULT_LAG,
+                lag,
                 Some(path_string(&attestation)),
             )
             .await
@@ -230,6 +233,7 @@ async fn advance(
                 route.checkpoint.as_deref(),
                 &trusted,
                 route.destination.domain(),
+                &route.routers,
                 merkle_tree_hook,
                 mailbox,
                 merkle_tree_base_slot,
@@ -274,6 +278,7 @@ async fn advance(
                 &route.tee_node_url,
                 &trusted,
                 route.destination.domain(),
+                &route.routers,
                 l1_anchor_contract,
                 merkle_tree_hook,
                 mailbox,
@@ -347,8 +352,6 @@ fn finish_staged_batch(route: &RouteConfig, store: &ProofStore) -> Result<Option
     submit_and_file(route, store, &proved).map(Some)
 }
 
-/// How far behind a Celestia head to attest. The app hash for height H lives in H+1.
-const DEFAULT_LAG: u64 = 8;
 
 fn elf_dir() -> String {
     std::env::var("TEE_HYPERLANE_ELF_DIR").unwrap_or_else(|_| "../tee-circuit/elf".to_string())
