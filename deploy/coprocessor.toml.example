@@ -2,7 +2,7 @@
 # Polling interval. Was 120 when a scan meant reading every transaction on the origin in the
 # range; since the scan became a single indexed query it costs one request per route, so the
 # interval is now set by how fast a message should be noticed rather than by what a scan costs.
-tick_secs = 10
+tick_secs = 6
 
 # How far behind a Celestia head to attest. One is the floor - the app hash for H lives in the
 # header at H+1 - so this is a single block of margin against an RPC reporting a head it cannot
