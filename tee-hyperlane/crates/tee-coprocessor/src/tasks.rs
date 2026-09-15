@@ -53,6 +53,14 @@ impl ProofStore {
 
     pub fn prepare(&self, route: &str) -> Result<()> {
         std::fs::create_dir_all(self.root.join(route).join("staging"))?;
+        // A proving marker found at startup is always stale.
+        //
+        // The marker is removed when its guard drops, and a guard does not drop when the
+        // process is killed - so every restart used to leave one behind, and the dashboard
+        // then reported that route as proving for as long as the file sat there. Which is the
+        // misreport the marker was added to fix, arriving by another door. On boot this
+        // process holds no permit by definition, so anything here belongs to a dead one.
+        std::fs::remove_file(self.root.join(route).join("proving")).ok();
         Ok(())
     }
 
