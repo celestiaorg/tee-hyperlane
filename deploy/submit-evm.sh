@@ -20,15 +20,37 @@
 # one way a message can be lost, because the trusted height has already moved past it.
 set -euo pipefail
 
-PROVED=${1:?usage: submit-evm.sh <proved.json>}
+PROVED=${1:?usage: submit-evm.sh <proved.json> | --preflight}
 ISM=${TEE_ISM:?set TEE_ISM}
 MAILBOX=${MAILBOX:?set MAILBOX}
 RPC=${EVM_RPC:?set EVM_RPC}
+PK=0x$(tr -d ' \n\r' < "$(dirname "$0")/../keys/SEPOLIA_PRIVATE_KEY.md")
+
+# Can this relayer pay to submit at all?
+#
+# Asked before proving rather than after, because proving is hours of CPU and submission is
+# what follows it: an empty signer otherwise costs those hours and then fails, every tick.
+#
+# Fails open, never closed. This exists to stop wasted proving, so it may only block a route
+# when it positively knows the balance is zero. Being unable to find out - no cast, an
+# unreachable RPC - is not evidence of an empty account, and treating it as such would take
+# down every route the moment the check itself broke.
+if [ "$PROVED" = "--preflight" ]; then
+  ADDR=$(cast wallet address --private-key "$PK" 2>/dev/null) || exit 0
+  BAL=$(cast balance "$ADDR" --rpc-url "$RPC" 2>/dev/null) || exit 0
+  [ -z "$BAL" ] && exit 0
+  if [ "$BAL" = "0" ]; then
+    echo "the relayer cannot pay gas on this chain: $ADDR holds 0 wei; fund that address" >&2
+    exit 1
+  fi
+  echo "  gas balance ${BAL} wei"
+  exit 0
+fi
+
 # Asked of the mailbox when not supplied, so this script is correct on its own rather than
 # only when its caller remembers to pass it.
 # `cast` prints "11155111 [1.115e7]", so keep only the number.
 LOCAL_DOMAIN=${LOCAL_DOMAIN:-$(cast call "$MAILBOX" "localDomain()(uint32)" --rpc-url "$RPC" | awk '{print $1}')}
-PK=0x$(tr -d ' \n\r' < "$(dirname "$0")/../keys/SEPOLIA_PRIVATE_KEY.md")
 
 jqv() { python3 -c "import sys,json;print(json.load(open('$PROVED'))$1)"; }
 
