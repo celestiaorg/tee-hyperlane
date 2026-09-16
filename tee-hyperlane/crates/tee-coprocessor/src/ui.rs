@@ -47,7 +47,10 @@ pub async fn serve(
 ) -> Result<()> {
     let index = dir.join("index.html");
     let upstreams = Upstreams {
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("http client"),
         api: api.trim_end_matches('/').to_string(),
         celestia_rest: celestia_rest.trim_end_matches('/').to_string(),
         celestia_rpc: celestia_rpc.trim_end_matches('/').to_string(),
