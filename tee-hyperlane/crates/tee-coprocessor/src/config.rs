@@ -29,6 +29,10 @@ fn default_l2_base_slot() -> u64 {
     151
 }
 
+fn default_ism_module() -> String {
+    "zkism".to_string()
+}
+
 fn default_celestia_lag() -> u64 {
     2
 }
@@ -70,6 +74,13 @@ pub struct RouteConfig {
     /// and looser behaviour - wasteful, never unsafe.
     #[serde(default)]
     pub routers: Vec<String>,
+    /// Skip proving and submit the enclave's quote as it stands.
+    ///
+    /// A TEE ISM verifies the attestation itself, so wrapping it in a Groth16 proof would
+    /// only re-prove what the destination is about to check anyway. The scanner, the
+    /// finality gate and the trigger are unchanged: all that is removed is the proof.
+    #[serde(default)]
+    pub attest_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +118,13 @@ pub enum ChainConfig {
         grpc: String,
         mailbox_id: String,
         merkle_tree_hook_id: String,
+        /// Which ISM module on the destination holds this route's ISM.
+        ///
+        /// `zkism` verifies a pair of Groth16 proofs; `teeism` verifies the enclave's quote
+        /// directly and needs only one transaction, because there is only ever one quote and
+        /// the second proof existed solely to project it through a second public-value shape.
+        #[serde(default = "default_ism_module")]
+        ism_module: String,
     },
     /// Rides on an Ethereum light client rather than its own.
     EthereumL2 {

@@ -40,6 +40,12 @@ enum Command {
         /// Write the result rather than printing it.
         #[arg(long)]
         write: bool,
+        /// Also write the measurements as JSON, for `celestia-appd tx teeism create`.
+        ///
+        /// A TEE ISM pins the same measurements the circuits do, but it pins them in chain
+        /// state rather than in an ELF, so it needs them in a form a transaction can carry.
+        #[arg(long)]
+        json: Option<PathBuf>,
     },
     /// Measure cycle counts, and optionally produce a real Groth16 proof on CPU.
     Bench {
@@ -69,7 +75,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Build => build_programs(&DEPLOYED),
         Command::Vkeys => vkeys(),
-        Command::Identity { url, write } => identity(&url, write),
+        Command::Identity { url, write, json } => identity(&url, write, json.as_deref()),
         Command::Bench { prove } => bench(prove),
     }
 }
@@ -215,7 +221,7 @@ fn sample_dir() -> Result<PathBuf> {
 /// identity, but the identity only exists once an enclave is running. Everything pinned here
 /// comes from a signed quote or from an event log the quote's RTMRs commit to, so a wrong
 /// answer from the enclave is not silently usable - it just fails to verify later.
-fn identity(url: &str, write: bool) -> Result<()> {
+fn identity(url: &str, write: bool, json: Option<&std::path::Path>) -> Result<()> {
     let body: serde_json::Value = ureq_get(&format!("{}/identity", url.trim_end_matches('/')))?;
     let quote_hex = body["quote"].as_str().context("no quote in response")?;
     let quote_bytes = hex::decode(quote_hex.trim_start_matches("0x"))?;
@@ -263,6 +269,18 @@ fn identity(url: &str, write: bool) -> Result<()> {
         kms = read("mr-kms")?,
         kp = read("key-provider")?,
     );
+
+    if let Some(path) = json {
+        let spec = serde_json::json!({
+            "mr_td": hex::encode(td.mr_td),
+            "os_image_hash": read("os-image-hash")?,
+            "compose_hash": read("compose-hash")?,
+            "mr_kms": read("mr-kms")?,
+            "key_provider": read("key-provider")?,
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&spec)?)?;
+        println!("wrote {}", path.display());
+    }
 
     if write {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

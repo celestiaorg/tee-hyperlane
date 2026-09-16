@@ -10,6 +10,20 @@
 const sameOrigin = (path: string): string =>
   typeof window === "undefined" ? path : `${window.location.origin}${path}`;
 
+/// A deployment value that the local devnet overrides.
+///
+/// `make start` writes these into .env.local from what `make init` actually deployed, so the
+/// devnet points at a chain whose ids are minted at genesis and cannot be known in advance.
+/// Unset, every one of them falls back to the live testnet value below.
+const env = (key: string, fallback: string): string =>
+  (import.meta.env[key] as string | undefined) ?? fallback;
+
+const envNum = (key: string, fallback: number): number => {
+  const raw = import.meta.env[key] as string | undefined;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 export type ChainId = "sepolia" | "arbitrum" | "base" | "celestia";
 export type TokenId = "TIA" | "USDC";
 
@@ -81,9 +95,9 @@ export const CHAINS: Record<ChainId, Chain> = {
   celestia: {
     kind: "cosmos",
     id: "celestia",
-    name: "Celestia Mocha",
-    domain: 1297040200,
-    chainId: "mocha-5",
+    name: env("VITE_CELESTIA_NAME", "Celestia Mocha"),
+    domain: envNum("VITE_CELESTIA_DOMAIN", 1297040200),
+    chainId: env("VITE_CELESTIA_CHAIN_ID", "mocha-5"),
     // Same-origin by default, both of them, and for the same reason in two flavours.
     //
     // Mocha's public REST sends no CORS header at all. Its RPC is worse: it answers the
@@ -93,21 +107,36 @@ export const CHAINS: Record<ChainId, Chain> = {
     // the console pointing at the cause. Both are proxied by the server that serves this app.
     rpc: import.meta.env.VITE_CELESTIA_RPC ?? sameOrigin("/celestia-rpc"),
     rest: import.meta.env.VITE_CELESTIA_REST ?? "/celestia",
-    explorer: "https://mocha.celenium.io",
+    explorer: env("VITE_CELESTIA_EXPLORER", "https://mocha.celenium.io"),
     bech32Prefix: "celestia",
     denom: "utia",
-    mailboxId: "0x68797065726c616e650000000000000000000000000000000000000000000000",
+    mailboxId: env(
+      "VITE_CELESTIA_MAILBOX_ID",
+      "0x68797065726c616e650000000000000000000000000000000000000000000000",
+    ),
     /// The paymaster a Celestia-origin transfer pays, quoted live before sending.
-    igpId: "0x726f757465725f706f73745f6469737061746368000000040000000000000002",
-    ismId: "0x726f757465725f69736d0000000000000000000000000001000000000000000c",
+    ///
+    /// The devnet has no paymaster: its mailbox has no required hook, so dispatch is free and
+    /// there is nothing to quote.
+    igpId: env(
+      "VITE_CELESTIA_IGP_ID",
+      "0x726f757465725f706f73745f6469737061746368000000040000000000000002",
+    ),
+    ismId: env(
+      "VITE_CELESTIA_ISM_ID",
+      "0x726f757465725f69736d0000000000000000000000000001000000000000000c",
+    ),
   },
 };
 
 /** A warp router, per chain, per token. `null` where the route is not deployed yet. */
 export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
   TIA: {
-    celestia: "0x726f757465725f61707000000000000000000000000000010000000000000000",
-    sepolia: "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE",
+    celestia: env(
+      "VITE_CELESTIA_TIA_ROUTER",
+      "0x726f757465725f61707000000000000000000000000000010000000000000000",
+    ),
+    sepolia: env("VITE_SEPOLIA_TIA_ROUTER", "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE"),
     arbitrum: "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE",
     base: "0xf4197C55C944987E9b10e09C0A47915211769B78",
   },
@@ -136,7 +165,7 @@ export const CELESTIA_DENOM: Record<TokenId, string> = {
 /// Measured on the machine actually running this, not estimated: 2857s and 2592s for the two
 /// proofs of one batch. Routes share a single prover, so a transfer can also queue behind
 /// another route's batch, which is why this is not simply the sum.
-export const PROVING_SECONDS = 100 * 60;
+export const PROVING_SECONDS = envNum("VITE_PROVING_SECONDS", 100 * 60);
 
 /// How long each origin takes to reach the finality the enclave will attest, and why.
 ///

@@ -65,7 +65,10 @@ impl Destination {
     }
 
     fn script_command(&self) -> (&'static str, Command) {
-        let script = match self.chain {
+        let script = match &self.chain {
+            ChainConfig::Celestia { ism_module, .. } if ism_module == "teeism" => {
+                "submit-celestia-teeism.sh"
+            }
             ChainConfig::Celestia { .. } => "submit-celestia.sh",
             _ => "submit-evm.sh",
         };
@@ -104,12 +107,14 @@ impl Destination {
                 rpc,
                 mailbox_id,
                 domain,
+                ism_module,
                 ..
             } => {
                 command
                     .env("CELESTIA_RPC", rpc)
                     .env("CELESTIA_MAILBOX", mailbox_id)
-                    .env("CELESTIA_DOMAIN", domain.to_string());
+                    .env("CELESTIA_DOMAIN", domain.to_string())
+                    .env("CELESTIA_ISM_MODULE", ism_module);
             }
         }
 
@@ -129,10 +134,14 @@ fn deploy_dir() -> std::path::PathBuf {
 /// makes restarting the same as continuing.
 pub fn read_ism_state(chain: &ChainConfig, ism: &str) -> Result<String> {
     let output = match chain {
-        ChainConfig::Celestia { rpc, .. } => Command::new(celestia_appd())
-            .args(["query", "zkism", "ism", ism, "--node", rpc, "-o", "json"])
+        ChainConfig::Celestia {
+            rpc, ism_module, ..
+        } => Command::new(celestia_appd())
+            .args([
+                "query", ism_module, "ism", ism, "--node", rpc, "-o", "json",
+            ])
             .output()
-            .context("celestia-appd query zkism ism")?,
+            .with_context(|| format!("celestia-appd query {ism_module} ism"))?,
         ChainConfig::Ethereum { execution_rpc, .. }
         | ChainConfig::EthereumL2 {
             l2_rpc: execution_rpc,

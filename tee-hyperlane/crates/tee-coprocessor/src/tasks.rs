@@ -379,20 +379,28 @@ async fn prove_staged(
     // submitted, so establish that it can before spending them rather than after.
     Destination::new(route.destination.clone(), route.ism_id.clone()).preflight()?;
 
-    // Proving is minutes of CPU, so routes take turns rather than competing for cores.
-    info!(route = %route.name, "waiting for the prover");
-    let _permit = cpu.acquire().await?;
-    // Only one route holds this at a time, so the marker is what lets the dashboard say
-    // "proving" about the one that is, and "queued" about the ones that merely want to be.
-    let _proving = store.mark_proving(&route.name);
     let proved = store.staging(&route.name, "proved.json");
-    commands::prove_for_route(
-        &route.name,
-        &path_string(&attestation),
-        &elf_dir(),
-        &path_string(&proved),
-    )
-    .await?;
+
+    if route.attest_only {
+        // A TEE ISM verifies the quote itself, so there is nothing to prove and no reason to
+        // queue for a core. The staged attestation is already what the destination reads.
+        std::fs::rename(&attestation, &proved)?;
+    } else {
+        // Proving is minutes of CPU, so routes take turns rather than competing for cores.
+        info!(route = %route.name, "waiting for the prover");
+        let _permit = cpu.acquire().await?;
+        // Only one route holds this at a time, so the marker is what lets the dashboard say
+        // "proving" about the one that is, and "queued" about the ones that merely want to
+        // be.
+        let _proving = store.mark_proving(&route.name);
+        commands::prove_for_route(
+            &route.name,
+            &path_string(&attestation),
+            &elf_dir(),
+            &path_string(&proved),
+        )
+        .await?;
+    }
 
     let height = submit_and_file(route, store, &proved)?;
     Ok(Some(height))

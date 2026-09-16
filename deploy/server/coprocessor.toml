@@ -101,7 +101,7 @@ merkle_tree_address = "0x000000000000000000000000ad34a66bf6db18e858f6b6865570755
 [routes.origin]
 kind = "ethereum_l2"
 domain = 421614
-l2_rpc = "https://arb-sepolia.g.alchemy.com/v2/D1CbidVntzlEbD4x7iyHnZZaPWzvDe9I"
+l2_rpc = "https://arb-sepolia.g.alchemy.com/v2/ALCHEMY_KEY"
 rollup = "arbitrum"
 l1_anchor_contract = "0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4"
 mailbox = "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8"
@@ -135,7 +135,7 @@ merkle_tree_address = "0x00000000000000000000000086fb9f1c124fb20ff130c41a79a432f
 kind = "ethereum_l2"
 domain = 84532
 rollup = "base"
-l2_rpc = "https://base-sepolia.g.alchemy.com/v2/D1CbidVntzlEbD4x7iyHnZZaPWzvDe9I"
+l2_rpc = "https://base-sepolia.g.alchemy.com/v2/ALCHEMY_KEY"
 l1_anchor_contract = "0x2fF5cC82dBf333Ea30D8ee462178ab1707315355"
 mailbox = "0x6966b0E55883d49BFB24539356a2f8A673E02039"
 merkle_tree_hook = "0x86fb9F1c124fB20ff130C41a79a432F770f67AFD"
