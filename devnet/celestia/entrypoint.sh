@@ -79,6 +79,14 @@ if [ ! -f "${HOME_DIR}/config/genesis.json" ]; then
   sed -i 's#^enabled-unsafe-cors = false#enabled-unsafe-cors = true#' "${APP}"
   sed -i 's#^minimum-gas-prices = .*#minimum-gas-prices = "0.002utia"#' "${APP}"
 
+  # Never prune. An ISM advances only when a batch is delivered, so a quiet route's trusted
+  # height can fall arbitrarily far behind the head. The light client proves forward from
+  # that height, and the commit at it has to still exist: once it is pruned the route cannot
+  # advance again and the ISM has to be redeployed. The default retains 3000 blocks, which at
+  # one second each is fifty minutes of tolerance.
+  sed -i 's#^pruning = .*#pruning = "nothing"#' "${APP}"
+  sed -i 's#^min-retain-blocks = .*#min-retain-blocks = 0#' "${APP}"
+
   echo "==> genesis ready"
 fi
 
