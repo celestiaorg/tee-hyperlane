@@ -22,11 +22,13 @@ ensure_image() {
 
 ensure_image
 ensure_binaries
+ensure_mnemonic
 
 mkdir -p "${STATE_DIR}/celestia"
 
 say "starting ${CELESTIA_CONTAINER}"
 STATE_DIR="${STATE_DIR}" CELESTIA_IMAGE="${CELESTIA_IMAGE}" CHAINID="${CHAINID}" \
+  DEVNET_MNEMONIC="${DEVNET_MNEMONIC}" \
   docker compose -f "${DEVNET_DIR}/celestia/docker-compose.yml" up -d
 
 wait_for_chain

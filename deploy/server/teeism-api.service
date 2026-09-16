@@ -1,0 +1,19 @@
+[Unit]
+Description=TEE ISM attestation API (serves the bridge UI)
+After=network-online.target teeism-relayer.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chef
+WorkingDirectory=/home/chef/tee-ism-nonzk
+Environment=HOME=/home/chef
+Environment=RUST_LOG=info
+ExecStart=/home/chef/tee-ism-nonzk/tee-hyperlane/target/release/tee-hyperlane \
+  --config /home/chef/tee-ism-nonzk/devnet/.state/coprocessor.toml \
+  serve --listen 127.0.0.1:3001 --proof-dir /home/chef/tee-ism-nonzk/devnet/.state/proofs
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

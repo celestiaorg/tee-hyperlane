@@ -377,7 +377,7 @@ async fn prove_staged(
 
     // Hours of CPU are about to be spent on a batch that is no use unless it can be
     // submitted, so establish that it can before spending them rather than after.
-    Destination::new(route.destination.clone(), route.ism_id.clone()).preflight()?;
+    Destination::new(route.destination.clone(), route.ism_id.clone(), route.attest_only).preflight()?;
 
     let proved = store.staging(&route.name, "proved.json");
 
@@ -414,7 +414,7 @@ async fn prove_staged(
 /// still in flight.
 fn submit_and_file(route: &RouteConfig, store: &ProofStore, proved: &Path) -> Result<u64> {
     info!(route = %route.name, destination = route.destination.domain(), "submitting");
-    Destination::new(route.destination.clone(), route.ism_id.clone()).submit(proved)?;
+    Destination::new(route.destination.clone(), route.ism_id.clone(), route.attest_only).submit(proved)?;
 
     let height = std::fs::read(proved)
         .ok()

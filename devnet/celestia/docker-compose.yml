@@ -3,9 +3,15 @@ services:
     image: ${CELESTIA_IMAGE:-celestia-app-teeism:local}
     container_name: teeism-celestia
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    # The home directory is a bind mount, so the container has to write as whoever owns it
+    # on the host. Docker Desktop maps this silently; a Linux host does not, and the chain
+    # dies with "permission denied" creating its data directory. Defaults to the image's own
+    # user, which is what macOS wants.
+    user: "${CELESTIA_UID:-10001:10001}"
     environment:
       CHAINID: ${CHAINID:-teeism-local}
       BLOCK_TIME: ${BLOCK_TIME:-1s}
+      DEVNET_MNEMONIC: ${DEVNET_MNEMONIC:-}
     volumes:
       - ./entrypoint.sh:/entrypoint.sh:ro
       - ${STATE_DIR:-../.state}/celestia:/home/celestia/.celestia-app
@@ -14,3 +20,5 @@ services:
       - "1317:1317"     # cosmos rest
       - "9090:9090"     # grpc
     stop_grace_period: 10s
+    # ark runs this chain continuously, so it must come back after a reboot or a crash.
+    restart: unless-stopped

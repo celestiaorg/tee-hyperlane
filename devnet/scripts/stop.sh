@@ -33,7 +33,7 @@ say "pruning state"
 # the binaries too; the key is always kept, since it is the user's to delete.
 tmp="$(mktemp -d)"
 [ "${KEEP_BIN}" = "1" ] && [ -d "${BIN_DIR}" ] && mv "${BIN_DIR}" "${tmp}/bin"
-for keep in alchemy-key evm-key; do
+for keep in alchemy-key evm-key mnemonic; do
   [ -f "${STATE_DIR}/${keep}" ] && mv "${STATE_DIR}/${keep}" "${tmp}/${keep}"
 done
 mkdir -p "${tmp}/pccs"
@@ -41,7 +41,7 @@ for f in "${OUT_DIR}"/pccs-*.json; do [ -f "$f" ] && cp "$f" "${tmp}/pccs/"; don
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 [ -d "${tmp}/bin" ] && mv "${tmp}/bin" "${BIN_DIR}"
-for keep in alchemy-key evm-key; do
+for keep in alchemy-key evm-key mnemonic; do
   [ -f "${tmp}/${keep}" ] && mv "${tmp}/${keep}" "${STATE_DIR}/${keep}"
 done
 mkdir -p "${OUT_DIR}"

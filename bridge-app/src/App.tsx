@@ -411,8 +411,9 @@ export default function App() {
             </button>
 
             <p className="note">
-              Signed in {walletFor(source)}. Arrival waits for {source.name} to finalise, then
-              for two proofs on CPU, about {describeDuration(expectedSeconds(from))}.
+              Signed in {walletFor(source)}. Arrival waits for {source.name} to finalise, then the
+              enclave attests it and the destination verifies the quote. About{" "}
+              {describeDuration(expectedSeconds(from))}.
             </p>
           </section>
 
@@ -643,7 +644,7 @@ function ConfirmedDialog({
           <span />
         </div>
         <p className="note confirm-note">
-          The enclave attests it, then two proofs run on CPU. About {confirmation.wait}.
+          The enclave attests it, then the destination verifies the quote. About {confirmation.wait}.
         </p>
 
         <button className="primary" onClick={onClose}>
@@ -654,7 +655,7 @@ function ConfirmedDialog({
   );
 }
 
-const STORAGE_KEY = "tee-bridge-transfers";
+const STORAGE_KEY = `tee-bridge-transfers:${(CHAINS.celestia as CosmosChain).chainId}`;
 
 function loadTransfers(): Transfer[] {
   try {

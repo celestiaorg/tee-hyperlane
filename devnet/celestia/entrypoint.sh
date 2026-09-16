@@ -18,6 +18,17 @@ BLOCK_TIME="${BLOCK_TIME:-1s}"
 appd() { celestia-appd "$@" --home "${HOME_DIR}"; }
 keyadd() { appd keys add "$1" --keyring-backend test --output json; }
 
+# Derive a key from DEVNET_MNEMONIC at a given account index rather than minting a
+# random one. Without this every genesis funds three brand new addresses, so a wallet
+# that held devnet funds yesterday holds nothing today and has to be re-imported.
+#
+# The user is account 0 because that is the one Keplr selects when a mnemonic is
+# imported, so importing the phrase lands straight on the funded address.
+keyrecover() {
+  printf '%s\n' "${DEVNET_MNEMONIC}" \
+    | appd keys add "$1" --recover --account "$2" --keyring-backend test --output json
+}
+
 if [ ! -f "${HOME_DIR}/config/genesis.json" ]; then
   echo "==> initialising ${CHAINID}"
   appd init "${CHAINID}" --chain-id "${CHAINID}"
@@ -25,9 +36,17 @@ if [ ! -f "${HOME_DIR}/config/genesis.json" ]; then
   # Written to the mounted home so the host can read them back without shelling
   # into the container.
   mkdir -p "${HOME_DIR}/devnet"
-  keyadd validator > "${HOME_DIR}/devnet/validator.json"
-  keyadd relayer   > "${HOME_DIR}/devnet/relayer.json"
-  keyadd user      > "${HOME_DIR}/devnet/user.json"
+  if [ -n "${DEVNET_MNEMONIC:-}" ]; then
+    echo "==> recovering genesis keys from the supplied mnemonic"
+    keyrecover user      0 > "${HOME_DIR}/devnet/user.json"
+    keyrecover relayer   1 > "${HOME_DIR}/devnet/relayer.json"
+    keyrecover validator 2 > "${HOME_DIR}/devnet/validator.json"
+  else
+    echo "==> no DEVNET_MNEMONIC, minting throwaway genesis keys"
+    keyadd validator > "${HOME_DIR}/devnet/validator.json"
+    keyadd relayer   > "${HOME_DIR}/devnet/relayer.json"
+    keyadd user      > "${HOME_DIR}/devnet/user.json"
+  fi
 
   addr() { appd keys show "$1" -a --keyring-backend test; }
   appd genesis add-genesis-account "$(addr validator)" "${VALIDATOR_COINS}"

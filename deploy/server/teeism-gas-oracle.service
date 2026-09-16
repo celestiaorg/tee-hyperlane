@@ -1,0 +1,22 @@
+[Unit]
+Description=Hyperlane gas oracle (keeps IGP and StorageGasOracle quotes current)
+After=network-online.target teeism-relayer.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chef
+WorkingDirectory=/home/chef/tee-ism-nonzk
+Environment=HOME=/home/chef
+# celestia-appd signs the Celestia side and cast signs the EVM side, so both must be on PATH.
+Environment=PATH=/home/chef/tee-ism-nonzk/devnet/.state/bin:/home/chef/.foundry/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CELHOME=/home/chef/tee-ism-nonzk/devnet/.state/celestia
+Environment=RUST_LOG=info
+ExecStart=/home/chef/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle \
+  --config /home/chef/tee-ism-nonzk/devnet/.state/gas-oracle.toml \
+  --listen 127.0.0.1:3002
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

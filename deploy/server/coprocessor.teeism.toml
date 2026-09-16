@@ -1,0 +1,177 @@
+# The ark deployment: six routes, two enclaves, no proving anywhere.
+#
+# attest_only is what makes this the non-ZK stack. The enclave's quote travels to the
+# destination as-is and the destination verifies it, so nothing sits between attesting and
+# submitting. The ZK deployment this replaced needed two SP1 Groth16 proofs per batch here.
+tick_secs = 6
+celestia_lag = 2
+proof_dir = "/home/chef/tee-ism-nonzk/devnet/.state/proofs"
+
+[[routes]]
+name = "celestia-to-sepolia"
+tee_node_url = "https://e2bd52eb17e3ca77c99f572e307b3ecb9e2e667a-8080.dstack-pha-prod9.phala.network"
+ism_id = "0xa3F11DD21ed9cf1dEe688c68F1393E6810B379ce"
+merkle_tree_address = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+attest_only = true
+routers = ["0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE"]
+
+[routes.origin]
+kind = "celestia"
+domain = 1297040299
+rpc = "http://localhost:26657"
+grpc = "http://localhost:9090"
+mailbox_id = "0x68797065726c616e650000000000000000000000000000000000000000000000"
+merkle_tree_hook_id = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+
+[routes.destination]
+kind = "ethereum"
+domain = 11155111
+execution_rpc = "https://eth-sepolia.g.alchemy.com/v2/ALCHEMY_KEY"
+mailbox = "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+
+[[routes]]
+name = "celestia-to-arbitrum"
+tee_node_url = "https://e2bd52eb17e3ca77c99f572e307b3ecb9e2e667a-8080.dstack-pha-prod9.phala.network"
+ism_id = "0xA3754E3358EF03D62A59da08B501cFb70357F4A2"
+merkle_tree_address = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+attest_only = true
+routers = ["0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE"]
+
+[routes.origin]
+kind = "celestia"
+domain = 1297040299
+rpc = "http://localhost:26657"
+grpc = "http://localhost:9090"
+mailbox_id = "0x68797065726c616e650000000000000000000000000000000000000000000000"
+merkle_tree_hook_id = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+
+[routes.destination]
+kind = "ethereum"
+domain = 421614
+execution_rpc = "https://arb-sepolia.g.alchemy.com/v2/ALCHEMY_KEY"
+mailbox = "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8"
+
+[[routes]]
+name = "celestia-to-base"
+tee_node_url = "https://e2bd52eb17e3ca77c99f572e307b3ecb9e2e667a-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x218D41065A4599426c8dD8a3eb33d1b29F23A488"
+merkle_tree_address = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+attest_only = true
+routers = ["0xf4197C55C944987E9b10e09C0A47915211769B78"]
+
+[routes.origin]
+kind = "celestia"
+domain = 1297040299
+rpc = "http://localhost:26657"
+grpc = "http://localhost:9090"
+mailbox_id = "0x68797065726c616e650000000000000000000000000000000000000000000000"
+merkle_tree_hook_id = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+
+[routes.destination]
+kind = "ethereum"
+domain = 84532
+execution_rpc = "https://base-sepolia.g.alchemy.com/v2/ALCHEMY_KEY"
+mailbox = "0x6966b0E55883d49BFB24539356a2f8A673E02039"
+
+[[routes]]
+name = "sepolia-to-celestia"
+tee_node_url = "https://14d61a110ffad00678229e4ee8f6981a1a7244b8-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x726f757465725f69736d000000000000000000000000002b0000000000000001"
+merkle_tree_address = "0x0000000000000000000000004917a9746a7b6e0a57159ccb7f5a6744247f2d0d"
+attest_only = true
+routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000"]
+
+[routes.origin]
+kind = "ethereum"
+# Both point at the archive. The attested block is Ethereum's finalized head, around seventy
+# behind the chain head, and free endpoints serve eth_getProof for the head block alone.
+execution_rpc = "https://rpc.sepolia.ethpandaops.io"
+archive_rpc = "https://eth-sepolia.g.alchemy.com/v2/ALCHEMY_KEY"
+beacon_rpc = "https://ethereum-sepolia-beacon-api.publicnode.com"
+domain = 11155111
+mailbox = "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+merkle_tree_hook = "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d"
+merkle_tree_base_slot = 103
+
+[routes.destination]
+kind = "celestia"
+domain = 1297040299
+rpc = "http://localhost:26657"
+grpc = "http://localhost:9090"
+mailbox_id = "0x68797065726c616e650000000000000000000000000000000000000000000000"
+merkle_tree_hook_id = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+ism_module = "teeism"
+
+[[routes]]
+name = "arbitrum-to-celestia"
+tee_node_url = "https://14d61a110ffad00678229e4ee8f6981a1a7244b8-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x726f757465725f69736d000000000000000000000000002b0000000000000002"
+merkle_tree_address = "0x000000000000000000000000ad34a66bf6db18e858f6b686557075568c6e031c"
+attest_only = true
+routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000"]
+
+[routes.origin]
+kind = "ethereum_l2"
+domain = 421614
+rollup = "arbitrum"
+l2_rpc = "https://arb-sepolia.g.alchemy.com/v2/ALCHEMY_KEY"
+# Alchemy's free tier caps eth_getLogs at ten blocks and a confirmed L2 head moves thousands
+# at a time; this one serves the whole span. Both are untrusted.
+logs_rpc = "https://arbitrum-sepolia-rpc.publicnode.com"
+l1_anchor_contract = "0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4"
+mailbox = "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8"
+merkle_tree_hook = "0xAD34A66Bf6dB18E858F6B686557075568c6E031C"
+merkle_tree_base_slot = 151
+
+[routes.origin.l1]
+kind = "ethereum"
+domain = 11155111
+execution_rpc = "https://rpc.sepolia.ethpandaops.io"
+beacon_rpc = "https://ethereum-sepolia-beacon-api.publicnode.com"
+mailbox = "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+
+[routes.destination]
+kind = "celestia"
+domain = 1297040299
+rpc = "http://localhost:26657"
+grpc = "http://localhost:9090"
+mailbox_id = "0x68797065726c616e650000000000000000000000000000000000000000000000"
+merkle_tree_hook_id = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+ism_module = "teeism"
+
+[[routes]]
+name = "base-to-celestia"
+tee_node_url = "https://14d61a110ffad00678229e4ee8f6981a1a7244b8-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x726f757465725f69736d000000000000000000000000002b0000000000000003"
+merkle_tree_address = "0x00000000000000000000000086fb9f1c124fb20ff130c41a79a432f770f67afd"
+attest_only = true
+routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000"]
+
+[routes.origin]
+kind = "ethereum_l2"
+domain = 84532
+rollup = "base"
+l2_rpc = "https://base-sepolia.g.alchemy.com/v2/ALCHEMY_KEY"
+# Alchemy's free tier caps eth_getLogs at ten blocks and a confirmed L2 head moves thousands
+# at a time; this one serves the whole span. Both are untrusted.
+logs_rpc = "https://sepolia.base.org"
+l1_anchor_contract = "0x2fF5cC82dBf333Ea30D8ee462178ab1707315355"
+mailbox = "0x6966b0E55883d49BFB24539356a2f8A673E02039"
+merkle_tree_hook = "0x86fb9F1c124fB20ff130C41a79a432F770f67AFD"
+merkle_tree_base_slot = 151
+
+[routes.origin.l1]
+kind = "ethereum"
+domain = 11155111
+execution_rpc = "https://rpc.sepolia.ethpandaops.io"
+beacon_rpc = "https://ethereum-sepolia-beacon-api.publicnode.com"
+mailbox = "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+
+[routes.destination]
+kind = "celestia"
+domain = 1297040299
+rpc = "http://localhost:26657"
+grpc = "http://localhost:9090"
+mailbox_id = "0x68797065726c616e650000000000000000000000000000000000000000000000"
+merkle_tree_hook_id = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
+ism_module = "teeism"

@@ -18,11 +18,14 @@ use crate::config::ChainConfig;
 pub struct Destination {
     chain: ChainConfig,
     ism: String,
+    /// The destination verifies the enclave's quote itself, so no proof is involved and the
+    /// direct submit script is the right one.
+    direct: bool,
 }
 
 impl Destination {
-    pub fn new(chain: ChainConfig, ism: String) -> Self {
-        Self { chain, ism }
+    pub fn new(chain: ChainConfig, ism: String, direct: bool) -> Self {
+        Self { chain, ism, direct }
     }
 
     /// Run one proved batch to completion: update, authorise, deliver.
@@ -70,6 +73,10 @@ impl Destination {
                 "submit-celestia-teeism.sh"
             }
             ChainConfig::Celestia { .. } => "submit-celestia.sh",
+            // An EVM destination has both shapes too. Picking by `direct` rather than by
+            // chain kind is what was missing: every EVM route got the proof-carrying script,
+            // which reads a vkey and a Groth16 proof that a direct route never produces.
+            _ if self.direct => "submit-evm-teeism.sh",
             _ => "submit-evm.sh",
         };
         let path = deploy_dir().join(script);

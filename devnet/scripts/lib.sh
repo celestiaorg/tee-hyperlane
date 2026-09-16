@@ -38,6 +38,21 @@ APPD="${APPD:-${BIN_DIR}/celestia-appd}"
 COLLATERAL_BIN="${COLLATERAL_BIN:-${BIN_DIR}/teeism-collateral}"
 CELHOME="${CELHOME:-${STATE_DIR}/celestia}"
 
+# The mnemonic the genesis accounts are derived from. Generated once and kept across
+# teardowns, so the address a wallet imported still holds funds after the chain is rebuilt.
+# Without this every genesis mints fresh random keys and the imported wallet goes empty.
+ensure_mnemonic() {
+  if [ ! -s "${STATE_DIR}/mnemonic" ]; then
+    mkdir -p "${STATE_DIR}"
+    "${APPD}" keys mnemonic > "${STATE_DIR}/mnemonic" 2>/dev/null \
+      || die "could not generate a mnemonic"
+    chmod 600 "${STATE_DIR}/mnemonic"
+    say "generated a new genesis mnemonic at ${STATE_DIR}/mnemonic"
+  fi
+  DEVNET_MNEMONIC="$(tr -d '\r' < "${STATE_DIR}/mnemonic" | head -1)"
+  export DEVNET_MNEMONIC
+}
+
 # The key that pays for EVM deployments. Taken from the environment, or from a file dropped in
 # .state, so nothing sensitive lives in the repository. .state survives `make stop`.
 if [ -z "${EVM_PRIVATE_KEY:-}" ] && [ -f "${STATE_DIR}/evm-key" ]; then

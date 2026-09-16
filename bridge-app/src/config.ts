@@ -65,10 +65,12 @@ export const CHAINS: Record<ChainId, Chain> = {
     name: "Ethereum Sepolia",
     domain: 11155111,
     chainIdHex: "0xaa36a7",
-    rpc: "https://ethereum-sepolia-rpc.publicnode.com",
+    // Proxied by the server that serves this app, so the browser never depends on a
+    // rate-limited public endpoint and the upstream key stays server side.
+    rpc: env("VITE_SEPOLIA_RPC", "https://ethereum-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.etherscan.io",
     mailbox: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
-    ism: "0x6f31D79D898f86a60832Fd1caB31ceC67Bc71Fb6",
+    ism: env("VITE_SEPOLIA_ISM", "0x6f31D79D898f86a60832Fd1caB31ceC67Bc71Fb6") as `0x${string}`,
   },
   arbitrum: {
     kind: "evm",
@@ -76,10 +78,10 @@ export const CHAINS: Record<ChainId, Chain> = {
     name: "Arbitrum Sepolia",
     domain: 421614,
     chainIdHex: "0x66eee",
-    rpc: "https://arbitrum-sepolia-rpc.publicnode.com",
+    rpc: env("VITE_ARBITRUM_RPC", "https://arbitrum-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.arbiscan.io",
     mailbox: "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8",
-    ism: "0x21bdf13D66D3e5F0D4793B64bb4c85034B9EDc88",
+    ism: env("VITE_ARBITRUM_ISM", "0x21bdf13D66D3e5F0D4793B64bb4c85034B9EDc88") as `0x${string}`,
   },
   base: {
     kind: "evm",
@@ -87,10 +89,10 @@ export const CHAINS: Record<ChainId, Chain> = {
     name: "Base Sepolia",
     domain: 84532,
     chainIdHex: "0x14a34",
-    rpc: "https://base-sepolia-rpc.publicnode.com",
+    rpc: env("VITE_BASE_RPC", "https://base-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.basescan.org",
     mailbox: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
-    ism: "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729",
+    ism: env("VITE_BASE_ISM", "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729") as `0x${string}`,
   },
   celestia: {
     kind: "cosmos",
@@ -160,12 +162,13 @@ export const CELESTIA_DENOM: Record<TokenId, string> = {
   USDC: "hyperlane/0x726f757465725f61707000000000000000000000000000020000000000000001",
 };
 
-/// Two Groth16 proofs on the coprocessor's CPU, plus the wait for a free prover.
+/// What happens between the origin finalising and the funds arriving.
 ///
-/// Measured on the machine actually running this, not estimated: 2857s and 2592s for the two
-/// proofs of one batch. Routes share a single prover, so a transfer can also queue behind
-/// another route's batch, which is why this is not simply the sum.
-export const PROVING_SECONDS = envNum("VITE_PROVING_SECONDS", 100 * 60);
+/// Nothing is proved any more: the destination verifies the enclave's quote itself, so this
+/// is one attestation plus one transaction. Measured end to end on this deployment, not
+/// estimated: 16s and 23s for Celestia to Arbitrum. The default leaves room for a relayer
+/// tick and a slow destination block.
+export const PROVING_SECONDS = envNum("VITE_PROVING_SECONDS", 45);
 
 /// How long each origin takes to reach the finality the enclave will attest, and why.
 ///
