@@ -14,7 +14,7 @@ Environment=CELHOME=/home/chef/tee-ism-nonzk/devnet/.state/celestia
 Environment=RUST_LOG=info
 ExecStart=/home/chef/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle \
   --config /home/chef/tee-ism-nonzk/devnet/.state/gas-oracle.toml \
-  --listen 127.0.0.1:3002
+  --listen 0.0.0.0:3002
 Restart=always
 RestartSec=60
 

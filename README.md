@@ -51,6 +51,8 @@ docs/            integration guide
 - [deploy/E2E.md](deploy/E2E.md) - the four testnet transfers, with what each cost.
 - [deploy/server/TEEISM-SERVER.md](deploy/server/TEEISM-SERVER.md) - the live deployment:
   routers, the routing ISM, the paymaster and the oracle.
+- [deploy/server/REPRODUCE.md](deploy/server/REPRODUCE.md) - standing the whole thing up on
+  another host, including the parts that only fail on Linux.
 - [deploy/server/README.md](deploy/server/README.md) - the Groth16 deployment this replaced.
 - [bridge-app/README.md](bridge-app/README.md) - the UI.
 - [docs/verify-deployment.md](docs/verify-deployment.md) - checking that what is deployed is

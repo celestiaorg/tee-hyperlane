@@ -8,7 +8,7 @@ Type=simple
 User=chef
 WorkingDirectory=/home/chef/tee-ism-nonzk
 Environment=HOME=/home/chef
-Environment=PATH=/usr/local/go/bin:/home/chef/.cargo/bin:/home/chef/.foundry/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/chef/tee-ism-nonzk/devnet/.state/bin:/home/chef/.foundry/bin:/usr/local/go/bin:/home/chef/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=APPD=/home/chef/tee-ism-nonzk/devnet/.state/bin/celestia-appd
 Environment=COLLATERAL_BIN=/home/chef/tee-ism-nonzk/devnet/.state/bin/teeism-collateral
 Environment=CELHOME=/home/chef/tee-ism-nonzk/devnet/.state/celestia
