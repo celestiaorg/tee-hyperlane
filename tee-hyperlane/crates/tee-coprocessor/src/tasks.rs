@@ -433,9 +433,40 @@ fn finish_staged_batch(route: &RouteConfig, store: &ProofStore) -> Result<Option
     if !proved.exists() {
         return Ok(None);
     }
+
+    // Both verifiers refuse an attestation older than their skew window, so past that age
+    // this batch can never be accepted however many times it is retried - and because the
+    // scanner will not stage a new batch while one exists, retrying it forever is what turns
+    // a passing outage into a permanently stalled route. Discard it instead: the next scan
+    // rebuilds from the same on-chain checkpoint with a fresh quote, so nothing is skipped.
+    //
+    // This is what lets a route come back on its own after an outage longer than the window,
+    // such as collateral left expired for a few days.
+    if let Ok(age) = std::fs::metadata(&proved).and_then(|m| m.modified()).and_then(|t| {
+        t.elapsed()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    }) {
+        if age > STAGED_BATCH_MAX_AGE {
+            warn!(
+                route = %route.name,
+                age_secs = age.as_secs(),
+                "discarding a staged batch older than the attestation window; rebuilding"
+            );
+            std::fs::remove_file(&proved)?;
+            return Ok(None);
+        }
+    }
+
     warn!(route = %route.name, "resuming a batch left unfinished by an earlier run");
     submit_and_file(route, store, &proved).map(Some)
 }
+
+/// How long a staged batch stays worth retrying.
+///
+/// Matches `maxQuoteSkew` on the EVM ISMs and `MaxQuoteSkewSecs` in `x/teeism`, both 24h. Set
+/// slightly under so a batch is rebuilt just before it would start being rejected for age
+/// rather than just after.
+const STAGED_BATCH_MAX_AGE: Duration = Duration::from_secs(23 * 60 * 60);
 
 
 fn elf_dir() -> String {
@@ -449,6 +480,22 @@ fn path_string(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_staged_batch_is_discarded_once_it_is_too_old_to_be_accepted() {
+        // Both verifiers reject an attestation older than 24h, so a batch past that age is
+        // unsubmittable no matter how often it is retried. Retrying it anyway is what would
+        // keep a route stalled after the outage that caused it had passed, because the
+        // scanner refuses to stage a new batch while one exists.
+        assert!(
+            STAGED_BATCH_MAX_AGE < Duration::from_secs(24 * 60 * 60),
+            "must expire before the verifiers start rejecting for age, not after"
+        );
+        assert!(
+            STAGED_BATCH_MAX_AGE > MAX_BACKOFF,
+            "a batch must outlive the longest retry pause, or it is thrown away between attempts"
+        );
+    }
 
     #[test]
     fn backoff_grows_then_stops() {
