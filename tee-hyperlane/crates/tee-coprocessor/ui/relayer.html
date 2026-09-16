@@ -116,7 +116,8 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Proving has no progress to report - it is one long CPU burn - so the bar sweeps rather
+  /* An attestation has no progress to report - it is one round trip to the enclave - so the
+     bar sweeps rather
      than pretending to measure. */
   .working { position: relative; overflow: hidden; }
   .working::after {
@@ -184,13 +185,13 @@
     return { behind, percent: Math.round((1 - behind / widest[r.name]) * 100) };
   }
 
-  /// What a batch is actually doing. Only one route can hold the prover, so a batch that is
+  /// What a batch is actually doing. Routes still take turns, so a batch that is
   /// merely staged is queued, and one whose proof is finished is waiting on the destination -
   /// which is a different problem from a slow proof and should not look like one.
   function stageLabel(stage) {
-    if (stage === "proving") return "Proving";
+    if (stage === "proving") return "Attesting";
     if (stage === "awaiting submission") return "Awaiting submission";
-    if (stage === "queued") return "Queued for the prover";
+    if (stage === "queued") return "Queued";
     return "In flight";
   }
 
@@ -209,10 +210,10 @@
     const proven = routes.reduce((n, r) => n + r.batches.length, 0);
     document.getElementById("summary").innerHTML = `
       <div class="stat"><span>Routes</span><strong>${routes.length}</strong></div>
-      <div class="stat"><span>Proving</span><strong>${proving}</strong></div>
+      <div class="stat"><span>Attesting</span><strong>${proving}</strong></div>
       <div class="stat"><span>Queued</span><strong>${queued}</strong></div>
       ${waiting ? `<div class="stat"><span>Awaiting submission</span><strong>${waiting}</strong></div>` : ""}
-      <div class="stat"><span>Batches proven</span><strong>${proven}</strong></div>
+      <div class="stat"><span>Batches attested</span><strong>${proven}</strong></div>
       <div class="stat"><span>Blocks to attest</span><strong>${num(behind)}</strong></div>`;
   }
 
@@ -240,9 +241,9 @@
 
         <div class="grid">
           <div class="cell"><span>Attestable to</span><strong>${num(r.originHead)}</strong></div>
-          <div class="cell"><span>Last proven</span><strong>${batch(r.batches[0])}</strong></div>
+          <div class="cell"><span>Last attested</span><strong>${batch(r.batches[0])}</strong></div>
           <div class="cell ${r.proving && r.proving.stage === "proving" ? "working" : ""}">
-            <span>${r.proving ? stageLabel(r.proving.stage) : "Prover"}</span>
+            <span>${r.proving ? stageLabel(r.proving.stage) : "Enclave"}</span>
             <strong>${r.proving ? batch(r.proving) : "nothing new to attest"}</strong>
           </div>
           <div class="cell"><span>State root</span><strong><code>${short(r.stateRoot)}</code></strong></div>
