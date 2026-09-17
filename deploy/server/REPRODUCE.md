@@ -126,6 +126,37 @@ The PCCS address records must be present before `80-evm-isms.sh`, or it prints
 cp <from the previous host>/pccs-*.json .state/out/
 ```
 
+## 5b. USDC
+
+TIA is Celestia-native, so its Celestia side is a collateral token and the EVM sides are
+synthetics. USDC is the other way round: the collateral lives on Sepolia and Celestia holds a
+synthetic. Reusing an existing EVM router is what makes this two commands rather than a
+deployment.
+
+```sh
+A=.state/bin/celestia-appd
+TX="--from relayer --keyring-backend test --home .state/celestia --chain-id teeism-local \
+    --node http://localhost:26657 --fees 200000utia --gas 900000 --broadcast-mode sync --yes -o json"
+
+# Celestia side: a synthetic, pointed at the routing ISM like every other recipient.
+$A tx warp create-synthetic-token $(cat .state/out/mailbox-id) $TX
+# token id is deterministic: 0x726f757465725f61707000000000000000000000000000020000000000000001
+$A tx warp set-token $USDC_TOKEN --ism-id $(cat .state/out/routing-ism-id) $TX
+$A tx warp enroll-remote-router $USDC_TOKEN 11155111 <sepolia router, 32 bytes> 50000 $TX
+
+# Sepolia side: the existing collateral router, repointed.
+cast send $SEPOLIA_USDC "setInterchainSecurityModule(address)" $(cat .state/out/ism-sepolia)
+cast send $SEPOLIA_USDC "enrollRemoteRouter(uint32,bytes32)" 1297040299 $USDC_TOKEN
+cast send $SEPOLIA_USDC "setHook(address)" <the same aggregation hook the TIA router uses>
+```
+
+The denom on Celestia is `hyperlane/<token id>`, which is what the UI's `CELESTIA_DENOM` has
+to name. Sending from Sepolia needs an ERC20 `approve` to the router first; sending from
+Celestia does not, because the synthetic is burned rather than transferred.
+
+Arbitrum and Base have USDC routers from the previous deployment too. They are not wired
+here: only the Sepolia pair is.
+
 ## 6. Paymaster and oracle
 
 Also in [TEEISM-SERVER.md](TEEISM-SERVER.md): create the IGP, derive and fund the `bridge`
@@ -171,13 +202,32 @@ from anywhere but the host.
 
 ```sh
 cd ~/tee-ism-nonzk/bridge-app
-# .env.local: chain id, domain, mailbox, ism, igp, token, and
-#   VITE_CELESTIA_RPC   http://<host>:3000/rpc
-#   VITE_CELESTIA_REST  http://<host>:3000/rest
-#   VITE_CELESTIA_EXPLORER http://<host>:3000
-#   VITE_RELAYER_API    http://<host>:3000/api
-#   VITE_{SEPOLIA,ARBITRUM,BASE}_RPC  http://<host>:3000/evm/<chain>/
-#   VITE_{SEPOLIA,ARBITRUM,BASE}_ISM  the three TeeDcapIsm addresses
+cat > .env.local <<ENV
+VITE_CELESTIA_NAME=Celestia teeism
+VITE_CELESTIA_CHAIN_ID=teeism-local
+VITE_CELESTIA_DOMAIN=1297040299
+VITE_CELESTIA_RPC=http://<host>:3000/rpc
+VITE_CELESTIA_REST=http://<host>:3000/rest
+VITE_CELESTIA_EXPLORER=http://<host>:3000
+VITE_RELAYER_API=http://<host>:3000/api
+VITE_CELESTIA_MAILBOX_ID=<mailbox-id>
+VITE_CELESTIA_ISM_ID=<routing-ism-id>
+VITE_CELESTIA_IGP_ID=<igp-id>
+VITE_CELESTIA_TIA_ROUTER=<celestia-token-id>
+VITE_CELESTIA_USDC_ROUTER=<celestia-usdc-token-id>
+VITE_SEPOLIA_RPC=http://<host>:3000/evm/sepolia/
+VITE_ARBITRUM_RPC=http://<host>:3000/evm/arbitrum/
+VITE_BASE_RPC=http://<host>:3000/evm/base/
+VITE_SEPOLIA_ISM=<TeeDcapIsm on sepolia>
+VITE_ARBITRUM_ISM=<TeeDcapIsm on arbitrum>
+VITE_BASE_ISM=<TeeDcapIsm on base>
+VITE_SEPOLIA_USDC_ROUTER=<sepolia usdc collateral router>
+# Left empty deliberately: this deployment has no USDC on the L2s, and an empty value is how
+# a route reports itself as not deployed instead of offering a button that cannot work.
+VITE_ARBITRUM_USDC_ROUTER=
+VITE_BASE_USDC_ROUTER=
+VITE_PROVING_SECONDS=30
+ENV
 VITE_DEVNET=1 npm install --silent && VITE_DEVNET=1 npm run build
 
 cd ../devnet/gateway
