@@ -1,7 +1,23 @@
 # Verifying what is running
 
-`deploy/check-live.sh` runs the whole chain below in one go and prints a pass or fail per
-link. `--rebuild` adds the reproducible image build, which takes about thirty-five minutes;
+`deploy/verify-digest.sh <app-id>` is the current one. It checks a running enclave against
+this checkout and prints a pass or fail per link:
+
+```sh
+deploy/verify-digest.sh <app-id>                              # compose chain only
+deploy/verify-digest.sh <app-id> --ism <addr> --rpc <url>     # also what the chain accepts
+deploy/verify-digest.sh <app-id> --rebuild                    # also the image, ~35 min
+```
+
+It reproduces `compose_hash` from the `app_compose` the enclave hands over, checks that same
+hash appears in `mr_config_id` **inside the signed quote** rather than only in the unsigned
+`info` block, and diffs the compose it embeds against the file in this checkout.
+
+`deploy/check-live.sh` below predates the direct-attestation stack: it verifies SP1 vkeys,
+which no longer exist, against the previous deployment's ISM addresses. It will fail
+misleadingly until it is rewritten.
+
+The original text follows. `--rebuild` adds the reproducible image build, which takes about thirty-five minutes;
 without it the image leg is checked against the registry instead.
 
 ```sh
