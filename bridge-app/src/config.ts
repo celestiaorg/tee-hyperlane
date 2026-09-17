@@ -230,7 +230,23 @@ export function routerFor(token: TokenId, chain: ChainId): string | null {
 /// Celestia is the hub: every route has it on one side. No EVM chain's ISM trusts another
 /// EVM chain, so an EVM-to-EVM pair is not a route even when both routers exist.
 export function routeIsLive(token: TokenId, from: ChainId, to: ChainId): boolean {
-  if (from === to) return false;
-  if (from !== "celestia" && to !== "celestia") return false;
-  return routerFor(token, from) !== null && routerFor(token, to) !== null;
+  return whyNotLive(token, from, to) === null;
+}
+
+/// Why this pair cannot be bridged, or null if it can.
+///
+/// Worth separating, because the two reasons are nothing alike and one message for both
+/// blamed the wrong thing. An EVM to EVM pair is not a route for *any* token, so saying the
+/// token is not deployed sends someone looking for a missing deployment that was never meant
+/// to exist. A missing router really is a missing deployment, and names the chain it is
+/// missing on.
+export function whyNotLive(token: TokenId, from: ChainId, to: ChainId): string | null {
+  if (from === to) return "Pick two different chains.";
+  if (from !== "celestia" && to !== "celestia") {
+    return `Every route goes through ${CHAINS.celestia.name}, so ${CHAINS[from].name} to ${CHAINS[to].name} is two transfers rather than one. Bridge to ${CHAINS.celestia.name} first.`;
+  }
+  for (const c of [from, to]) {
+    if (routerFor(token, c) === null) return `${token} is not deployed on ${CHAINS[c].name} yet.`;
+  }
+  return null;
 }

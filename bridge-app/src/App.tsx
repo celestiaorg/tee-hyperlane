@@ -6,6 +6,7 @@ import {
   SLOW_ORIGIN_SECONDS,
   expectedSeconds,
   routeIsLive,
+  whyNotLive,
   routerFor,
 } from "./config";
 import type { ChainId, CosmosChain, EvmChain, TokenId } from "./config";
@@ -403,7 +404,7 @@ export default function App() {
               <dd>{describeDuration(expectedSeconds(from))} from now</dd>
             </dl>
 
-            {!live && <p className="note">{token} is not deployed on this route yet.</p>}
+            {!live && <p className="note">{whyNotLive(token, from, to)}</p>}
             {error && <p className="error">{error}</p>}
 
             <button className="primary" onClick={send} disabled={!live || sending || !amount}>
