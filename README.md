@@ -151,12 +151,26 @@ collateral is ours to keep current. Addresses and the monthly job are in
 
 ### Tokens
 
-The warp routers predate this deployment and were reused. Only their ISM and their
-enrollments changed.
+Two assets, opposite shapes. TIA is Celestia-native, so its collateral sits on Celestia and
+the EVM sides are synthetics. USDC is Circle's real Sepolia token, so the collateral sits on
+Sepolia and every other chain holds a synthetic, Celestia included. There is no minting of
+either asset anywhere: a synthetic only exists while the same amount is locked on its home
+chain.
 
-| route | teeism-local | EVM side |
+The EVM routers predate this deployment and were reused. Only their ISM, their hook and their
+enrolments changed.
+
+| | home chain, collateral | synthetic elsewhere |
 |---|---|---|
-| TIA | collateral `0x726f757465725f61707000000000000000000000000000010000000000000000` | synthetic `0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE` (Sepolia)<br>synthetic `0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE` (Arbitrum Sepolia)<br>synthetic `0xf4197C55C944987E9b10e09C0A47915211769B78` (Base Sepolia) |
+| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE`<br>Arbitrum `0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE`<br>Base `0xf4197C55C944987E9b10e09C0A47915211769B78` |
+| USDC | Sepolia `0xfb611B6f6CE92033960e99C2D65cee4237e64cDD`, wrapping Circle's `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | Celestia `0x726f757465725f61707000000000000000000000000000020000000000000001`<br>Arbitrum `0xb9E5E3eb926EA22B951d2fb7392F9F3D6c704054`<br>Base `0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B` |
+
+On Celestia a synthetic is a bank denom named `hyperlane/<token id>`. Sending from Sepolia
+needs an ERC20 `approve` to the collateral router first; sending a synthetic needs none,
+because it is burned rather than transferred.
+
+Every route runs through Celestia. No EVM chain's ISM trusts another EVM chain, so an
+EVM-to-EVM pair is two hops, not one.
 
 ### Gas
 
@@ -283,9 +297,9 @@ End to end on this deployment, not estimated. There is no proving, so the only w
 finality plus one transaction.
 
 ```
-Celestia -> Arbitrum    18 s
-Celestia -> Base        18 s
-Celestia -> Sepolia     39 s     two sequential txs on 12 s blocks
+Celestia -> Arbitrum    11-18 s
+Celestia -> Base        13-18 s
+Celestia -> Sepolia     14-29 s   the spread is one Sepolia block
 Sepolia  -> Celestia    Ethereum finality, ~15 min when Sepolia is healthy
 Arbitrum -> Celestia    ~31 min, the assertion cadence
 Base     -> Celestia    days, the dispute window

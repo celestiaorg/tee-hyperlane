@@ -154,8 +154,10 @@ The denom on Celestia is `hyperlane/<token id>`, which is what the UI's `CELESTI
 to name. Sending from Sepolia needs an ERC20 `approve` to the router first; sending from
 Celestia does not, because the synthetic is burned rather than transferred.
 
-Arbitrum and Base have USDC routers from the previous deployment too. They are not wired
-here: only the Sepolia pair is.
+Arbitrum and Base hold synthetics too, wired the same way: point the router at that chain's
+TeeDcapIsm, enrol the Celestia token, set the hook the TIA router on that chain uses, and
+enrol the router back on the Celestia token. Then add each router to `routers` on both of its
+routes, or its transfers cannot trigger a batch and wait for other traffic.
 
 ## 6. Paymaster and oracle
 
