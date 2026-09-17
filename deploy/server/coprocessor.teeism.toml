@@ -3,7 +3,10 @@
 # attest_only is what makes this the non-ZK stack. The enclave's quote travels to the
 # destination as-is and the destination verifies it, so nothing sits between attesting and
 # submitting. The ZK deployment this replaced needed two SP1 Groth16 proofs per batch here.
-tick_secs = 6
+# Five seconds. The scan is the only expensive part of a tick, so this is what sets how long
+# a transfer waits before anything looks at it. It was twenty while the browser's RPCs shared
+# the metered key; they do not any more, so the headroom is back.
+tick_secs = 5
 celestia_lag = 2
 proof_dir = "/home/chef/tee-ism-nonzk/devnet/.state/proofs"
 

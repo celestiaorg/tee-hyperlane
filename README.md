@@ -283,8 +283,9 @@ End to end on this deployment, not estimated. There is no proving, so the only w
 finality plus one transaction.
 
 ```
-Celestia -> Arbitrum    16-23 s
-Celestia -> Base        19 s
+Celestia -> Arbitrum    18 s
+Celestia -> Base        18 s
+Celestia -> Sepolia     39 s     two sequential txs on 12 s blocks
 Sepolia  -> Celestia    Ethereum finality, ~15 min when Sepolia is healthy
 Arbitrum -> Celestia    ~31 min, the assertion cadence
 Base     -> Celestia    days, the dispute window
