@@ -250,6 +250,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 fn is_quiet(error: &anyhow::Error) -> bool {
     let text = error.to_string();
     text.contains("nothing to attest")
+        || text.contains("waiting for the next epoch")
         || text.contains("has not advanced")
         || text.contains("has not passed")
 }
@@ -492,6 +493,32 @@ fn path_string(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipping_an_unbootstrappable_checkpoint_is_not_a_failure() {
+        // The guard fires on roughly seven percent of ticks. Counted as a failure it would
+        // drive the backoff to its thirty minute ceiling and turn a one epoch wait into a
+        // half hour one, while showing a blocker on the dashboard for a route that is fine.
+        let skipped = anyhow::anyhow!(
+            "finalized header at slot 11155871 is mid-epoch, so its checkpoint has no \
+             light-client bootstrap; waiting for the next epoch"
+        );
+        assert!(is_quiet(&skipped));
+        assert!(is_quiet(&anyhow::anyhow!("nothing to attest; no messages for our routes")));
+        assert!(!is_quiet(&anyhow::anyhow!("eth_getLogs refuses even 10 blocks")));
+    }
+
+    #[test]
+    fn only_epoch_boundaries_carry_a_bootstrap() {
+        use crate::commands::{checkpoint_is_bootstrappable, SLOTS_PER_EPOCH};
+        // Measured against the live beacon: slot 11156224 (mod 0) served a bootstrap, slots
+        // 11156159 and 11155871 (mod 31) returned 404 although both were genuine finalized
+        // checkpoints. The empty boundary slot is what moves the checkpoint off the boundary.
+        assert!(checkpoint_is_bootstrappable(11156224));
+        assert!(!checkpoint_is_bootstrappable(11156159));
+        assert!(!checkpoint_is_bootstrappable(11155871));
+        assert_eq!(SLOTS_PER_EPOCH, 32);
+    }
 
     #[test]
     fn a_staged_batch_is_discarded_once_it_is_too_old_to_be_accepted() {

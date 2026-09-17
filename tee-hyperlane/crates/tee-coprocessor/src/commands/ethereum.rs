@@ -67,18 +67,28 @@ pub(super) async fn rebuild_ethereum_store(
         }
     }
 
+    // The exact derivation, tried first because when it works it is one request instead of a
+    // walk. It is not always expressible, though, so it falls through rather than failing.
+    //
+    // A light-client bootstrap exists only for a checkpoint root. When the first slot of an
+    // epoch is empty the finalized checkpoint keeps the root of the block before it, whose
+    // slot is mid-epoch, and asking a beacon node to bootstrap that root returns 404 - the
+    // root is genuinely the checkpoint, the endpoint just will not serve it. This route hit
+    // exactly that and stopped, because the search below was only reachable for L2 origins,
+    // so a state the derivation could not express ended the route rather than costing it a
+    // few extra requests.
     if trusted.origin_domain == tee_node::origins::Origin::Ethereum.domain() {
         let slot = trusted.timestamp.saturating_sub(config.genesis_time) / SECONDS_PER_SLOT;
-        let checkpoint = beacon
-            .block_root_at_slot(slot)
-            .await
-            .with_context(|| format!("no beacon block at slot {slot}"))?;
-        let store = bootstrap_store(beacon, config, &checkpoint).await?;
-        anyhow::ensure!(
-            commit_ethereum_store(&store) == trusted.lc_store_commit,
-            "store rebuilt from {checkpoint} does not match the ISM's commitment"
-        );
-        return Ok((store, checkpoint));
+        match beacon.block_root_at_slot(slot).await {
+            Ok(checkpoint) => match bootstrap_store(beacon, config, &checkpoint).await {
+                Ok(store) if commit_ethereum_store(&store) == trusted.lc_store_commit => {
+                    return Ok((store, checkpoint));
+                }
+                Ok(_) => debug!(checkpoint, slot, "derived checkpoint does not reproduce the store"),
+                Err(e) => debug!(checkpoint, slot, error = %e, "derived checkpoint has no bootstrap"),
+            },
+            Err(e) => debug!(slot, error = %e, "no beacon block at the derived slot"),
+        }
     }
 
     let head = beacon.finalized_slot().await?;
@@ -216,6 +226,13 @@ pub async fn attest_ethereum(
         .finalized_header()
         .execution()
         .map_err(|_| anyhow::anyhow!("finalized header has no execution payload"))?;
+    // Nothing can rebuild a store committed at a mid-epoch checkpoint, so do not create one.
+    let finalized_slot = finality.finalized_header().beacon().slot;
+    anyhow::ensure!(
+        super::checkpoint_is_bootstrappable(finalized_slot),
+        "finalized header at slot {finalized_slot} is mid-epoch, so its checkpoint has no \
+         light-client bootstrap; waiting for the next epoch"
+    );
     let target_block = *target.block_number();
     super::record_attestable_head(out.as_deref(), target_block);
     anyhow::ensure!(

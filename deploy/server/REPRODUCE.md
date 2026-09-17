@@ -27,12 +27,12 @@ gateway is still how the UI and Keplr reach the chain on one origin.
 ## 1. Sources
 
 ```sh
-rsync -az --exclude .git --exclude build  <celestia-app-with-x/teeism>/  ~/celestia-app-teeism/
-rsync -az --exclude .git --exclude '**/target' --exclude '**/node_modules' \
-      --exclude devnet/.state --exclude result  <tee-hyperlane>/  ~/tee-ism-nonzk/
+git clone -b jonas/tee-ism git@github.com:jonas089/tee-hyperlane.git      ~/tee-ism-nonzk
+git clone -b jonas/tee-ism https://github.com/celestiaorg/celestia-app.git ~/celestia-app-teeism
 ```
 
-Both are on branch `jonas/tee-ism`.
+`jonas/tee-ism` is the branch on both. Nothing in this deployment lives outside them except
+the three files in the next step, so a clone is the whole of it.
 
 ## 2. Secrets
 
