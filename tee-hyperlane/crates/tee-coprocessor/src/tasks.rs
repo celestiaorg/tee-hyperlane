@@ -200,7 +200,15 @@ async fn prove_loop(
                 // there is no reason to wait a tick to notice.
                 continue;
             }
-            Ok(None) => failures = 0,
+            Ok(None) => {
+                // Nothing staged. Noticing that one appears costs a local stat, not an RPC,
+                // so there is no reason to wait a whole scan tick to look again: doing so
+                // added up to a full tick of dead time to every transfer, spent showing the
+                // batch as queued while nothing was happening to it.
+                failures = 0;
+                tokio::time::sleep(IDLE_POLL.min(tick)).await;
+                continue;
+            }
             Err(e) => {
                 failures = failures.saturating_add(1);
                 store.record_blocker(&route.name, &e.to_string(), failures);
@@ -230,6 +238,10 @@ fn backoff(tick: Duration, failures: u32) -> Duration {
     let ceiling = MAX_BACKOFF.max(tick);
     tick.saturating_mul(1 << doublings).min(ceiling)
 }
+
+/// How often the submit loop looks for a batch the scanner has staged. Cheap by design: it
+/// is a file stat, and the scan tick is what paces the expensive work.
+const IDLE_POLL: Duration = Duration::from_secs(2);
 
 const MAX_BACKOFF_DOUBLINGS: u32 = 8;
 const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);

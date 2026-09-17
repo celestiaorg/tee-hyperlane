@@ -189,7 +189,8 @@
   /// merely staged is queued, and one whose proof is finished is waiting on the destination -
   /// which is a different problem from a slow proof and should not look like one.
   function stageLabel(stage) {
-    if (stage === "proving") return "Attesting";
+    if (stage === "attesting") return "Attesting";
+    if (stage === "submitting") return "Submitting";
     if (stage === "awaiting submission") return "Awaiting submission";
     if (stage === "queued") return "Queued";
     return "In flight";
@@ -295,5 +296,7 @@
   }
 
   refresh();
-  setInterval(refresh, 15000);
+  // A batch on a direct route lives about twenty seconds end to end. Polling every
+  // fifteen missed most of them, which read as the route never doing anything.
+  setInterval(refresh, 3000);
 </script>

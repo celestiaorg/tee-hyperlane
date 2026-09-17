@@ -142,11 +142,14 @@ export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
     arbitrum: "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE",
     base: "0xf4197C55C944987E9b10e09C0A47915211769B78",
   },
+  // A deployment that has not created these leaves them unset, and the route reports itself
+  // as not deployed rather than offering a Bridge button that cannot work. The addresses are
+  // the previous deployment's; they are defaults, not a claim that this one has them.
   USDC: {
-    celestia: "0x726f757465725f61707000000000000000000000000000020000000000000001",
-    sepolia: "0xfb611B6f6CE92033960e99C2D65cee4237e64cDD",
-    arbitrum: "0xb9E5E3eb926EA22B951d2fb7392F9F3D6c704054",
-    base: "0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B",
+    celestia: env("VITE_CELESTIA_USDC_ROUTER", "0x726f757465725f61707000000000000000000000000000020000000000000001"),
+    sepolia: env("VITE_SEPOLIA_USDC_ROUTER", "0xfb611B6f6CE92033960e99C2D65cee4237e64cDD"),
+    arbitrum: env("VITE_ARBITRUM_USDC_ROUTER", "0xb9E5E3eb926EA22B951d2fb7392F9F3D6c704054"),
+    base: env("VITE_BASE_USDC_ROUTER", "0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B"),
   },
 };
 
@@ -218,7 +221,10 @@ export const SLOW_ORIGIN_SECONDS = 60 * 60;
 export const RELAYER_API = import.meta.env.VITE_RELAYER_API ?? "/api";
 
 export function routerFor(token: TokenId, chain: ChainId): string | null {
-  return ROUTERS[token][chain] ?? null;
+  // An empty string means "this deployment does not have it", which is how a route is turned
+  // off from configuration without shipping a different build.
+  const router = ROUTERS[token][chain];
+  return router ? router : null;
 }
 
 /// Celestia is the hub: every route has it on one side. No EVM chain's ISM trusts another
