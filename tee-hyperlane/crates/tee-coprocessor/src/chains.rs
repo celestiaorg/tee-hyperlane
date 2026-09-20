@@ -36,10 +36,25 @@ impl Destination {
         let (script, mut command) = self.script_command();
         command.arg(proved);
         info!(script, ism = %self.ism, "submitting");
-        let status = command
-            .status()
+        // Captured rather than inherited, so why it failed reaches the caller. With `status()`
+        // the script's own explanation went to the journal and the error was only ever
+        // "exited with exit status: 1", which is not something the retry logic can act on.
+        let out = command
+            .output()
             .with_context(|| format!("running {script}"))?;
-        anyhow::ensure!(status.success(), "{script} exited with {status}");
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if !line.trim().is_empty() {
+                info!(script, "{line}");
+            }
+        }
+        if !out.status.success() {
+            let reason = String::from_utf8_lossy(&out.stderr);
+            let reason = reason.trim();
+            if reason.is_empty() {
+                anyhow::bail!("{script} exited with {}", out.status);
+            }
+            anyhow::bail!("{reason}");
+        }
         Ok(())
     }
 

@@ -471,7 +471,22 @@ fn finish_staged_batch(route: &RouteConfig, store: &ProofStore) -> Result<Option
     }
 
     warn!(route = %route.name, "resuming a batch left unfinished by an earlier run");
-    submit_and_file(route, store, &proved).map(Some)
+    match submit_and_file(route, store, &proved) {
+        Ok(height) => Ok(Some(height)),
+        Err(e) => {
+            // A batch is built against one ISM state. If the chain has moved past it the
+            // batch is worthless and every retry reverts the same way, while the scanner
+            // refuses to build a replacement because one is staged. Discarding lets the next
+            // scan start from where the chain actually is, which is the only place a new
+            // batch could start from anyway.
+            if e.to_string().contains("stale batch") {
+                warn!(route = %route.name, "discarding a batch the ISM has moved past; rebuilding");
+                std::fs::remove_file(&proved)?;
+                return Ok(None);
+            }
+            Err(e)
+        }
+    }
 }
 
 /// How long a staged batch stays worth retrying.

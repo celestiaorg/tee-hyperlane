@@ -176,6 +176,22 @@ replacing `ALCHEMY_KEY` and every ISM and router address with this deployment's.
 
 Two things in it are load-bearing:
 
+- No endpoint here needs an API key. The free ones that do each job, verified:
+
+```
+sepolia   execution + archive   https://rpc.sepolia.ethpandaops.io     serves eth_getProof historically
+sepolia   beacon                https://ethereum-sepolia-beacon-api.publicnode.com
+arbitrum  destination + logs    https://sepolia-rollup.arbitrum.io/rpc, publicnode
+arbitrum  l2 archive            https://api.zan.top/arb-sepolia        the only free eth_getProof past ~1k blocks
+base      destination + logs    https://sepolia.base.org
+base      l2 archive            none found; see below
+```
+
+  Base-origin needs `eth_getProof` roughly 220k blocks back, the five day dispute window.
+  Every free endpoint tried refuses with "distance to target block exceeds maximum permitted",
+  and Base's own RPC does not serve the method at all. That route needs a paid archive or a
+  self-hosted node.
+
 - `archive_rpc` must **not** be a metered key. `dispatched_messages` runs on the archive
   reader, so a large `eth_getLogs` sweep goes there; pointing it at a rate-limited key
   exhausts the tier and backs off every route at once, including routes with nothing to do

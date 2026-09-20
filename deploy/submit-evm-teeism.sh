@@ -74,8 +74,25 @@ SENDER=$(cast wallet address --private-key "$PK")
 NONCE=$(cast nonce "$SENDER" --rpc-url "$RPC")
 PENDING=""
 
+# A batch is built against one ISM state and is worthless against any other. If the ISM has
+# moved on, every retry reverts with TrustedStateMismatch and the route stays stuck on a batch
+# that can never land, because the scanner will not build a replacement while one is staged.
+# Say so in a way the relayer can recognise, so it discards this one and rescans from where
+# the chain actually is.
+PREV=$(python3 -c "
+import json,sys
+a = json.load(open('$ATTESTED'))['attestation']
+print(bytes.fromhex(a['payload'].removeprefix('0x'))[:116].hex())")
+HAVE=$(state_now || echo none)
+if [ "$HAVE" != "none" ] && [ "$HAVE" != "$PREV" ] && [ "$HAVE" != "$WANT" ]; then
+  echo "stale batch: this batch starts from a state the ISM has already moved past" >&2
+  echo "  batch expects $PREV" >&2
+  echo "  chain has     $HAVE" >&2
+  exit 1
+fi
+
 echo "== submit attestation =="
-if [ "$(state_now || echo none)" = "$WANT" ]; then
+if [ "$HAVE" = "$WANT" ]; then
   echo "  state already advanced, skipping"
 else
   # A revert carries Automata's four letter reason; describeQuoteError expands it for free.
