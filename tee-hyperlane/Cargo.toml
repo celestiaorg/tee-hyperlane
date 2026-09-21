@@ -8,6 +8,8 @@ edition = "2021"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+celestia-types = "=1.0.0"
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
 hyperlane-types = { path = "crates/hyperlane-types" }
 tee-attestation = { path = "../tee-circuit/tee-attestation" }
 tee-node = { path = "crates/tee-node" }

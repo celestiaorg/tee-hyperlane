@@ -11,6 +11,7 @@
 //! no second enclave.
 
 pub mod celestia;
+pub mod celestia_l2;
 pub mod ethereum;
 pub mod ethereum_l2;
 
