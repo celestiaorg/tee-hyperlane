@@ -126,21 +126,25 @@ impl Api {
 
     /// The batch this route has in flight, and which stage it has actually reached.
     fn in_flight(&self, route: &str) -> Option<Batch> {
-        let staged = self
-            .root
-            .join(route)
-            .join("staging")
-            .join("attestation.json");
+        // Whichever of the two exists. A route that proves reads `attestation.json` until the
+        // proof replaces it; a route that only attests renames it to `proved.json` the moment
+        // it is staged, so looking only at the first name made every batch on a direct route
+        // invisible for its whole life and the dashboard showed the route as idle while it
+        // was in fact submitting.
+        let dir = self.root.join(route);
+        let staging = dir.join("staging");
+        let staged = [staging.join("attestation.json"), staging.join("proved.json")]
+            .into_iter()
+            .find(|p| p.exists())?;
         let raw = std::fs::read(staged).ok()?;
         let record: serde_json::Value = serde_json::from_slice(&raw).ok()?;
         let state = hex::decode(record["attestation"]["new_state"].as_str()?).ok()?;
         let state = decode_ism_state(&state).ok()?;
         let messages = record["messages"].as_array()?;
-        let dir = self.root.join(route);
-        let stage = if dir.join("staging").join("proved.json").exists() {
-            "awaiting submission"
+        let stage = if staging.join("proved.json").exists() {
+            "submitting"
         } else if dir.join("proving").exists() {
-            "proving"
+            "attesting"
         } else {
             "queued"
         };

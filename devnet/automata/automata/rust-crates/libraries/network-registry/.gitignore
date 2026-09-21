@@ -1,0 +1,4 @@
+# Ignore local deployment
+deployment/**/31337
+deployment/**/33611633
+deployment/**/22444422

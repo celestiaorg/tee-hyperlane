@@ -116,6 +116,12 @@ async function rpc(chain: EvmChain, method: string, params: unknown[]): Promise<
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
+  // A rate-limited or unhealthy endpoint answers with an HTML error page, and parsing that
+  // as JSON surfaces to the user as `Unexpected token '<'`, which says nothing about the
+  // cause. Name the endpoint and the status instead.
+  if (!response.ok) {
+    throw new Error(`${new URL(chain.rpc).host} returned ${response.status} for ${method}`);
+  }
   const body = await response.json();
   if (body.error) throw new Error(body.error.message ?? "rpc error");
   return body.result;
@@ -241,8 +247,18 @@ export async function quoteBridgeFee(from: ChainId, to: ChainId): Promise<Bridge
       `${origin.rest}/hyperlane/v1/igps/${origin.igpId}/quote_gas_payment` +
         `?destination_domain=${destination.domain}&gas_limit=${REMOTE_ROUTER_GAS}`,
     );
-    if (!response.ok) throw new Error(`fee quote returned ${response.status}`);
-    const body = await response.json();
+    const body = await response.json().catch(() => null);
+    // A chain whose warp token dispatches through a noop hook has no paymaster, so there is
+    // nothing to quote and delivery is genuinely free. The module says so by reporting that
+    // the id is not an igp, which is a 500. Only that one answer means zero; every other
+    // failure is a real one and still throws, because silently quoting zero for a route that
+    // does charge is how a transfer reverts at the far end.
+    if (!response.ok) {
+      if (typeof body?.message === "string" && body.message.includes("igp does not exist")) {
+        return { amount: 0n, symbol: "TIA", decimals: 6 };
+      }
+      throw new Error(`fee quote returned ${response.status}`);
+    }
     const amount = body?.gas_payment?.[0]?.amount ?? "0";
     return { amount: BigInt(amount), symbol: "TIA", decimals: 6 };
   }

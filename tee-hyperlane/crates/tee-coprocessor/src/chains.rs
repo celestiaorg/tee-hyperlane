@@ -18,11 +18,14 @@ use crate::config::ChainConfig;
 pub struct Destination {
     chain: ChainConfig,
     ism: String,
+    /// The destination verifies the enclave's quote itself, so no proof is involved and the
+    /// direct submit script is the right one.
+    direct: bool,
 }
 
 impl Destination {
-    pub fn new(chain: ChainConfig, ism: String) -> Self {
-        Self { chain, ism }
+    pub fn new(chain: ChainConfig, ism: String, direct: bool) -> Self {
+        Self { chain, ism, direct }
     }
 
     /// Run one proved batch to completion: update, authorise, deliver.
@@ -33,10 +36,25 @@ impl Destination {
         let (script, mut command) = self.script_command();
         command.arg(proved);
         info!(script, ism = %self.ism, "submitting");
-        let status = command
-            .status()
+        // Captured rather than inherited, so why it failed reaches the caller. With `status()`
+        // the script's own explanation went to the journal and the error was only ever
+        // "exited with exit status: 1", which is not something the retry logic can act on.
+        let out = command
+            .output()
             .with_context(|| format!("running {script}"))?;
-        anyhow::ensure!(status.success(), "{script} exited with {status}");
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if !line.trim().is_empty() {
+                info!(script, "{line}");
+            }
+        }
+        if !out.status.success() {
+            let reason = String::from_utf8_lossy(&out.stderr);
+            let reason = reason.trim();
+            if reason.is_empty() {
+                anyhow::bail!("{script} exited with {}", out.status);
+            }
+            anyhow::bail!("{reason}");
+        }
         Ok(())
     }
 
@@ -65,8 +83,15 @@ impl Destination {
     }
 
     fn script_command(&self) -> (&'static str, Command) {
-        let script = match self.chain {
+        let script = match &self.chain {
+            ChainConfig::Celestia { ism_module, .. } if ism_module == "teeism" => {
+                "submit-celestia-teeism.sh"
+            }
             ChainConfig::Celestia { .. } => "submit-celestia.sh",
+            // An EVM destination has both shapes too. Picking by `direct` rather than by
+            // chain kind is what was missing: every EVM route got the proof-carrying script,
+            // which reads a vkey and a Groth16 proof that a direct route never produces.
+            _ if self.direct => "submit-evm-teeism.sh",
             _ => "submit-evm.sh",
         };
         let path = deploy_dir().join(script);
@@ -104,12 +129,14 @@ impl Destination {
                 rpc,
                 mailbox_id,
                 domain,
+                ism_module,
                 ..
             } => {
                 command
                     .env("CELESTIA_RPC", rpc)
                     .env("CELESTIA_MAILBOX", mailbox_id)
-                    .env("CELESTIA_DOMAIN", domain.to_string());
+                    .env("CELESTIA_DOMAIN", domain.to_string())
+                    .env("CELESTIA_ISM_MODULE", ism_module);
             }
         }
 
@@ -129,10 +156,14 @@ fn deploy_dir() -> std::path::PathBuf {
 /// makes restarting the same as continuing.
 pub fn read_ism_state(chain: &ChainConfig, ism: &str) -> Result<String> {
     let output = match chain {
-        ChainConfig::Celestia { rpc, .. } => Command::new(celestia_appd())
-            .args(["query", "zkism", "ism", ism, "--node", rpc, "-o", "json"])
+        ChainConfig::Celestia {
+            rpc, ism_module, ..
+        } => Command::new(celestia_appd())
+            .args([
+                "query", ism_module, "ism", ism, "--node", rpc, "-o", "json",
+            ])
             .output()
-            .context("celestia-appd query zkism ism")?,
+            .with_context(|| format!("celestia-appd query {ism_module} ism"))?,
         ChainConfig::Ethereum { execution_rpc, .. }
         | ChainConfig::EthereumL2 {
             l2_rpc: execution_rpc,

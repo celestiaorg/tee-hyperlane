@@ -200,7 +200,15 @@ async fn prove_loop(
                 // there is no reason to wait a tick to notice.
                 continue;
             }
-            Ok(None) => failures = 0,
+            Ok(None) => {
+                // Nothing staged. Noticing that one appears costs a local stat, not an RPC,
+                // so there is no reason to wait a whole scan tick to look again: doing so
+                // added up to a full tick of dead time to every transfer, spent showing the
+                // batch as queued while nothing was happening to it.
+                failures = 0;
+                tokio::time::sleep(IDLE_POLL.min(tick)).await;
+                continue;
+            }
             Err(e) => {
                 failures = failures.saturating_add(1);
                 store.record_blocker(&route.name, &e.to_string(), failures);
@@ -231,6 +239,10 @@ fn backoff(tick: Duration, failures: u32) -> Duration {
     tick.saturating_mul(1 << doublings).min(ceiling)
 }
 
+/// How often the submit loop looks for a batch the scanner has staged. Cheap by design: it
+/// is a file stat, and the scan tick is what paces the expensive work.
+const IDLE_POLL: Duration = Duration::from_secs(2);
+
 const MAX_BACKOFF_DOUBLINGS: u32 = 8;
 const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
@@ -238,6 +250,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 fn is_quiet(error: &anyhow::Error) -> bool {
     let text = error.to_string();
     text.contains("nothing to attest")
+        || text.contains("waiting for the next epoch")
         || text.contains("has not advanced")
         || text.contains("has not passed")
 }
@@ -377,22 +390,30 @@ async fn prove_staged(
 
     // Hours of CPU are about to be spent on a batch that is no use unless it can be
     // submitted, so establish that it can before spending them rather than after.
-    Destination::new(route.destination.clone(), route.ism_id.clone()).preflight()?;
+    Destination::new(route.destination.clone(), route.ism_id.clone(), route.attest_only).preflight()?;
 
-    // Proving is minutes of CPU, so routes take turns rather than competing for cores.
-    info!(route = %route.name, "waiting for the prover");
-    let _permit = cpu.acquire().await?;
-    // Only one route holds this at a time, so the marker is what lets the dashboard say
-    // "proving" about the one that is, and "queued" about the ones that merely want to be.
-    let _proving = store.mark_proving(&route.name);
     let proved = store.staging(&route.name, "proved.json");
-    commands::prove_for_route(
-        &route.name,
-        &path_string(&attestation),
-        &elf_dir(),
-        &path_string(&proved),
-    )
-    .await?;
+
+    if route.attest_only {
+        // A TEE ISM verifies the quote itself, so there is nothing to prove and no reason to
+        // queue for a core. The staged attestation is already what the destination reads.
+        std::fs::rename(&attestation, &proved)?;
+    } else {
+        // Proving is minutes of CPU, so routes take turns rather than competing for cores.
+        info!(route = %route.name, "waiting for the prover");
+        let _permit = cpu.acquire().await?;
+        // Only one route holds this at a time, so the marker is what lets the dashboard say
+        // "proving" about the one that is, and "queued" about the ones that merely want to
+        // be.
+        let _proving = store.mark_proving(&route.name);
+        commands::prove_for_route(
+            &route.name,
+            &path_string(&attestation),
+            &elf_dir(),
+            &path_string(&proved),
+        )
+        .await?;
+    }
 
     let height = submit_and_file(route, store, &proved)?;
     Ok(Some(height))
@@ -406,7 +427,7 @@ async fn prove_staged(
 /// still in flight.
 fn submit_and_file(route: &RouteConfig, store: &ProofStore, proved: &Path) -> Result<u64> {
     info!(route = %route.name, destination = route.destination.domain(), "submitting");
-    Destination::new(route.destination.clone(), route.ism_id.clone()).submit(proved)?;
+    Destination::new(route.destination.clone(), route.ism_id.clone(), route.attest_only).submit(proved)?;
 
     let height = std::fs::read(proved)
         .ok()
@@ -425,9 +446,55 @@ fn finish_staged_batch(route: &RouteConfig, store: &ProofStore) -> Result<Option
     if !proved.exists() {
         return Ok(None);
     }
+
+    // Both verifiers refuse an attestation older than their skew window, so past that age
+    // this batch can never be accepted however many times it is retried - and because the
+    // scanner will not stage a new batch while one exists, retrying it forever is what turns
+    // a passing outage into a permanently stalled route. Discard it instead: the next scan
+    // rebuilds from the same on-chain checkpoint with a fresh quote, so nothing is skipped.
+    //
+    // This is what lets a route come back on its own after an outage longer than the window,
+    // such as collateral left expired for a few days.
+    if let Ok(age) = std::fs::metadata(&proved).and_then(|m| m.modified()).and_then(|t| {
+        t.elapsed()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    }) {
+        if age > STAGED_BATCH_MAX_AGE {
+            warn!(
+                route = %route.name,
+                age_secs = age.as_secs(),
+                "discarding a staged batch older than the attestation window; rebuilding"
+            );
+            std::fs::remove_file(&proved)?;
+            return Ok(None);
+        }
+    }
+
     warn!(route = %route.name, "resuming a batch left unfinished by an earlier run");
-    submit_and_file(route, store, &proved).map(Some)
+    match submit_and_file(route, store, &proved) {
+        Ok(height) => Ok(Some(height)),
+        Err(e) => {
+            // A batch is built against one ISM state. If the chain has moved past it the
+            // batch is worthless and every retry reverts the same way, while the scanner
+            // refuses to build a replacement because one is staged. Discarding lets the next
+            // scan start from where the chain actually is, which is the only place a new
+            // batch could start from anyway.
+            if e.to_string().contains("stale batch") {
+                warn!(route = %route.name, "discarding a batch the ISM has moved past; rebuilding");
+                std::fs::remove_file(&proved)?;
+                return Ok(None);
+            }
+            Err(e)
+        }
+    }
 }
+
+/// How long a staged batch stays worth retrying.
+///
+/// Matches `maxQuoteSkew` on the EVM ISMs and `MaxQuoteSkewSecs` in `x/teeism`, both 24h. Set
+/// slightly under so a batch is rebuilt just before it would start being rejected for age
+/// rather than just after.
+const STAGED_BATCH_MAX_AGE: Duration = Duration::from_secs(23 * 60 * 60);
 
 
 fn elf_dir() -> String {
@@ -441,6 +508,48 @@ fn path_string(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipping_an_unbootstrappable_checkpoint_is_not_a_failure() {
+        // The guard fires on roughly seven percent of ticks. Counted as a failure it would
+        // drive the backoff to its thirty minute ceiling and turn a one epoch wait into a
+        // half hour one, while showing a blocker on the dashboard for a route that is fine.
+        let skipped = anyhow::anyhow!(
+            "finalized header at slot 11155871 is mid-epoch, so its checkpoint has no \
+             light-client bootstrap; waiting for the next epoch"
+        );
+        assert!(is_quiet(&skipped));
+        assert!(is_quiet(&anyhow::anyhow!("nothing to attest; no messages for our routes")));
+        assert!(!is_quiet(&anyhow::anyhow!("eth_getLogs refuses even 10 blocks")));
+    }
+
+    #[test]
+    fn only_epoch_boundaries_carry_a_bootstrap() {
+        use crate::commands::{checkpoint_is_bootstrappable, SLOTS_PER_EPOCH};
+        // Measured against the live beacon: slot 11156224 (mod 0) served a bootstrap, slots
+        // 11156159 and 11155871 (mod 31) returned 404 although both were genuine finalized
+        // checkpoints. The empty boundary slot is what moves the checkpoint off the boundary.
+        assert!(checkpoint_is_bootstrappable(11156224));
+        assert!(!checkpoint_is_bootstrappable(11156159));
+        assert!(!checkpoint_is_bootstrappable(11155871));
+        assert_eq!(SLOTS_PER_EPOCH, 32);
+    }
+
+    #[test]
+    fn a_staged_batch_is_discarded_once_it_is_too_old_to_be_accepted() {
+        // Both verifiers reject an attestation older than 24h, so a batch past that age is
+        // unsubmittable no matter how often it is retried. Retrying it anyway is what would
+        // keep a route stalled after the outage that caused it had passed, because the
+        // scanner refuses to stage a new batch while one exists.
+        assert!(
+            STAGED_BATCH_MAX_AGE < Duration::from_secs(24 * 60 * 60),
+            "must expire before the verifiers start rejecting for age, not after"
+        );
+        assert!(
+            STAGED_BATCH_MAX_AGE > MAX_BACKOFF,
+            "a batch must outlive the longest retry pause, or it is thrown away between attempts"
+        );
+    }
 
     #[test]
     fn backoff_grows_then_stops() {

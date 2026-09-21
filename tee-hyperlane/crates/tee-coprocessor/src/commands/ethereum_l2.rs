@@ -201,6 +201,14 @@ pub async fn attest_l2(
         rebuild_ethereum_store(&beacon_reader, &config, &trusted, &hints).await?;
 
     let finality = beacon_reader.finality_update().await?;
+    // Nothing can rebuild a store committed at a mid-epoch checkpoint, so do not create one.
+    let finalized_slot = finality.finalized_header().beacon().slot;
+    anyhow::ensure!(
+        super::checkpoint_is_bootstrappable(finalized_slot),
+        "finalized header at slot {finalized_slot} is mid-epoch, so its checkpoint has no \
+         light-client bootstrap; waiting for the next epoch"
+    );
+
     let l1_block = *finality
         .finalized_header()
         .execution()

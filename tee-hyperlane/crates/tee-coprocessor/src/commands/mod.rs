@@ -94,6 +94,23 @@ const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 
 ///
 /// A heartbeat still needs a non-empty batch: the enclave refuses to attest nothing, and a
 /// chain that has dispatched nothing at all is not falling behind in any sense that matters.
+/// Refuse to commit to a finalized header whose checkpoint has no light-client bootstrap.
+///
+/// A bootstrap exists only for a checkpoint whose block sits on the epoch boundary. When that
+/// slot is empty the finalized checkpoint keeps the root of the block before it, which is
+/// still the canonical checkpoint but which no beacon node will serve. An ISM committed to
+/// such a store can never be rebuilt from, so the route stops for good and the ISM has to be
+/// replaced by hand - the search cannot rescue it either, because it only walks boundaries.
+///
+/// About seven percent of Sepolia boundaries are empty, so this is a regular event rather
+/// than a corner. Waiting costs one epoch; committing costs the route.
+pub fn checkpoint_is_bootstrappable(finalized_slot: u64) -> bool {
+    finalized_slot % SLOTS_PER_EPOCH == 0
+}
+
+/// Slots per epoch. Not a tuning knob: it is what decides which blocks are checkpoints.
+pub const SLOTS_PER_EPOCH: u64 = 32;
+
 pub fn heartbeat_due(out: Option<&str>) -> bool {
     let Some(dir) = out
         .and_then(|o| std::path::Path::new(o).parent())
