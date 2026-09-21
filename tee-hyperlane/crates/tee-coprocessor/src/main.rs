@@ -57,6 +57,32 @@ enum Command {
         #[arg(long)]
         identity_digest: String,
     },
+    /// Anchor an Eden ISM to a Celestia block that carries an Eden header.
+    BootstrapEden {
+        /// Celestia consensus RPC, for the light block.
+        #[arg(long, default_value = "https://rpc-mocha.pops.one")]
+        rpc: String,
+        /// celestia-node DA endpoint, for the namespace data.
+        #[arg(long, default_value = "http://localhost:26658")]
+        da_rpc: String,
+        /// Eden's own RPC, for the tree proof the anchor height needs.
+        #[arg(long, default_value = "https://ev-reth-eden-testnet.binarybuilders.services:8545/")]
+        eden_rpc: String,
+        #[arg(long, default_value = "0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db")]
+        merkle_tree_hook: String,
+        #[arg(long, default_value_t = 151)]
+        base_slot: u64,
+        /// How far behind the DA head to start looking. Ignored when --height is given.
+        #[arg(long, default_value_t = 4)]
+        lag: u64,
+        #[arg(long)]
+        height: Option<u64>,
+        #[arg(long)]
+        identity_digest: String,
+        /// Where the route keeps its proofs, so the Celestia height can be recorded.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Attest one Ethereum -> Celestia step.
     ///
     /// Re-derives the light-client store from the same checkpoint the ISM was created with,
@@ -289,6 +315,23 @@ async fn main() -> Result<()> {
             height,
             identity_digest,
         } => commands::bootstrap_celestia(&rpc, lag, height, &identity_digest).await,
+        Command::BootstrapEden {
+            rpc,
+            da_rpc,
+            eden_rpc,
+            merkle_tree_hook,
+            base_slot,
+            lag,
+            height,
+            identity_digest,
+            out,
+        } => {
+            commands::bootstrap_eden(
+                &rpc, &da_rpc, &eden_rpc, &merkle_tree_hook, base_slot, lag, height,
+                &identity_digest, out,
+            )
+            .await
+        }
         Command::AttestEthereum {
             destination_domain,
             beacon,

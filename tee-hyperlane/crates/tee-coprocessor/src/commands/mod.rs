@@ -18,7 +18,7 @@ pub(crate) mod ethereum;
 mod ethereum_l2;
 
 pub use celestia::{attest_celestia, bootstrap_celestia};
-pub use celestia_l2::attest_eden;
+pub use celestia_l2::{attest_eden, bootstrap_eden};
 pub use ethereum::{attest_ethereum, bootstrap_ethereum};
 pub use ethereum_l2::{attest_l2, bootstrap_l2, L2Kind};
 

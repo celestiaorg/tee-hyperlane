@@ -204,6 +204,10 @@ pub struct ExecutionReader {
 /// Log-window bounds. The wide end is what a generous endpoint serves in one call; the narrow
 /// end is Alchemy's free tier, below which no provider we have seen goes.
 const MAX_LOG_WINDOW: u64 = 10_000;
+
+/// How far back to look when placing a `latest` proof at a block. Ten blocks a second, and
+/// two round trips to the node, so this is seconds of slack rather than minutes.
+const PROOF_HEIGHT_SEARCH: u64 = 60;
 const MIN_LOG_WINDOW: u64 = 10;
 
 /// Hyperlane's `Dispatch(address,uint32,bytes32,bytes)`.
@@ -349,6 +353,94 @@ impl ExecutionReader {
                 }))
                 .collect::<Vec<_>>(),
         }))?)
+    }
+
+    /// Prove the tree at whatever block is current, and work out which block that was.
+    ///
+    /// Some evolve nodes serve `eth_getProof` only for the `latest` tag. Eden makes ten
+    /// blocks a second, so even head-minus-zero is outside the window by the time a request
+    /// arrives, and a numbered block is never answerable. The proof itself does not say which
+    /// block it came from, so the height is recovered by checking it against the state roots
+    /// of the last few blocks: an account proof only verifies under the root it was taken at.
+    pub async fn merkle_tree_proof_at_latest(
+        &self,
+        hook: alloy_primitives::Address,
+        base_slot: u64,
+    ) -> Result<(u64, tee_node::hyperlane_state::EvmTreeProof)> {
+        let slots = hyperlane_types::MerkleTreeSlots::new(base_slot);
+        let keys: Vec<String> = slots
+            .storage_keys()
+            .iter()
+            .map(|k| format!("0x{}", hex::encode(k)))
+            .collect();
+
+        let result = self
+            .call("eth_getProof", serde_json::json!([hook, keys, "latest"]))
+            .await
+            .context("eth_getProof at latest")?;
+
+        let proof: tee_node::hyperlane_state::EvmTreeProof =
+            serde_json::from_value(serde_json::json!({
+                "merkle_tree_hook": hook,
+                "account": {
+                    "nonce": result["nonce"],
+                    "balance": result["balance"],
+                    "storage_root": result["storageHash"],
+                    "code_hash": result["codeHash"],
+                },
+                "account_proof": result["accountProof"],
+                "storage_proof": result["storageProof"]
+                    .as_array()
+                    .context("storageProof")?
+                    .iter()
+                    .map(|s| serde_json::json!({
+                        "slot": s["key"], "value": s["value"], "proof": s["proof"]
+                    }))
+                    .collect::<Vec<_>>(),
+            }))?;
+
+        let head = self.block_number().await?;
+        // Backwards from a little ahead: the node may have advanced between the two calls.
+        for h in (head.saturating_sub(PROOF_HEIGHT_SEARCH)..=head + 2).rev() {
+            let Ok(root) = self.state_root(h).await else {
+                continue;
+            };
+            if tee_node::state_proofs::verify_account_proof(
+                root,
+                hook,
+                &proof.account,
+                &proof.account_proof,
+            )
+            .is_ok()
+            {
+                return Ok((h, proof));
+            }
+        }
+        anyhow::bail!(
+            "could not place the latest proof within {PROOF_HEIGHT_SEARCH} blocks of {head}"
+        )
+    }
+
+    pub async fn block_number(&self) -> Result<u64> {
+        let v = self.call("eth_blockNumber", serde_json::json!([])).await?;
+        Ok(u64::from_str_radix(
+            v.as_str().context("blockNumber")?.trim_start_matches("0x"),
+            16,
+        )?)
+    }
+
+    pub async fn state_root(&self, block: u64) -> Result<alloy_primitives::B256> {
+        let v = self
+            .call(
+                "eth_getBlockByNumber",
+                serde_json::json!([format!("0x{block:x}"), false]),
+            )
+            .await?;
+        Ok(v["stateRoot"]
+            .as_str()
+            .context("stateRoot")?
+            .parse()
+            .context("stateRoot parse")?)
     }
 
     /// Messages inserted into the tree between two blocks, in insert order.

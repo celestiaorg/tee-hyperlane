@@ -58,7 +58,16 @@ async fn a_live_eden_header_is_provably_inside_a_celestia_block() {
     let light = reader.light_block(height).await.expect("light block");
     let header = light.signed_header.header.clone();
 
-    let proof = EvolveHeaderProof { dah, data };
+    // Attest the newest header this block carries, which is what the relayer does once it
+    // holds a captured proof for that height.
+    let target = tee_node::origins::celestia_l2::newest_signed_header(&data, &EvolveChain::EDEN)
+        .expect("a signed eden header")
+        .height;
+    let proof = EvolveHeaderProof {
+        dah,
+        data,
+        target_height: target,
+    };
     let root = verify_evolve_root(&header, &EvolveChain::EDEN, &proof)
         .expect("the namespace data must prove into this celestia block");
     println!(

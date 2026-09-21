@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use celestia_types::nmt::Namespace;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::evm_tree_input;
 use crate::celestia::CelestiaReader;
@@ -24,6 +24,14 @@ const MAX_STORE_SEARCH: u64 = 400;
 /// a minute against six second blocks, a handful of blocks is plenty; this is slack for a
 /// sequencer that has paused.
 const MAX_DA_WALK: u64 = 60;
+
+/// How many captured proofs to keep. Ten blocks a second and a minute of DA lag, so a few
+/// hundred is minutes of history and a few megabytes.
+const TREE_CACHE_KEEP: usize = 400;
+
+/// How many times to re-check DA while bootstrapping, fifteen seconds apart. Eden posts
+/// about once a minute, so this is a few minutes of patience.
+const BOOTSTRAP_DA_TRIES: usize = 20;
 
 fn eden_namespace() -> Namespace {
     let ns = tee_node::origins::celestia_l2::EvolveChain::EDEN.namespace;
@@ -72,6 +80,64 @@ async fn mocha_store_at(
     )
 }
 
+
+/// Where captured tree proofs live, keyed by the Eden height they were taken at.
+fn tree_dir(out: Option<&str>) -> Option<std::path::PathBuf> {
+    let dir = std::path::Path::new(out?).parent()?.parent()?.join("trees");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Keep a proof so it can be used once DA catches up to its height.
+///
+/// Eden's node answers `eth_getProof` for `latest` alone, and the height the bridge wants to
+/// attest is always about a minute old because that is the DA posting lag. So proofs are
+/// taken now and spent later. An MPT proof is a static object; it does not go stale, it only
+/// has to be captured while the node can still produce it.
+fn cache_tree(out: Option<&str>, height: u64, proof: &tee_node::hyperlane_state::EvmTreeProof) {
+    let Some(dir) = tree_dir(out) else { return };
+    if let Ok(bytes) = serde_json::to_vec(proof) {
+        let _ = std::fs::write(dir.join(format!("{height}.json")), bytes);
+    }
+    // Eden makes ten blocks a second, so this would grow without bound. Anything older than
+    // the DA lag by a wide margin is never going to be asked for again.
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut heights: Vec<u64> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json")?.parse().ok())
+            .collect();
+        heights.sort_unstable();
+        let keep = heights.len().saturating_sub(TREE_CACHE_KEEP);
+        for h in &heights[..keep] {
+            let _ = std::fs::remove_file(dir.join(format!("{h}.json")));
+        }
+    }
+}
+
+fn cached_tree(
+    out: Option<&str>,
+    height: u64,
+) -> Option<tee_node::hyperlane_state::EvmTreeProof> {
+    let dir = tree_dir(out)?;
+    let bytes = std::fs::read(dir.join(format!("{height}.json"))).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn cached_heights(out: Option<&str>) -> Vec<u64> {
+    let Some(dir) = tree_dir(out) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut h: Vec<u64> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json")?.parse().ok())
+        .collect();
+    h.sort_unstable();
+    h
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn attest_eden(
     celestia_rpc: &str,
@@ -112,48 +178,73 @@ pub async fn attest_eden(
         "celestia has not advanced past the store ({target} vs {store_height})"
     );
 
-    // Eden posts about every eleventh Celestia block, and a block without it answers with a
-    // row carrying no shares: an absence proof rather than an error. Walk back to the newest
-    // block that actually carries the namespace.
-    let mut carrying = None;
+    // Capture a proof at whatever block is current, before looking at DA at all. Eden's node
+    // serves eth_getProof for `latest` only, so the tree has to be proven ahead of the
+    // header that will eventually justify attesting it.
+    let eden = ExecutionReader::new(eden_rpc).with_logs_rpc(logs_rpc);
+    let hook: alloy_primitives::Address = merkle_tree_hook.parse()?;
+    match eden.merkle_tree_proof_at_latest(hook, base_slot).await {
+        Ok((h, proof)) => {
+            debug!(height = h, "captured an eden tree proof");
+            cache_tree(out.as_deref(), h, &proof);
+        }
+        Err(e) => warn!(error = %e, "could not capture an eden tree proof this tick"),
+    }
+
+    // The snapshot has to be a proof we already hold: the trusted height is minutes old and
+    // nothing can prove it now.
+    let snapshot_proof = cached_tree(out.as_deref(), trusted.height).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no captured tree proof at the trusted height {}; the route needs re-bootstrapping",
+            trusted.height
+        )
+    })?;
+
+    // Now find a height we hold a proof for that DA has caught up to. Newest first, since
+    // that moves the ISM furthest in one batch.
+    let usable: Vec<u64> = cached_heights(out.as_deref())
+        .into_iter()
+        .filter(|h| *h > trusted.height)
+        .collect();
+    if usable.is_empty() {
+        anyhow::bail!("nothing to attest; no captured proof past the trusted height");
+    }
+
+    let mut chosen = None;
     for h in (target.saturating_sub(MAX_DA_WALK)..=target).rev() {
         let Ok(data) = da.namespace_data(h, &ns).await else {
             continue;
         };
-        if data.rows().iter().any(|r| !r.shares.is_empty()) {
-            carrying = Some((h, data));
+        if !data.rows().iter().any(|r| !r.shares.is_empty()) {
+            continue;
+        }
+        let carried = tee_node::origins::celestia_l2::signed_headers(
+            &data,
+            &tee_node::origins::celestia_l2::EvolveChain::EDEN,
+        );
+        if let Some(header) = carried
+            .into_iter()
+            .filter(|hd| usable.contains(&hd.height))
+            .max_by_key(|hd| hd.height)
+        {
+            chosen = Some((h, data, header));
             break;
         }
     }
-    let (target, data) = carrying.ok_or_else(|| {
-        anyhow::anyhow!("nothing to attest; no eden data in the last {MAX_DA_WALK} celestia blocks")
+    let (target, data, header) = chosen.ok_or_else(|| {
+        anyhow::anyhow!(
+            "nothing to attest; DA has not caught up to any captured proof (have {}..{})",
+            usable.first().copied().unwrap_or_default(),
+            usable.last().copied().unwrap_or_default()
+        )
     })?;
-    // The same function the enclave runs, so both sides agree on which header is the head.
-    // If they disagreed, the tree would be proven at one height and checked at another.
-    let header = tee_node::origins::celestia_l2::newest_signed_header(
-        &data,
-        &tee_node::origins::celestia_l2::EvolveChain::EDEN,
-    )
-    .ok_or_else(|| anyhow::anyhow!("nothing to attest; no signed eden header in celestia {target}"))?;
     super::record_attestable_head(out.as_deref(), header.height);
-    anyhow::ensure!(
-        header.height > trusted.height,
-        "eden head {} has not passed the trusted height {}",
-        header.height,
-        trusted.height
-    );
     info!(celestia = target, eden = header.height, "attesting eden");
 
-    // The Hyperlane tree, proven under the state root the sequencer signed for that height.
-    let eden = ExecutionReader::new(eden_rpc).with_logs_rpc(logs_rpc);
-    let hook: alloy_primitives::Address = merkle_tree_hook.parse()?;
-    let mailbox_address: alloy_primitives::Address = mailbox.parse()?;
+    let tree_proof = cached_tree(out.as_deref(), header.height)
+        .context("the chosen height lost its captured proof")?;
 
-    let tree_proof = eden.merkle_tree_proof(hook, base_slot, header.height).await?;
-    let snapshot_proof = eden
-        .merkle_tree_proof(hook, base_slot, trusted.height)
-        .await
-        .context("reading the merkle tree at the trusted height; eden must serve archive state")?;
+    let mailbox_address: alloy_primitives::Address = mailbox.parse()?;
 
     let dispatched = eden
         .dispatched_messages(mailbox_address, hook, trusted.height + 1, header.height)
@@ -184,7 +275,7 @@ pub async fn attest_eden(
                 "store": { "trusted": trusted_block },
                 "updates": [reader.light_block(target).await?],
             },
-            "proof": { "dah": da.dah(target).await?, "data": data },
+            "proof": { "dah": da.dah(target).await?, "data": data, "target_height": header.height },
         },
         "tree": evm_tree_input(&tree_proof)?,
         "tree_snapshot": evm_tree_input(&snapshot_proof)?,
@@ -212,5 +303,103 @@ pub async fn attest_eden(
         std::fs::write(&path, serde_json::to_vec_pretty(&record)?)?;
         debug!(path, "wrote attestation");
     }
+    Ok(())
+}
+
+/// Anchor an Eden ISM to a Celestia block that carries Eden, and the header inside it.
+///
+/// Two heights are in play and they are not interchangeable. The ISM's `height` is Eden's,
+/// because that is what the Hyperlane tree is proven against. Its `lc_store_commit` is
+/// Celestia's, because that is the light client the enclave actually runs. The Celestia
+/// height is written beside the route so the next tick is a lookup rather than a walk.
+#[allow(clippy::too_many_arguments)]
+pub async fn bootstrap_eden(
+    celestia_rpc: &str,
+    da_rpc: &str,
+    eden_rpc: &str,
+    merkle_tree_hook: &str,
+    base_slot: u64,
+    lag: u64,
+    height: Option<u64>,
+    identity_digest: &str,
+    out: Option<String>,
+) -> Result<()> {
+    use tee_node::origins::celestia::{commit_celestia_store, CelestiaStore};
+    use tee_node::origins::celestia_l2::{signed_headers, EvolveChain};
+
+    let reader = CelestiaReader::new(celestia_rpc)?;
+    let da = DaClient::new(da_rpc);
+    let ns = eden_namespace();
+
+    // Anchor at a height we can actually prove. Eden's node serves `eth_getProof` for
+    // `latest` only, so the ISM has to start from a height whose proof we hold; otherwise the
+    // first attestation would have no snapshot to replay onto and the route would be dead on
+    // arrival.
+    let eden = ExecutionReader::new(eden_rpc);
+    let hook: alloy_primitives::Address = merkle_tree_hook.parse()?;
+    let (anchor_height, proof) = eden
+        .merkle_tree_proof_at_latest(hook, base_slot)
+        .await
+        .context("capturing a tree proof at eden's latest block")?;
+    cache_tree(out.as_deref(), anchor_height, &proof);
+    info!(eden = anchor_height, "captured the anchor tree proof; waiting for DA");
+
+    // Then wait for the sequencer to publish that height. Every Eden block gets a signed
+    // header, contiguously, so this is a matter of the posting interval rather than luck.
+    let mut found = None;
+    for _ in 0..BOOTSTRAP_DA_TRIES {
+        let head = match height {
+            Some(h) => h,
+            None => da.head().await?.saturating_sub(lag),
+        };
+        for h in (head.saturating_sub(MAX_DA_WALK)..=head).rev() {
+            let Ok(data) = da.namespace_data(h, &ns).await else {
+                continue;
+            };
+            if let Some(hd) = signed_headers(&data, &EvolveChain::EDEN)
+                .into_iter()
+                .find(|hd| hd.height == anchor_height)
+            {
+                found = Some((h, hd));
+                break;
+            }
+        }
+        if found.is_some() || height.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    }
+    let (celestia_height, header) = found.ok_or_else(|| {
+        anyhow::anyhow!("DA did not publish eden height {anchor_height} in time")
+    })?;
+
+    let trusted = reader.light_block(celestia_height).await?;
+    let store = CelestiaStore { trusted };
+
+    let digest = hex::decode(identity_digest.trim_start_matches("0x"))?;
+    let state = tee_attestation::IsmState {
+        state_root: header.state_root,
+        origin_domain: EvolveChain::EDEN.domain,
+        height: header.height,
+        timestamp: header.time_ns / 1_000_000_000,
+        lc_store_commit: commit_celestia_store(&store),
+        identity_digest: digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("identity digest must be 32 bytes"))?,
+    };
+
+    super::record_da_height(out.as_deref(), celestia_height);
+
+    println!("celestia height  {celestia_height}");
+    println!("eden height      {}", state.height);
+    println!("timestamp        {}", state.timestamp);
+    println!("state root       0x{}", hex::encode(state.state_root));
+    println!("lc store commit  0x{}", hex::encode(state.lc_store_commit));
+    println!();
+    println!(
+        "genesis state    0x{}",
+        hex::encode(tee_attestation::encode_ism_state(&state))
+    );
     Ok(())
 }

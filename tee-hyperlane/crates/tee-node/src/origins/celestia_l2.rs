@@ -68,6 +68,14 @@ pub struct EvolveHeaderProof {
     /// blob is in the block" into "these are all the blobs in the block", which is what lets
     /// the newest header be chosen here instead of by the caller.
     pub data: NamespaceData,
+    /// Which Eden height to attest out of the ones this block carries.
+    ///
+    /// Named by the caller rather than chosen here, because the caller can only prove the
+    /// Hyperlane tree at heights whose proof it managed to capture: Eden's node serves
+    /// `eth_getProof` for `latest` alone, so proofs are taken ahead of time and used once DA
+    /// catches up. Naming an older height only slows the route down; the ISM still requires
+    /// the height to advance and the replay still spans exactly the distance it moves.
+    pub target_height: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -139,7 +147,8 @@ pub fn verify_evolve_root(
         .verify(id, &proof.dah)
         .map_err(|e| EvolveError::BadProof(e.to_string()))?;
 
-    let header = newest_signed_header(&proof.data, chain).ok_or(EvolveError::NoSignedHeader)?;
+    let header = signed_header_at(&proof.data, chain, proof.target_height)
+        .ok_or(EvolveError::NoSignedHeader)?;
 
     Ok(AttestedRoot {
         state_root: alloy_primitives::B256::from(header.state_root),
@@ -148,25 +157,43 @@ pub fn verify_evolve_root(
     })
 }
 
+/// The header at one height that the pinned sequencer signed, if this block carries it.
+pub fn signed_header_at(
+    data: &NamespaceData,
+    chain: &EvolveChain,
+    height: u64,
+) -> Option<EvolveHeader> {
+    signed_headers(data, chain)
+        .into_iter()
+        .find(|h| h.height == height)
+}
+
 /// The newest header in a namespace that the pinned sequencer signed.
 ///
-/// Shared with the coprocessor on purpose. The coprocessor has to prove the Hyperlane tree at
-/// whichever height the enclave is going to pick, so both sides running the same function is
-/// what stops them disagreeing about which header is the head.
+/// Shared with the coprocessor, which uses it to see which heights a Celestia block carries.
+pub fn newest_signed_header(data: &NamespaceData, chain: &EvolveChain) -> Option<EvolveHeader> {
+    signed_headers(data, chain).into_iter().max_by_key(|h| h.height)
+}
+
+/// Every header in this block that the pinned sequencer signed, in no particular order.
 ///
 /// Anyone may write to a Celestia namespace, so a blob that is not a header this sequencer
 /// signed is skipped rather than fatal.
-pub fn newest_signed_header(data: &NamespaceData, chain: &EvolveChain) -> Option<EvolveHeader> {
+pub fn signed_headers(data: &NamespaceData, chain: &EvolveChain) -> Vec<EvolveHeader> {
     let ns = chain.namespace();
     let shares: Vec<_> = data
         .rows()
         .iter()
         .flat_map(|row| row.shares.iter().cloned())
         .collect();
-    let blobs = Blob::reconstruct_all(shares.iter()).ok()?;
-    let key = VerifyingKey::from_bytes(&chain.sequencer).ok()?;
+    let Ok(blobs) = Blob::reconstruct_all(shares.iter()) else {
+        return Vec::new();
+    };
+    let Ok(key) = VerifyingKey::from_bytes(&chain.sequencer) else {
+        return Vec::new();
+    };
 
-    let mut best: Option<EvolveHeader> = None;
+    let mut out = Vec::new();
     for blob in &blobs {
         if blob.namespace != ns {
             continue;
@@ -185,14 +212,11 @@ pub fn newest_signed_header(data: &NamespaceData, chain: &EvolveChain) -> Option
         if key.verify(payload, &sig).is_err() {
             continue;
         }
-        let Ok(header) = decode_evolve_header(payload, chain.chain_id) else {
-            continue;
-        };
-        if best.map(|b| header.height > b.height).unwrap_or(true) {
-            best = Some(header);
+        if let Ok(header) = decode_evolve_header(payload, chain.chain_id) {
+            out.push(header);
         }
     }
-    best
+    out
 }
 
 // ---------------------------------------------------------------- protobuf
