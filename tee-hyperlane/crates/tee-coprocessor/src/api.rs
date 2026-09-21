@@ -104,13 +104,21 @@ const RECENT_BATCHES: usize = 10;
 pub struct Api {
     root: Arc<PathBuf>,
     routes: Arc<Vec<RouteConfig>>,
+    /// `None` when this deployment has no keyring to sign a grant with.
+    faucet: Option<Arc<crate::faucet::Faucet>>,
 }
 
 impl Api {
     pub fn new(proof_dir: impl Into<PathBuf>, routes: Vec<RouteConfig>) -> Self {
+        let root: PathBuf = proof_dir.into();
+        let faucet = crate::faucet::Faucet::from_env(&root).map(Arc::new);
+        if faucet.is_none() {
+            tracing::info!("no CELHOME, so the faucet endpoint reports itself unconfigured");
+        }
         Self {
-            root: Arc::new(proof_dir.into()),
+            root: Arc::new(root),
             routes: Arc::new(routes),
+            faucet,
         }
     }
 
@@ -121,6 +129,8 @@ impl Api {
             .route("/api/status", get(status))
             .route("/api/attestation/{message_id}", get(attestation))
             .route("/api/health", get(|| async { "ok" }))
+            .route("/api/faucet", get(faucet_info).post(faucet_claim))
+            .route("/api/faucet/{address}", get(faucet_claimed))
             .with_state(self)
     }
 
@@ -408,4 +418,54 @@ pub async fn serve(api: Api, addr: &str) -> Result<()> {
     info!(%addr, "attestation api listening");
     axum::serve(listener, api.router()).await?;
     Ok(())
+}
+
+// ------------------------------------------------------------------ faucet
+
+/// What the faucet gives and whether it can give it, so the UI can render itself before
+/// anyone presses anything.
+async fn faucet_info(State(api): State<Api>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "enabled": api.faucet.is_some(),
+        "amountTia": crate::faucet::CLAIM_TIA,
+    }))
+}
+
+/// Whether this address has already been paid. Lets the page say so up front rather than
+/// offering a button whose only outcome is a 409.
+async fn faucet_claimed(
+    State(api): State<Api>,
+    Path(address): Path<String>,
+) -> Json<serde_json::Value> {
+    let claimed = api
+        .faucet
+        .as_ref()
+        .map(|f| f.already_claimed(address.trim()))
+        .unwrap_or(false);
+    Json(serde_json::json!({ "address": address, "claimed": claimed }))
+}
+
+async fn faucet_claim(
+    State(api): State<Api>,
+    Json(req): Json<crate::faucet::ClaimRequest>,
+) -> Result<Json<crate::faucet::Claim>, (StatusCode, Json<serde_json::Value>)> {
+    use crate::faucet::FaucetError;
+    let deny = |code: StatusCode, why: String| (code, Json(serde_json::json!({ "error": why })));
+
+    let Some(faucet) = api.faucet.as_ref() else {
+        return Err(deny(
+            StatusCode::SERVICE_UNAVAILABLE,
+            FaucetError::NotConfigured.to_string(),
+        ));
+    };
+    match faucet.claim(req.address.trim()) {
+        Ok(claim) => Ok(Json(claim)),
+        Err(e @ FaucetError::AlreadyClaimed) => Err(deny(StatusCode::CONFLICT, e.to_string())),
+        Err(e @ FaucetError::BadAddress) => Err(deny(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e @ FaucetError::NotConfigured) => {
+            Err(deny(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))
+        }
+        // The request was fine and the chain or the keyring was not, which is ours to fix.
+        Err(e @ FaucetError::SendFailed(_)) => Err(deny(StatusCode::BAD_GATEWAY, e.to_string())),
+    }
 }

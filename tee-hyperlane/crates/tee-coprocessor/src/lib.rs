@@ -12,5 +12,6 @@ pub mod config;
 pub mod enclave;
 pub mod ethereum;
 pub mod ethereum_l2;
+pub mod faucet;
 pub mod tasks;
 pub mod ui;

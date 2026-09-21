@@ -538,6 +538,50 @@ gas-oracle --config .state/gas-oracle.toml --once   # one round, printed, then e
 
 ---
 
+## 11b. The faucet
+
+The UI's Faucet tab grants a fixed 1000 TIA per address, once. It signs with `celestia-appd`
+from its own account, deliberately not the relayer's: this is the one endpoint a stranger can
+spend from, so what it can give away should be all it can reach. Draining it stops the faucet
+and nothing else.
+
+`10-celestia-up.sh` derives a `faucet` key at account **4** and funds it at genesis with
+`FAUCET_COINS`, a thousand grants by default. Account 3 is reserved for the oracle's `bridge`
+key, which the paymaster setup derives by hand; two names on one index fail with
+`duplicated address created` at whichever runs second.
+
+On a chain that already exists, derive and fund it instead:
+
+```sh
+A=.state/bin/celestia-appd; H="--home .state/celestia --keyring-backend test"
+printf '%s\n' "$(cat .state/mnemonic)" | $A keys add faucet --recover --account 4 $H --output json
+$A tx bank send validator "$($A keys show faucet -a $H)" 1000000000000utia $H \
+  --chain-id teeism-local --node http://localhost:26657 --fees 200000utia --gas 200000 -y
+```
+
+> `keys add` takes `--output json`, not `-o json`. `-o` is rejected as an unknown shorthand.
+
+The endpoint lives in the attestation API, so `teeism-api.service` needs a keyring to sign
+with. Without `CELHOME` the endpoint reports itself unconfigured and the UI hides the tab
+rather than offering a button that cannot work:
+
+```
+Environment=APPD=/home/chef/tee-ism-nonzk/devnet/.state/bin/celestia-appd
+Environment=CELHOME=/home/chef/tee-ism-nonzk/devnet/.state/celestia
+Environment=CELESTIA_CHAIN_ID=teeism-local
+Environment=CELESTIA_RPC=http://localhost:26657
+Environment=FAUCET_KEY=faucet
+```
+
+Claims are recorded under `<proof_dir>/.faucet/<address>`, one file each, created before the
+send so two racing requests cannot both be paid. A failed send removes the marker so the
+address can try again. Deleting the directory re-opens every claim.
+
+Addresses are free to mint, so one-per-address bounds a careless user rather than a
+determined one. The real bound is the funding account's balance.
+
+---
+
 ## 12. The relayer config
 
 Write `.state/coprocessor.toml` from [coprocessor.toml.example](coprocessor.toml.example),

@@ -497,3 +497,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
   .tick-mark { animation: none; stroke-dashoffset: 0; }
   .queue-track span { opacity: 0.6; }
 }
+
+/* The nav holds both links and in-page tabs, so the buttons need the reset the links do not. */
+button.tab { border: 0; font: inherit; cursor: pointer; }
+.note.error { color: var(--bad, #c0392b); }

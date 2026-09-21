@@ -80,6 +80,27 @@ empty in `.env.local`. That is the deliberate signal for "not deployed here", no
 
 ---
 
+## Getting test funds
+
+The **Faucet** tab grants **1000 TIA, once per address**. Connect Keplr and press claim; it
+sends to the connected address and lands in the next block.
+
+```sh
+curl -s $B/api/faucet                       # {"enabled":true,"amountTia":1000}
+curl -s $B/api/faucet/<celestia1...>        # {"claimed":false}
+curl -s -X POST $B/api/faucet -H 'content-type: application/json' \
+     -d '{"address":"<celestia1...>"}'      # {"tx_hash":"...","amount_tia":1000}
+```
+
+A second claim for the same address returns 409, and the tab says so before offering the
+button. The claim is recorded on the host, not in the browser, so clearing site data or
+switching browser does not grant a second one.
+
+If the tab reports the faucet is not configured, the API has no keyring to sign with. See
+DEPLOY.md step 11b.
+
+---
+
 ## What each route should take
 
 Measured end to end on the live deployment, not estimated. There is no proving anywhere, so
