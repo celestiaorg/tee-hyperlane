@@ -7,11 +7,10 @@
 //! Each tick does the whole pipeline for one route, or nothing:
 //!
 //!   attest   ask the enclave to verify the origin and sign the result
-//!   prove    two Groth16 proofs of that one attestation, on local CPU
 //!   submit   advance the ISM, authorise the batch, deliver the messages
 //!
-//! Proving is minutes of CPU, so all routes share one permit. Two routes competing for cores
-//! would only make both slower.
+//! One loop per route does both in the same pass. There is no proving step: the destination
+//! verifies the enclave's quote itself, so an attestation is already what it reads.
 //!
 //! A batch being complete is the enclave's guarantee, not this loop's - see
 //! `tee_node::attest::build_attested_update`. What is this loop's job is not stranding one:
@@ -113,21 +112,16 @@ impl Drop for ProvingMarker {
     }
 }
 
-/// Drive one route forever, as two tasks that do not wait on each other.
+/// Drive one route forever: one loop, one pass at a time.
 ///
-/// They used to be one. A route attested, then blocked on the prover permit, then proved,
-/// then submitted - so for the whole of a proof it was not looking at the origin at all.
-/// Anything that arrived behind the batch being proved went unnoticed until the proof
-/// finished, which on this hardware meant hours. Detection was only ever as fast as the tick
-/// for a route that happened to be idle, and with one CPU shared by six routes, idle was the
-/// exception.
+/// It was two loops once, a scanner and a prover, because proving was minutes of CPU shared
+/// between six routes and a route blocked on the permit stopped watching its origin. Nothing
+/// is proved any more, so the hazard the split existed for is gone, and the handoff it needed
+/// - stage a file, poll for the file - was pure latency.
 ///
-/// Splitting them costs nothing in safety because the constraint that made the loop
-/// sequential is not the loop: it is the chain. A route's trusted height moves one batch at a
-/// time, so there is never a second batch to prove ahead of the first. What the split buys is
-/// that noticing is no longer hostage to proving - the scanner records what is pending the
-/// moment it lands, and the prover starts the instant the CPU is free rather than at the next
-/// tick after it.
+/// What made the split safe still holds and is kept: a route's trusted height moves one batch
+/// at a time, so there is never a second batch to build ahead of the first, and an in-flight
+/// batch is finished before a new one is attested.
 pub async fn run_route(
     route: RouteConfig,
     store: Arc<ProofStore>,
@@ -136,34 +130,27 @@ pub async fn run_route(
     lag: u64,
 ) {
     store.prepare(&route.name).ok();
-    let scanning = tokio::spawn(scan_loop(route.clone(), store.clone(), tick, lag));
-    let proving = tokio::spawn(prove_loop(route, store, cpu, tick));
-    // Neither returns. If either ever does, the route is finished either way.
-    let _ = tokio::join!(scanning, proving);
-}
-
-/// Look for work and stage it. Never waits for the prover.
-async fn scan_loop(route: RouteConfig, store: Arc<ProofStore>, tick: Duration, lag: u64) {
     let mut failures: u32 = 0;
     loop {
-        // One batch in flight at a time, because the trusted height only moves one at a time.
-        // While one is staged there is nothing to stage, but the scan still runs: it is what
-        // keeps the attestable head current, which is how the dashboard shows a route as
-        // behind rather than idle.
-        if store.staging(&route.name, "attestation.json").exists()
-            || store.staging(&route.name, "proved.json").exists()
-        {
-            tokio::time::sleep(tick).await;
-            continue;
-        }
-        match attest_once(&route, &store, lag).await {
-            Ok(()) => {
+        match run_once(&route, &store, &cpu, lag).await {
+            Ok(Some(height)) => {
+                failures = 0;
+                store.clear_blocker(&route.name);
+                info!(route = %route.name, height, "batch delivered");
+                // Straight round again rather than sleeping a tick: the origin may already
+                // have more to attest, and finding out costs one ISM read.
+                continue;
+            }
+            Ok(None) => {
                 failures = 0;
                 store.clear_blocker(&route.name);
             }
             Err(e) => {
-                let quiet = is_quiet(&e);
-                if !quiet {
+                // "Nothing dispatched" is the common case, not a fault. Counting it would
+                // walk a perfectly healthy route out to the half-hour ceiling.
+                if is_quiet(&e) {
+                    failures = 0;
+                } else {
                     failures = failures.saturating_add(1);
                     store.record_blocker(&route.name, &e.to_string(), failures);
                     warn!(
@@ -171,10 +158,8 @@ async fn scan_loop(route: RouteConfig, store: Arc<ProofStore>, tick: Duration, l
                         error = %e,
                         consecutive_failures = failures,
                         retry_in_secs = backoff(tick, failures).as_secs(),
-                        "scan failed"
+                        "route failed"
                     );
-                } else {
-                    failures = 0;
                 }
             }
         }
@@ -182,47 +167,29 @@ async fn scan_loop(route: RouteConfig, store: Arc<ProofStore>, tick: Duration, l
     }
 }
 
-/// Prove and submit whatever the scanner has staged.
-async fn prove_loop(
-    route: RouteConfig,
-    store: Arc<ProofStore>,
-    cpu: Arc<Semaphore>,
-    tick: Duration,
-) {
-    let mut failures: u32 = 0;
-    loop {
-        match prove_staged(&route, &store, &cpu).await {
-            Ok(Some(height)) => {
-                failures = 0;
-                store.clear_blocker(&route.name);
-                info!(route = %route.name, height, "batch delivered");
-                // Straight round again: if the scanner has already staged the next batch
-                // there is no reason to wait a tick to notice.
-                continue;
-            }
-            Ok(None) => {
-                // Nothing staged. Noticing that one appears costs a local stat, not an RPC,
-                // so there is no reason to wait a whole scan tick to look again: doing so
-                // added up to a full tick of dead time to every transfer, spent showing the
-                // batch as queued while nothing was happening to it.
-                failures = 0;
-                tokio::time::sleep(IDLE_POLL.min(tick)).await;
-                continue;
-            }
-            Err(e) => {
-                failures = failures.saturating_add(1);
-                store.record_blocker(&route.name, &e.to_string(), failures);
-                warn!(
-                    route = %route.name,
-                    error = %e,
-                    consecutive_failures = failures,
-                    retry_in_secs = backoff(tick, failures).as_secs(),
-                    "submit failed"
-                );
-            }
-        }
-        tokio::time::sleep(backoff(tick, failures)).await;
+/// One pass of the pipeline: finish anything in flight, otherwise look for work, then submit
+/// whatever is staged. `None` means there was nothing to do.
+async fn run_once(
+    route: &RouteConfig,
+    store: &ProofStore,
+    cpu: &Arc<Semaphore>,
+    lag: u64,
+) -> Result<Option<u64>> {
+    // A batch left unfinished by an earlier run is completed before anything new is attested.
+    // Abandoning one after `updateState` has advanced the trusted height past it would put
+    // its leaves behind the next snapshot for good.
+    if let Some(height) = finish_staged_batch(route, store)? {
+        return Ok(Some(height));
     }
+
+    // One batch in flight at a time, because the trusted height only moves one at a time. A
+    // staged attestation here means the previous pass built one and the submit failed, so
+    // submit that rather than building a second.
+    if !store.staging(&route.name, "attestation.json").exists() {
+        attest_once(route, store, lag).await?;
+    }
+
+    submit_staged(route, store, cpu).await
 }
 
 /// Wait before the next attempt: the normal tick while healthy, doubling per consecutive
@@ -238,10 +205,6 @@ fn backoff(tick: Duration, failures: u32) -> Duration {
     let ceiling = MAX_BACKOFF.max(tick);
     tick.saturating_mul(1 << doublings).min(ceiling)
 }
-
-/// How often the submit loop looks for a batch the scanner has staged. Cheap by design: it
-/// is a file stat, and the scan tick is what paces the expensive work.
-const IDLE_POLL: Duration = Duration::from_secs(2);
 
 const MAX_BACKOFF_DOUBLINGS: u32 = 8;
 const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
@@ -372,17 +335,11 @@ async fn attest_once(
 }
 
 /// Prove whatever is staged and submit it. Runs alongside the scan, never in front of it.
-async fn prove_staged(
+async fn submit_staged(
     route: &RouteConfig,
     store: &ProofStore,
     cpu: &Arc<Semaphore>,
 ) -> Result<Option<u64>> {
-    // A batch left over from a crash is finished first. Attesting past it would strand its
-    // messages permanently - see the module comment.
-    if let Some(height) = finish_staged_batch(route, store)? {
-        return Ok(Some(height));
-    }
-
     let attestation = store.staging(&route.name, "attestation.json");
     if !attestation.exists() {
         return Ok(None);
