@@ -25,13 +25,15 @@ merge or push to `main` without asking.
 Server "ark", Zurich, `chef@178.199.12.26`, checkout at `~/tee-ism-nonzk`. It is an rsync of
 this tree with no `.git`, so nothing there is committable.
 
-- systemd: `teeism-relayer`, `teeism-api`, `teeism-gas-oracle`, `bridge-ui`
+- systemd: `teeism-relayer`, `teeism-api`, `teeism-gas-oracle`. `bridge-ui` exists but is
+  disabled: the gateway container serves the built `bridge-app/dist` instead.
 - a local celestia-app devnet, not mocha, with pruning disabled
+- a mocha light node (`mocha-light`), which only the Eden origin needs
 - nginx gateway on `:3000` exposing `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`
-- six routes: `celestia-to-sepolia`, `celestia-to-arbitrum`, `celestia-to-base`,
-  `sepolia-to-celestia`, `arbitrum-to-celestia`, `base-to-celestia`
+- eight routes: Celestia to and from each of Sepolia, Arbitrum, Base and Eden
 - two tokens: TIA (Celestia collateral, synthetic on EVM) and USDC (Sepolia collateral,
   synthetic elsewhere)
+- three enclaves, one image: one Celestia light client, one Ethereum, one mocha for Eden
 
 ## Where the answers already are
 
@@ -68,6 +70,11 @@ ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier
   tree size.
 - **The `routers` list is a trigger filter**, affecting latency rather than delivery, because
   merkle tree replay forces batch completeness.
+- **Eden is trusted differently.** Its origin route verifies a sequencer signature over a
+  header published to Celestia, and nothing re-executes the block. `deploy/MAINTAIN.md` says
+  so in its Eden section. It is the only origin here whose root is not backed by consensus.
+- **Rotating the enclave identity re-points routers, never redeploys them.** Redeploying a
+  collateral router abandons its escrow; that stranded real USDC on Sepolia once.
 
 ## Hard constraints
 
