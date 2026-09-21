@@ -29,6 +29,11 @@ const MAX_DA_WALK: u64 = 60;
 /// hundred is minutes of history and a few megabytes.
 const TREE_CACHE_KEEP: usize = 400;
 
+/// How many candidate heights to weigh before giving up for this tick. One Celestia block
+/// can carry hundreds of Eden headers and each candidate costs a bisection, so this bounds
+/// the work; the newest that fits is the one taken, and the next tick tries again anyway.
+const MAX_TARGET_TRIES: usize = 8;
+
 /// How many times to re-check DA while bootstrapping, fifteen seconds apart. Eden posts
 /// about once a minute, so this is a few minutes of patience.
 const BOOTSTRAP_DA_TRIES: usize = 20;
@@ -218,24 +223,50 @@ pub async fn attest_eden(
         if !data.rows().iter().any(|r| !r.shares.is_empty()) {
             continue;
         }
-        let carried = tee_node::origins::celestia_l2::signed_headers(
+        let mut carried: Vec<_> = tee_node::origins::celestia_l2::signed_headers(
             &data,
             &tee_node::origins::celestia_l2::EvolveChain::EDEN,
-        );
-        if let Some(header) = carried
-            .into_iter()
-            .filter(|hd| usable.contains(&hd.height))
-            .max_by_key(|hd| hd.height)
-        {
-            chosen = Some((h, data, header));
-            break;
+        )
+        .into_iter()
+        .filter(|hd| usable.contains(&hd.height))
+        .collect();
+        if carried.is_empty() {
+            continue;
         }
+        carried.sort_by_key(|hd| std::cmp::Reverse(hd.height));
+        chosen = Some((h, data, carried));
+        break;
     }
-    let (target, data, header) = chosen.ok_or_else(|| {
+    let (target, data, candidates) = chosen.ok_or_else(|| {
         anyhow::anyhow!(
             "nothing to attest; DA has not caught up to any captured proof (have {}..{})",
             usable.first().copied().unwrap_or_default(),
             usable.last().copied().unwrap_or_default()
+        )
+    })?;
+    // The furthest height whose re-execution fits in one attestation. Normally the newest,
+    // because Eden's state moves only when someone transacts; a burst of traffic makes the
+    // route step through it rather than refuse to move at all.
+    let mut picked = None;
+    for candidate in candidates.iter().take(MAX_TARGET_TRIES) {
+        match eden
+            .state_changing_blocks(trusted.height, candidate.height)
+            .await
+        {
+            Ok(changed) if !changed.is_empty() => {
+                picked = Some((*candidate, changed));
+                break;
+            }
+            Ok(_) => continue,
+            Err(e) => debug!(height = candidate.height, error = %e, "cannot reach this height"),
+        }
+    }
+    let (header, changed) = picked.ok_or_else(|| {
+        anyhow::anyhow!(
+            "nothing to attest; nothing between the trusted height {} and {} changed eden's \
+             state, or the span is too long to re-execute in one step",
+            trusted.height,
+            candidates.first().map(|c| c.height).unwrap_or_default()
         )
     })?;
     super::record_attestable_head(out.as_deref(), header.height);
@@ -262,6 +293,25 @@ pub async fn attest_eden(
         anyhow::bail!("nothing to attest; no messages for our routes on domain {destination_domain}");
     }
 
+    // The blocks the enclave re-executes to get from the state it trusts to the one the
+    // sequencer signed for this height. Only the ones that changed anything: the executions
+    // chain by state root, so a stretch that changed nothing is a stretch with nothing to
+    // prove, and leaving out a stretch that did change is caught by the final root.
+    let mut chain = Vec::with_capacity(changed.len());
+    for number in &changed {
+        chain.push(
+            eden.block_for_execution(*number)
+                .await
+                .with_context(|| format!("preparing eden block {number} for re-execution"))?,
+        );
+    }
+    info!(
+        blocks = chain.len(),
+        from = trusted.height,
+        to = header.height,
+        "re-executing eden"
+    );
+
     let mut tree_address = [0u8; 32];
     tree_address[12..].copy_from_slice(hook.as_slice());
 
@@ -275,7 +325,12 @@ pub async fn attest_eden(
                 "store": { "trusted": trusted_block },
                 "updates": [reader.light_block(target).await?],
             },
-            "proof": { "dah": da.dah(target).await?, "data": data, "target_height": header.height },
+            "proof": {
+                "dah": da.dah(target).await?,
+                "data": data,
+                "chain": chain,
+                "target_height": header.height,
+            },
         },
         "tree": evm_tree_input(&tree_proof)?,
         "tree_snapshot": evm_tree_input(&snapshot_proof)?,

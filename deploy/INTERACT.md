@@ -124,7 +124,8 @@ already treats as settled on L1. So a message waits the standing lag plus up to 
 
 Eden is fast because there is nothing to wait out: its sequencer posts signed headers to
 Celestia about once a minute, and once a header is in a Celestia block the light client has
-verified, the route can attest it.
+verified, the route can attest it. The enclave re-executes Eden's blocks before it does, but
+only the ones that changed anything, which on a chain of empty blocks is a handful.
 
 **None of the slow ones is our latency.** Celestia to anywhere is fast because Celestia
 finalises in a block. The reverse waits on the origin proving itself, and for the two

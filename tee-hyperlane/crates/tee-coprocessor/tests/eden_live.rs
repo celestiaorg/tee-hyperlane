@@ -6,11 +6,12 @@
 //!
 //! What it proves is the join nothing else covers: that a blob and its namespace proofs,
 //! fetched from a DA node, actually place a signed Eden header inside a Celestia block whose
-//! header a light client verified, and that the state root that falls out is the one Eden's
-//! own RPC reports.
+//! header a light client verified; that the enclave can re-execute its way from an earlier
+//! state to the root in that header; and that the root is the one Eden's own RPC reports.
 
 use tee_coprocessor::celestia::CelestiaReader;
 use tee_coprocessor::celestia_da::DaClient;
+use tee_coprocessor::ethereum::ExecutionReader;
 use tee_node::origins::celestia_l2::{verify_evolve_root, EvolveChain, EvolveHeaderProof};
 
 fn da_url() -> String {
@@ -63,13 +64,50 @@ async fn a_live_eden_header_is_provably_inside_a_celestia_block() {
     let target = tee_node::origins::celestia_l2::newest_signed_header(&data, &EvolveChain::EDEN)
         .expect("a signed eden header")
         .height;
+    // Find a state the enclave can start from: the block before the earliest change in a
+    // window that ends at the target. Widening until something moved is what makes this work
+    // on an idle chain as well as a busy one.
+    let eden = ExecutionReader::new(&eden_url());
+    let mut anchor = None;
+    for span in [2_000u64, 50_000, 400_000] {
+        let from = target.saturating_sub(span);
+        let changed = eden
+            .state_changing_blocks(from, target)
+            .await
+            .expect("looking for eden's state changes");
+        if let Some(first) = changed.first() {
+            println!("{} state changes in the last {span} blocks", changed.len());
+            anchor = Some((first - 1, changed));
+            break;
+        }
+    }
+    let (anchor, changed) = anchor.expect("eden has not changed state in 400k blocks");
+    let trusted_root = eden.state_root(anchor).await.expect("anchor state root");
+    println!("anchored at eden {anchor} root {trusted_root}");
+
+    let mut chain = Vec::new();
+    for number in &changed {
+        chain.push(
+            eden.block_for_execution(*number)
+                .await
+                .unwrap_or_else(|e| panic!("block {number} for execution: {e}")),
+        );
+    }
+
     let proof = EvolveHeaderProof {
         dah,
         data,
+        chain,
         target_height: target,
     };
-    let root = verify_evolve_root(&header, &EvolveChain::EDEN, &proof)
-        .expect("the namespace data must prove into this celestia block");
+    let root = verify_evolve_root(
+        &header,
+        &EvolveChain::EDEN,
+        &proof,
+        anchor,
+        trusted_root.0,
+    )
+    .expect("the chain must re-execute into the signed root");
     println!(
         "attested eden height {} root 0x{}",
         root.height,

@@ -144,9 +144,10 @@ DA              mocha-5, namespace 0000000000000000000000000000000000005d2e07416
 sequencer       4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d630b68d51
 ```
 
-Eden's state root is whatever its sequencer signs: nothing re-executes it. That is a weaker
-guarantee than every other origin here, and [deploy/MAINTAIN.md](deploy/MAINTAIN.md) says so
-plainly.
+The enclave re-executes Eden's blocks and rebuilds the state root for itself, so a signature
+is how a root is *found* rather than why it is believed. The sequencer still decides which
+transactions run and in what order; it cannot invent a state they would not reach.
+[deploy/MAINTAIN.md](deploy/MAINTAIN.md) has what that does and does not buy.
 
 ### Tokens
 

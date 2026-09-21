@@ -2,18 +2,25 @@
 //! sequencer. Eden is the first.
 //!
 //! These have no consensus of their own, so there is no light client to run against them.
-//! What exists instead is a signed header published as a blob in one Celestia namespace, so a
-//! state root is worth exactly as much as two things together:
+//! A state root here rests on three things together:
 //!
-//!   1. the Celestia light client proving the blob was included in a block it verified, and
-//!   2. the pinned sequencer key having signed it.
+//!   1. the Celestia light client proving the blob was included in a block it verified,
+//!   2. the pinned sequencer key having signed the header in it, and
+//!   3. **the enclave re-executing the blocks that produced that root**, from the state the
+//!      ISM already trusts, and arriving at the same root.
 //!
-//! **Nothing is re-executed.** The state root is whatever the sequencer committed to, so a
-//! compromised sequencer can commit anything and this origin will attest it. That is strictly
-//! weaker than every other origin here, where the root is derived from consensus or from an
-//! L1 the enclave verified. celestia-zkevm closes that gap by re-executing the blocks from
-//! witnesses; doing the same here is the upgrade path, and until then an Eden route is as
-//! honest as Eden's sequencer.
+//! The third is what the first two cannot give. A signature says who claimed a root, not
+//! whether the root is what executing the chain produces, and a sequencer that can claim any
+//! root can mint whatever it likes on the far side of the bridge. With re-execution the
+//! sequencer keeps the power it must have - choosing which transactions run, and in what
+//! order - and loses the one it must not: inventing a state those transactions would never
+//! reach. Censorship and reordering remain its to do; theft does not.
+//!
+//! Only the blocks that changed the state are executed, and that is not a shortcut. The chain
+//! of executions has to arrive at the root the sequencer signed for the target height, so a
+//! block left out is a block whose effect is missing from the result, and the roots stop
+//! matching. Eden produces ten blocks a second and nearly all of them are empty, so this is
+//! the difference between verifying a handful of blocks and verifying a million.
 //!
 //! The namespace, the sequencer key and the chain id are pinned below rather than taken from
 //! the request, for the same reason the L2 anchors are: a caller who picks the namespace
@@ -25,6 +32,7 @@ use celestia_types::{Blob, DataAvailabilityHeader};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 use super::AttestedRoot;
+use crate::evm::{execute_block, BlockExec, ExecError};
 
 /// Which evolve chain, and who is allowed to speak for it.
 pub struct EvolveChain {
@@ -68,6 +76,11 @@ pub struct EvolveHeaderProof {
     /// blob is in the block" into "these are all the blobs in the block", which is what lets
     /// the newest header be chosen here instead of by the caller.
     pub data: NamespaceData,
+    /// Every block between the trusted state and the target that changed the state, in
+    /// order. A run of blocks that changed nothing is simply absent: the executions chain by
+    /// state root, so skipping a stretch is the same as asserting the root did not move over
+    /// it, and the final root still has to be the one the sequencer signed.
+    pub chain: Vec<BlockExec>,
     /// Which Eden height to attest out of the ones this block carries.
     ///
     /// Named by the caller rather than chosen here, because the caller can only prove the
@@ -104,6 +117,17 @@ pub enum EvolveError {
     WrongSigner,
     #[error("no header in this celestia block is signed by the pinned sequencer")]
     NoSignedHeader,
+    #[error(transparent)]
+    Execution(#[from] ExecError),
+    #[error("re-executing the chain reaches block {reached}, past the target {target}")]
+    PastTarget { reached: u64, target: u64 },
+    #[error(
+        "re-executing the chain gives state root {got}, but the sequencer signed {want} for \
+         height {height}"
+    )]
+    RootMismatch { got: String, want: String, height: u64 },
+    #[error("nothing between the trusted state and height {height} changed Eden's state")]
+    NoStateChange { height: u64 },
 }
 
 /// The fields of a rollkit signed header this bridge reads.
@@ -121,6 +145,8 @@ pub fn verify_evolve_root(
     celestia_header: &tendermint::block::Header,
     chain: &EvolveChain,
     proof: &EvolveHeaderProof,
+    trusted_height: u64,
+    trusted_state_root: [u8; 32],
 ) -> Result<AttestedRoot, EvolveError> {
     let height = celestia_header.height.value();
     let data_hash = celestia_header
@@ -150,11 +176,53 @@ pub fn verify_evolve_root(
     let header = signed_header_at(&proof.data, chain, proof.target_height)
         .ok_or(EvolveError::NoSignedHeader)?;
 
+    // Everything above says who signed what. This says whether it is true.
+    let executed = replay(proof, trusted_height, trusted_state_root)?;
+    if executed.number > header.height {
+        return Err(EvolveError::PastTarget {
+            reached: executed.number,
+            target: header.height,
+        });
+    }
+    if executed.state_root.0 != header.state_root {
+        return Err(EvolveError::RootMismatch {
+            got: executed.state_root.to_string(),
+            want: alloy_primitives::B256::from(header.state_root).to_string(),
+            height: header.height,
+        });
+    }
+
     Ok(AttestedRoot {
         state_root: alloy_primitives::B256::from(header.state_root),
         height: header.height,
         timestamp: header.time_ns / 1_000_000_000,
     })
+}
+
+/// Where the trusted state ends up once every supplied block has been run on top of it.
+struct Reached {
+    number: u64,
+    state_root: alloy_primitives::B256,
+}
+
+fn replay(
+    proof: &EvolveHeaderProof,
+    trusted_height: u64,
+    trusted_state_root: [u8; 32],
+) -> Result<Reached, EvolveError> {
+    if proof.chain.is_empty() {
+        return Err(EvolveError::NoStateChange {
+            height: proof.target_height,
+        });
+    }
+    let mut number = trusted_height;
+    let mut state_root = alloy_primitives::B256::from(trusted_state_root);
+    for block in &proof.chain {
+        let header = execute_block(number, state_root, block)?;
+        number = header.number;
+        state_root = header.state_root;
+    }
+    Ok(Reached { number, state_root })
 }
 
 /// The header at one height that the pinned sequencer signed, if this block carries it.

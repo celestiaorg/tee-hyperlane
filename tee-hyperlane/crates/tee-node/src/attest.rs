@@ -39,7 +39,9 @@ use hyperlane_types::MerkleTree;
 /// into a refusal.
 ///
 /// 3 turns `tree_snapshot` from a decoded tree into a proof of one.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 4 makes an evolve origin carry the blocks that produced its root, because the enclave now
+/// re-executes them instead of taking the sequencer's word.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// How the enclave is asked to advance one ISM by one step.
 #[derive(Serialize, Deserialize)]
@@ -370,7 +372,13 @@ fn verify_origin_head(
                 _ => return Err(AttestError::EvolveNeedsCelestia),
             };
             Ok((
-                verify_evolve_root(&header, &EvolveChain::EDEN, proof)?,
+                verify_evolve_root(
+                    &header,
+                    &EvolveChain::EDEN,
+                    proof,
+                    trusted.height,
+                    trusted.state_root,
+                )?,
                 commit,
                 celestia_time,
             ))

@@ -233,8 +233,9 @@ export const ORIGIN_FINALITY: Record<ChainId, OriginFinality> = {
     // about ninety seconds; the margin covers a slow blob.
     seconds: 3 * 60,
     reason:
-      "Eden has no consensus of its own. Its sequencer signs each header and publishes it " +
-      "to Celestia, and the enclave waits for that blob before it will attest the root.",
+      "Eden has no consensus of its own. Its sequencer publishes each header to Celestia, " +
+      "and the enclave waits for that blob and re-runs the blocks behind it before it will " +
+      "attest the root.",
   },
 };
 

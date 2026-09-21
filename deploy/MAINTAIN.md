@@ -312,20 +312,39 @@ the L2 anchor contract and its slot layout all being compiled in rather than acc
 
 Eden is an evolve-stack chain: an EVM chain with no consensus of its own, whose single
 sequencer signs each block header and publishes it as a blob in one Celestia namespace on
-mocha. The enclave proves the blob was in a Celestia block its light client verified, checks
-the sequencer's ed25519 signature, and takes the state root out of the signed header.
+mocha. Three things have to hold before the enclave will attest a root from it:
 
-**It does not re-execute.** So the state root is whatever the sequencer says it is. A
-compromised or dishonest Eden sequencer can sign a header naming any state root it likes, and
-every Eden route will attest it: forged messages, minted synthetics, no recourse. That is
-strictly weaker than every other origin here, where the root comes from consensus or from an
-L1 the enclave verified for itself.
+1. the blob was in a Celestia block the light client verified,
+2. the pinned sequencer key signed the header in it, and
+3. **the enclave re-executed the blocks that produced that root** and reached the same root,
+   starting from the state the ISM already trusts.
 
-What the DA check still buys, even without re-execution, is that a header must have been
-published where anyone can see it, rather than handed privately to our relayer.
+The third is the one that matters. A signature says who claimed a root, not whether it is the
+root executing the chain produces, so without re-execution a dishonest sequencer could sign a
+header naming any state it liked and mint whatever it wanted on the far side. With it the
+sequencer keeps the powers a sequencer must have - deciding which transactions run and in
+what order - and loses the one it must not, which is inventing a state those transactions
+would never reach. It cannot sign other people's transactions, so it cannot move their funds.
 
-celestia-zkevm closes the gap by re-executing the blocks from witnesses, and doing the same
-here is the upgrade path. Until then, treat Eden routes as trusting one operator.
+Only the blocks that changed the state are executed. That is not a shortcut: the executions
+chain by state root and the chain has to arrive at the root the sequencer signed for the
+target height, so a block left out is an effect missing from the result and the roots stop
+matching. Eden makes ten blocks a second and nearly all of them are empty, which is the
+difference between verifying a handful of blocks per batch and verifying a million.
+
+The executor lives in `tee-hyperlane/crates/tee-node/src/evm/`: revm for execution, and a
+merkle-patricia trie that reads and rewrites itself through the witness rather than a
+database. It is held to Eden's own answers by `tests/eden_exec.rs`, which replays real blocks
+off the chain, and to a trie built from scratch by `tests/eden_trie.rs`.
+
+**One quirk worth knowing**: Eden does not burn the base fee, it pays it to the block's
+beneficiary along with the priority fee. revm burns it, following Ethereum, so the executor
+credits it back. The first run of it came out short on exactly one account by exactly
+`base_fee * gas_used`, which is how this was found. If Eden ever changes that rule, every
+Eden attestation stops rather than starts lying.
+
+What is left to trust: the sequencer can still censor and reorder, and it can still stop.
+Neither takes anyone's funds, and both are visible.
 
 ### Residual risks
 
@@ -343,4 +362,8 @@ here is the upgrade path. Until then, treat Eden routes as trusting one operator
   set or sync committee to equivocate.
 - L2 roots are trustless only once confirmed, gated on each chain's challenge window.
 - ISM and warp router owners are single EOAs today.
-- Eden's state root is the sequencer's word, as above. It is the weakest link in the set.
+- Eden's sequencer can censor and reorder, and can stop. It cannot forge a state, because the
+  enclave re-executes; see above.
+- Eden's executor is ours rather than reth's, so a transaction it disagrees with halts Eden's
+  routes. That is the safe direction - a disagreement is a refusal, never an acceptance - but
+  it is a liveness risk the other origins do not carry.

@@ -70,9 +70,12 @@ ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier
   tree size.
 - **The `routers` list is a trigger filter**, affecting latency rather than delivery, because
   merkle tree replay forces batch completeness.
-- **Eden is trusted differently.** Its origin route verifies a sequencer signature over a
-  header published to Celestia, and nothing re-executes the block. `deploy/MAINTAIN.md` says
-  so in its Eden section. It is the only origin here whose root is not backed by consensus.
+- **Eden's root is re-executed, not believed.** The enclave runs the blocks that changed the
+  state, from the root the ISM already trusts, and the chain has to arrive at the root the
+  sequencer signed. Only state-changing blocks are sent, which is safe because a missing one
+  shows up as a root mismatch. Eden does **not** burn the base fee: it pays it to the block
+  beneficiary, and the executor credits that back. See `crates/tee-node/src/evm/` and the
+  Eden section of `deploy/MAINTAIN.md`.
 - **Rotating the enclave identity re-points routers, never redeploys them.** Redeploying a
   collateral router abandons its escrow; that stranded real USDC on Sepolia once.
 

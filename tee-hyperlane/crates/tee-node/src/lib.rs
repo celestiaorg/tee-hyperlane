@@ -5,6 +5,7 @@
 
 pub mod attest;
 pub mod dstack;
+pub mod evm;
 pub mod hyperlane_state;
 pub mod origins;
 pub mod state_proofs;

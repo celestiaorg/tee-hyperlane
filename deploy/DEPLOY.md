@@ -590,8 +590,9 @@ determined one. The real bound is the funding account's balance.
 
 Eden differs from the other three in two ways that matter. It has **no canonical Hyperlane
 deployment**, so its mailbox and merkle tree hook are ours. And as an *origin* it has no
-consensus to run a light client against, so its state root comes from a sequencer-signed
-header published to Celestia. See MAINTAIN.md for what that costs in trust.
+consensus to run a light client against, so its state root is found in a sequencer-signed
+header published to Celestia and then **re-executed by the enclave** before it is believed.
+See MAINTAIN.md for what that does and does not buy.
 
 ```
 chain id        3735928814 (0xdeadbfee)   ~10 blocks/s, 18 decimals
@@ -635,6 +636,17 @@ tee-hyperlane bootstrap-eden --rpc https://rpc-mocha.pops.one \
   --da-rpc http://localhost:26658 --identity-digest <digest> \
   --out .state/proofs/eden-to-celestia/staging/attestation.json
 ```
+
+**`l2_rpc` must serve `debug_executionWitness`.** That is what the enclave re-executes
+against, and it is the one field on this route that a plain public endpoint will not answer.
+Unlike `eth_getProof` it is served for historical blocks, so no capture-ahead is needed for
+it. The relayer finds the blocks that changed Eden's state by bisecting on the state root
+between the trusted height and the target, so a quiet stretch costs a handful of
+`eth_getBlockByNumber` calls rather than one per block.
+
+> A route that falls a long way behind will report that a span is "too long to re-execute in
+> one step". That is not a stall: it steps forward through the backlog one attestation at a
+> time, taking the newest height whose re-execution fits.
 
 The rest is ordinary: the Automata stack from step 8, Hyperlane core from `DeployHyperlaneCore`
 then `InitHyperlaneCore`, an ISM, and the two synthetic routers.

@@ -11,6 +11,8 @@ tee-attestation.workspace = true
 celestia-types.workspace = true
 tee-node.workspace = true
 alloy-primitives.workspace = true
+alloy-consensus.workspace = true
+alloy-rlp.workspace = true
 
 anyhow.workspace = true
 base64.workspace = true

@@ -188,6 +188,27 @@ pub fn expected_current_slot(genesis_time: u64) -> u64 {
 /// Both are untrusted. Storage is re-proven inside the enclave against the state root the
 /// light client produced, and a log that names a message the tree does not contain simply
 /// fails the replay.
+/// How many state roots one bisection may read before giving up. Ten a second and a minute
+/// of lag is a span of a few hundred, which a bisection crosses in a handful of reads per
+/// change; this is slack for a busy stretch, not a budget anyone should reach.
+const STATE_ROOT_LOOKUPS: u32 = 400;
+
+/// How many blocks one attestation will ask the enclave to re-execute. Past this the route is
+/// so far behind that it should catch up over several attestations instead.
+const MAX_EXEC_BLOCKS: usize = 32;
+
+fn parse_bytes(v: &serde_json::Value) -> Result<alloy_primitives::Bytes> {
+    let text = v.as_str().context("expected a hex string")?;
+    Ok(hex::decode(text.trim_start_matches("0x"))?.into())
+}
+
+fn parse_bytes_array(v: &serde_json::Value) -> Result<Vec<alloy_primitives::Bytes>> {
+    match v.as_array() {
+        None => Ok(Vec::new()),
+        Some(items) => items.iter().map(parse_bytes).collect(),
+    }
+}
+
 pub struct ExecutionReader {
     rpc: String,
     /// Where `eth_getLogs` goes, which is not always where everything else goes.
@@ -441,6 +462,106 @@ impl ExecutionReader {
             .context("stateRoot")?
             .parse()
             .context("stateRoot parse")?)
+    }
+
+    /// Every block in `(from, to]` whose state root differs from the one before it.
+    ///
+    /// Found by bisection on the state root rather than by reading every header, because
+    /// Eden makes ten blocks a second and almost none of them change anything. A transaction
+    /// always bumps a nonce, so a stretch whose ends share a state root has nothing in it;
+    /// and if that ever failed to hold, the enclave would reject the resulting chain rather
+    /// than accept a gap, because the executions have to arrive at the signed root.
+    pub async fn state_changing_blocks(&self, from: u64, to: u64) -> Result<Vec<u64>> {
+        if to <= from {
+            return Ok(Vec::new());
+        }
+        let lo = self.state_root(from).await?;
+        let hi = self.state_root(to).await?;
+        if lo == hi {
+            return Ok(Vec::new());
+        }
+        let mut found = Vec::new();
+        let mut budget = STATE_ROOT_LOOKUPS;
+        self.bisect(from, lo, to, hi, &mut found, &mut budget).await?;
+        found.sort_unstable();
+        Ok(found)
+    }
+
+    /// Narrow one span that is known to have changed. Recursion is by hand because an async
+    /// function cannot call itself without boxing the future.
+    async fn bisect(
+        &self,
+        lo: u64,
+        lo_root: alloy_primitives::B256,
+        hi: u64,
+        hi_root: alloy_primitives::B256,
+        found: &mut Vec<u64>,
+        budget: &mut u32,
+    ) -> Result<()> {
+        let mut stack = vec![(lo, lo_root, hi, hi_root)];
+        while let Some((lo, lo_root, hi, hi_root)) = stack.pop() {
+            if hi == lo + 1 {
+                found.push(hi);
+                anyhow::ensure!(
+                    found.len() <= MAX_EXEC_BLOCKS,
+                    "more than {MAX_EXEC_BLOCKS} blocks changed state in one span; \
+                     the route is too far behind to catch up in a single attestation"
+                );
+                continue;
+            }
+            anyhow::ensure!(*budget > 0, "gave up looking for Eden's state changes");
+            *budget -= 1;
+            let mid = lo + (hi - lo) / 2;
+            let mid_root = self.state_root(mid).await?;
+            if mid_root != lo_root {
+                stack.push((lo, lo_root, mid, mid_root));
+            }
+            if hi_root != mid_root {
+                stack.push((mid, mid_root, hi, hi_root));
+            }
+        }
+        Ok(())
+    }
+
+    /// One block and its witness, in the shape the enclave re-executes.
+    pub async fn block_for_execution(&self, number: u64) -> Result<tee_node::evm::BlockExec> {
+        use alloy_rlp::Encodable;
+
+        let block = self
+            .call(
+                "eth_getBlockByNumber",
+                serde_json::json!([format!("0x{number:x}"), true]),
+            )
+            .await?;
+        let header: alloy_consensus::Header = serde_json::from_value(block.clone())
+            .with_context(|| format!("block {number} header"))?;
+        let mut header_rlp = Vec::new();
+        header.encode(&mut header_rlp);
+
+        let mut transactions = Vec::new();
+        for tx in block["transactions"].as_array().context("transactions")? {
+            let hash = tx["hash"].as_str().context("transaction hash")?;
+            let raw = self
+                .call("eth_getRawTransactionByHash", serde_json::json!([hash]))
+                .await?;
+            transactions.push(parse_bytes(&raw).context("raw transaction")?);
+        }
+
+        let witness = self
+            .call(
+                "debug_executionWitness",
+                serde_json::json!([format!("0x{number:x}")]),
+            )
+            .await
+            .with_context(|| format!("execution witness for block {number}"))?;
+
+        Ok(tee_node::evm::BlockExec {
+            header: header_rlp.into(),
+            transactions,
+            state: parse_bytes_array(&witness["state"])?,
+            codes: parse_bytes_array(&witness["codes"])?,
+            ancestors: parse_bytes_array(&witness["headers"])?,
+        })
     }
 
     /// Messages inserted into the tree between two blocks, in insert order.
