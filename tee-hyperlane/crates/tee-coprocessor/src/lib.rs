@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod celestia;
+pub mod celestia_da;
 pub mod chains;
 pub mod commands;
 pub mod config;

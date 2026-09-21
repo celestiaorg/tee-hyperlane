@@ -346,6 +346,10 @@ fn read_confirmed_l2_block(rollup: &str, anchor: &str, l1_rpc: &str) -> Option<u
 
 fn read_origin_head(origin: &ChainConfig) -> Option<u64> {
     match origin {
+        // An evolve chain's attestable head is the newest signed header sitting in a Celestia
+        // block the DA node has sampled, which no single view call answers. The scanner
+        // records it instead, the same way Arbitrum's confirmed block is recorded.
+        ChainConfig::CelestiaL2 { .. } => None,
         ChainConfig::Celestia { rpc, .. } => {
             let output = std::process::Command::new("celestia-appd")
                 .args(["status", "--node", rpc, "-o", "json"])

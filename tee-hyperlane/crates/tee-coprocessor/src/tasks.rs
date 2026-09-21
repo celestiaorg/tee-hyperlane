@@ -328,6 +328,36 @@ async fn attest_once(
             )
             .await
         }
+        ChainConfig::CelestiaL2 {
+            l2_rpc,
+            logs_rpc,
+            celestia,
+            da_rpc,
+            mailbox,
+            merkle_tree_hook,
+            merkle_tree_base_slot,
+            ..
+        } => {
+            let ChainConfig::Celestia { rpc, .. } = &**celestia else {
+                anyhow::bail!("an evolve origin's `celestia` must be a Celestia chain")
+            };
+            commands::attest_eden(
+                rpc,
+                da_rpc,
+                l2_rpc,
+                logs_rpc.as_deref(),
+                &route.tee_node_url,
+                &trusted,
+                route.destination.domain(),
+                &route.routers,
+                mailbox,
+                merkle_tree_hook,
+                *merkle_tree_base_slot,
+                lag,
+                Some(path_string(&attestation)),
+            )
+            .await
+        }
     };
 
     attested?;

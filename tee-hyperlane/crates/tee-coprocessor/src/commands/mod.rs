@@ -13,10 +13,12 @@ use crate::config::Config;
 use crate::tasks::{cpu_prover_permit, run_route, ProofStore};
 
 mod celestia;
+mod celestia_l2;
 pub(crate) mod ethereum;
 mod ethereum_l2;
 
 pub use celestia::{attest_celestia, bootstrap_celestia};
+pub use celestia_l2::attest_eden;
 pub use ethereum::{attest_ethereum, bootstrap_ethereum};
 pub use ethereum_l2::{attest_l2, bootstrap_l2, L2Kind};
 
@@ -69,6 +71,34 @@ pub(crate) fn record_checkpoint(out: Option<&str>, checkpoint: &str) {
     if let Err(e) = std::fs::write(dir.join("checkpoint"), checkpoint) {
         debug!(error = %e, "could not record the checkpoint");
     }
+}
+
+/// Which Celestia block this route's light-client store was last at.
+///
+/// An evolve ISM records the *evolve chain's* height in its state, so nothing on chain says
+/// which Celestia header the store belongs to. Without this the route would have to walk
+/// Celestia backwards every tick looking for the one that reproduces the commitment.
+pub(crate) fn record_da_height(out: Option<&str>, height: u64) {
+    let Some(dir) = out
+        .and_then(|o| std::path::Path::new(o).parent())
+        .and_then(|p| p.parent())
+    else {
+        return;
+    };
+    if let Err(e) = std::fs::write(dir.join("da-height"), height.to_string()) {
+        debug!(error = %e, "could not record the DA height");
+    }
+}
+
+pub(crate) fn recorded_da_height(out: Option<&str>) -> Option<u64> {
+    let dir = out
+        .and_then(|o| std::path::Path::new(o).parent())
+        .and_then(|p| p.parent())?;
+    std::fs::read_to_string(dir.join("da-height"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// What `record_checkpoint` last wrote for this route, if anything.

@@ -185,7 +185,7 @@ pub fn verify_evolve_root(
     // of the same message are both valid protobuf and only one is what was signed.
     key.verify(payload, &sig).map_err(|_| EvolveError::BadSignature)?;
 
-    let header = decode_header(payload, chain.chain_id)?;
+    let header = decode_evolve_header(payload, chain.chain_id)?;
     Ok(AttestedRoot {
         state_root: alloy_primitives::B256::from(header.state_root),
         height: header.height,
@@ -316,7 +316,7 @@ fn decode_signed_data(buf: &[u8]) -> Result<(&[u8], &[u8], [u8; 32]), EvolveErro
 
 /// The rollkit header. Field numbers confirmed against Eden by checking `state_root` against
 /// `eth_getBlockByNumber` for twelve randomly chosen heights out of one DA batch.
-fn decode_header(buf: &[u8], expect_chain: &'static str) -> Result<EvolveHeader, EvolveError> {
+pub fn decode_evolve_header(buf: &[u8], expect_chain: &'static str) -> Result<EvolveHeader, EvolveError> {
     let (mut height, mut time_ns, mut root, mut chain_id) = (None, None, None, None);
     let mut r = Reader::new(buf);
     while let Some(item) = r.next() {
@@ -398,7 +398,7 @@ mod tests {
         key.verify(payload, &Signature::from_slice(sig).unwrap())
             .expect("signature verifies over the payload as it arrived");
 
-        let header = decode_header(payload, "edennet-2").expect("header");
+        let header = decode_evolve_header(payload, "edennet-2").expect("header");
         assert_eq!(header.height, KNOWN_HEIGHT);
         assert_eq!(hex::encode(header.state_root), KNOWN_ROOT);
     }
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn the_timestamp_is_nanoseconds_and_lands_in_a_sane_second() {
         let (payload, _, _) = decode_signed_data(REAL).unwrap();
-        let h = decode_header(payload, "edennet-2").unwrap();
+        let h = decode_evolve_header(payload, "edennet-2").unwrap();
         let secs = h.time_ns / 1_000_000_000;
         // Eden is live, so a header's second must be a plausible wall clock, not a slot
         // number or a millisecond count read as nanoseconds.
@@ -451,7 +451,7 @@ mod tests {
         doubled.push(32);
         doubled.extend_from_slice(&[0xff; 32]);
         assert!(matches!(
-            decode_header(&doubled, "edennet-2"),
+            decode_evolve_header(&doubled, "edennet-2"),
             Err(EvolveError::Malformed("field repeated"))
         ));
     }
@@ -465,7 +465,7 @@ mod tests {
     fn a_header_for_another_chain_is_refused() {
         let (payload, _, _) = decode_signed_data(REAL).unwrap();
         assert!(matches!(
-            decode_header(payload, "some-other-net"),
+            decode_evolve_header(payload, "some-other-net"),
             Err(EvolveError::WrongChain { .. })
         ));
     }
