@@ -24,11 +24,11 @@ done
 
 echo
 echo "tee ism"
-for k in enclave-url identity-digest teeism-ism-id; do
+for k in enclave-url identity-digest ism-celestia-sepolia; do
   has "$k" && row "$k" "$(load "$k")"
 done
-if has teeism-ism-id; then
-  state="$(q teeism ism "$(load teeism-ism-id)" 2>/dev/null \
+if has ism-celestia-sepolia; then
+  state="$(q teeism ism "$(load ism-celestia-sepolia)" 2>/dev/null \
     | python3 -c "import sys,json,base64;print(base64.b64decode(json.load(sys.stdin)['ism']['state']).hex())" 2>/dev/null)"
   if [ -n "${state}" ]; then
     row "state root"  "0x${state:0:64}"

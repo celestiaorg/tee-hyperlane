@@ -15,8 +15,8 @@ SEPOLIA_RPC="${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
 # message addresses it.
 SEPOLIA_MERKLE_HOOK="${SEPOLIA_MERKLE_HOOK:-0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d}"
 
-if has teeism-ism-id; then
-  say "tee ism already created: $(load teeism-ism-id)"
+if has ism-celestia-sepolia; then
+  say "tee ism already created: $(load ism-celestia-sepolia)"
   exit 0
 fi
 
@@ -58,7 +58,7 @@ say "creating the tee ism"
 res="$(tx relayer teeism create "${OUT_DIR}/ism.json")"
 ism="$(ev "${res}" "celestia.teeism.v1.EventCreateInterchainSecurityModule" "id")"
 [ -n "${ism}" ] || die "could not read the ism id"
-save teeism-ism-id "${ism}"
+save ism-celestia-sepolia "${ism}"
 
 say "pointing the mailbox default ism at ${ism}"
 tx relayer hyperlane mailbox set "$(load mailbox-id)" --default-ism "${ism}" >/dev/null
