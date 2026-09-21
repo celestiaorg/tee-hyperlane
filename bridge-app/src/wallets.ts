@@ -100,7 +100,7 @@ export async function switchEvmChain(chain: EvmChain): Promise<void> {
         {
           chainId: chain.chainIdHex,
           chainName: chain.name,
-          nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+          nativeCurrency: chain.nativeCurrency ?? { name: "Ether", symbol: "ETH", decimals: 18 },
           rpcUrls: [chain.rpc],
           blockExplorerUrls: [chain.explorer],
         },

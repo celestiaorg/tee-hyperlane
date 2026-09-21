@@ -66,9 +66,9 @@ Enclaves - Phala Cloud `prod9`, image `ghcr.io/jonas089/tee-node`, OS `dstack-0.
 
 | node | app id | serves |
 |---|---|---|
-| `tee-eden-cel` | `b2fd54e94decb4ad0eb6ac28df1e90581ed37369` | the four Celestia-origin routes |
-| `tee-eden-eth` | `d75725da4c70b618e1b8ca60b6770dbdb3b5a64f` | Sepolia, Arbitrum and Base origins |
-| `tee-eden-da` | `007f3f34bc7a1fb9dd6d8c767782211a7f0fd371` | Eden origin, against mocha |
+| `tee-eden2-cel` | `6cc58f925581ff5ec3f76ed78fa31e692c2c4257` | the four Celestia-origin routes |
+| `tee-eden2-eth` | `08640d25537e738670397ba12576315575b345e1` | Sepolia, Arbitrum and Base origins |
+| `tee-eden2-da` | `8a28d356d8546472fdf9bc4318e1538b5140e83e` | Eden origin, against mocha |
 
 All three were deployed independently and measure identically, which is what lets one ISM
 accept any of them.
@@ -78,8 +78,8 @@ mr_td          f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c938269809
 os_image_hash  bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033
 mr_kms         92a4bf40c88734b0e56f54b09b1f0fe4b8d3e230047e9298f491968ada8dedf8
 
-identity       0x5695ff05d9679bb84ed64be5c024f0f80b53c6b13821631f629e7d8713e0644d
-measurements   0x3e160bea734e85ecd58f44828547dfc1c4a7c20527aaf53110f0f71d97f32f99
+identity       0xd448484994f1d10f81bb5bad31c9b29e9079b01fe42ae4cc9841d8e437ad3d2d
+measurements   0x40b2a7bd4c6f191de47741581095605f4e5b366ce970d79d2b4dd1b869584550
 ```
 
 `measurements` is what the EVM ISMs pin: `keccak(mr_td ++ mr_config_id ++ rtmr0..2)`. rtmr3 is
@@ -109,25 +109,25 @@ deployment on each chain:
 
 | chain | ISM |
 |---|---|
-| Ethereum Sepolia | `0x66d52016A35b21CA8c1eB3B187DA0D92Ee4357d0` |
-| Arbitrum Sepolia | `0x5e64f35653d88feF72e573Fd532000Bef4860813` |
-| Base Sepolia | `0x942079a8A8dC96A243d83fF82C71515C60016D91` |
-| Eden | `0xDc3E16C5A0E30bFd01dFd8050Df023c1F88CF374` |
+| Ethereum Sepolia | `0x83B41448ADfBdde1926575f774489892F88190A8` |
+| Arbitrum Sepolia | `0xD50322542cCA994322760f170D3A2df8d7f5817e` |
+| Base Sepolia | `0xcF5929abd3Baa03BB161745319C9E2d2Ce1201C4` |
+| Eden | `0x84D9b9223609CEd908f247DD88f9Ae306a768E2e` |
 
 EVM-origin, all on `teeism-local`, one per origin:
 
 | origin | ISM |
 |---|---|
-| Sepolia (11155111) | `0x726f757465725f69736d000000000000000000000000002b0000000000000008` |
-| Arbitrum (421614) | `0x726f757465725f69736d000000000000000000000000002b0000000000000009` |
-| Base (84532) | `0x726f757465725f69736d000000000000000000000000002b000000000000000a` |
-| Eden (3735928814) | `0x726f757465725f69736d000000000000000000000000002b000000000000000c` |
+| Sepolia (11155111) | `0x726f757465725f69736d000000000000000000000000002b000000000000000d` |
+| Arbitrum (421614) | `0x726f757465725f69736d000000000000000000000000002b000000000000000e` |
+| Base (84532) | `0x726f757465725f69736d000000000000000000000000002b000000000000000f` |
+| Eden (3735928814) | `0x726f757465725f69736d000000000000000000000000002b0000000000000010` |
 
 Four origins deliver into one Celestia token, so a routing ISM fans them out by origin domain.
 It is the token's ISM and the mailbox default:
 
 ```
-routing ism  0x726f757465725f69736d0000000000000000000000000001000000000000000b
+routing ism  0x726f757465725f69736d00000000000000000000000000010000000000000011
 ```
 
 ### Eden

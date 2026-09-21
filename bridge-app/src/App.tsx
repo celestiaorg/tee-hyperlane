@@ -37,7 +37,7 @@ import type { Account } from "./wallets";
 
 /// Every route has Celestia on one side. The bridge is a hub, not a mesh: each EVM chain's
 /// ISM trusts Celestia and Celestia's trusts each EVM chain, and no EVM chain trusts another.
-const COUNTERPARTIES: ChainId[] = ["sepolia", "arbitrum", "base"];
+const COUNTERPARTIES: ChainId[] = ["sepolia", "arbitrum", "base", "eden"];
 const TOKENS: TokenId[] = ["TIA", "USDC"];
 
 /// The relayer and the gas oracle serve their own dashboards beside this one. Linking out

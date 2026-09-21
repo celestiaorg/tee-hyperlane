@@ -39,6 +39,17 @@ decimals = 18
 price_id = "ethereum"
 gas_overhead = 150000
 
+# Eden pays gas in TIA rather than ETH, so its price id is the local one and the ratio the
+# oracle posts is one. Its dispatch side has no paymaster (both mailbox hooks are the merkle
+# tree hook), which is why there is no matching evm_origins entry below.
+[[destinations]]
+name = "Eden"
+domain = 3735928814
+rpc = "https://rpc.testnet.eden.gateway.fm/"
+decimals = 18
+price_id = "celestia"
+gas_overhead = 150000
+
 # The other direction: each EVM chain's own StorageGasOracle, quoting Celestia gas for
 # transfers leaving that chain. Without these the routers quote from an empty oracle, which
 # quotes zero. remote_domain is this deployment's Celestia domain, not mocha's.

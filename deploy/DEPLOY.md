@@ -273,11 +273,11 @@ The two outputs must be identical. The live deployment measures:
 ```
 mr_td          f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077
 os_image_hash  bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033
-compose_hash   f6ad454d9125b4512c72309e55b4e4fe7bab3b527327dd1c12199ad06cd80f5f
+compose_hash   5e159730b7591ea507f15687ba261272653328f9dc5af3537d9b7d87071faad4
 mr_kms         92a4bf40c88734b0e56f54b09b1f0fe4b8d3e230047e9298f491968ada8dedf8
 
-identity       0xd803bb1e4068d907f8a1343df8cc4aecbcec29a287ba1d1f029588f84a641905
-measurements   0xbccc1d1a0259eb0fc7476eb9812eb37d6a516ecd74f2de9595f24fbd4c37b8cd
+identity       0xd448484994f1d10f81bb5bad31c9b29e9079b01fe42ae4cc9841d8e437ad3d2d
+measurements   0x40b2a7bd4c6f191de47741581095605f4e5b366ce970d79d2b4dd1b869584550
 ```
 
 `measurements` is what the EVM ISMs pin: `keccak(mr_td ++ mr_config_id ++ rtmr0..2)`. rtmr3 is
@@ -386,8 +386,8 @@ the key that pays gas. Split them before this carries value.
 
 ## 9. The ISMs
 
-An ISM pins **exactly one origin domain** and one enclave identity. Six routes therefore need
-six ISMs, three on each side.
+An ISM pins **exactly one origin domain** and one enclave identity. Eight routes therefore
+need eight ISMs, four on each side.
 
 ```sh
 ENCLAVE_URL="https://<eth-app-id>-8080.dstack-pha-prod9.phala.network" ./scripts/40-create-ism.sh
@@ -399,35 +399,39 @@ reads a live checkpoint from the origin, and creates the Celestia-side ISM, reco
 `ism-celestia-sepolia`, `identity-digest` and `genesis-state`. `80-evm-isms.sh` deploys
 `TeeDcapIsm` on each EVM chain from `pccs-<chain>.json` plus the same identity.
 
-The two L2-origin Celestia ISMs are created the same way with the origin changed. Live values:
+The other three origin ISMs are created the same way with the origin changed; Eden's uses
+`bootstrap-eden` for its checkpoint (step 11c). Live values:
 
 | origin | ISM on `teeism-local` |
 |---|---|
-| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b0000000000000005` |
-| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b0000000000000006` |
-| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b0000000000000003` |
+| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b000000000000000d` |
+| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b000000000000000e` |
+| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b000000000000000f` |
+| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b0000000000000010` |
 
 | destination | `TeeDcapIsm` |
 |---|---|
-| Ethereum Sepolia | `0xa360fCc411D20a200CE122B21769Fb48ca40DA0B` |
-| Arbitrum Sepolia | `0xD68553577b121b47C30b3a53284DaAbD2A64F16E` |
-| Base Sepolia | `0xA3754E3358EF03D62A59da08B501cFb70357F4A2` |
+| Ethereum Sepolia | `0x83B41448ADfBdde1926575f774489892F88190A8` |
+| Arbitrum Sepolia | `0xD50322542cCA994322760f170D3A2df8d7f5817e` |
+| Base Sepolia | `0xcF5929abd3Baa03BB161745319C9E2d2Ce1201C4` |
+| Eden | `0x84D9b9223609CEd908f247DD88f9Ae306a768E2e` |
 
 ### One ISM is not enough on the Celestia side
 
-Three EVM origins deliver into one Celestia token, and each ISM pins one `origin_domain`, so a
-single ISM rejects two of the three. A routing ISM fans them out:
+Four EVM origins deliver into one Celestia token, and each ISM pins one `origin_domain`, so a
+single ISM rejects three of the four. A routing ISM fans them out:
 
 ```sh
 celestia-appd tx hyperlane ism create-routing
 celestia-appd tx hyperlane ism set-routing-ism-domain $ROUTING 11155111 $SEPOLIA_ISM
 celestia-appd tx hyperlane ism set-routing-ism-domain $ROUTING 421614   $ARBITRUM_ISM
 celestia-appd tx hyperlane ism set-routing-ism-domain $ROUTING 84532    $BASE_ISM
+celestia-appd tx hyperlane ism set-routing-ism-domain $ROUTING 3735928814 $EDEN_ISM
 celestia-appd tx warp set-token $TOKEN --ism-id $ROUTING
 celestia-appd tx hyperlane mailbox set $MAILBOX --default-ism $ROUTING
 ```
 
-Live: `0x726f757465725f69736d00000000000000000000000000010000000000000004`. It is both the
+Live: `0x726f757465725f69736d00000000000000000000000000010000000000000011`. It is both the
 token's ISM and the mailbox default.
 
 > Rotating a route is **remove then set**, not set. `set-routing-ism-domain` inserts a domain
