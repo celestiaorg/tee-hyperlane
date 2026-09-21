@@ -46,7 +46,20 @@ printf '%s' "<alchemy key>"      > alchemy-key  && chmod 600 alchemy-key
 printf '%s' "<24 words>"         > mnemonic     && chmod 600 mnemonic
 ```
 
-`make stop` preserves all three.
+`make stop` preserves all three. `devnet/.gitignore` excludes `.state/`, so nothing here is
+committable; tracked configuration carries placeholders like `ALCHEMY_KEY` instead.
+
+That matters because this repository is public and an Alchemy key was committed to it once,
+in `deploy/server/coprocessor.toml`, where it reached `main`. A key in a public repository is
+scraped quickly, which is a plausible reason that free tier ran out early.
+
+```sh
+deploy/check-secrets.sh                                   # scan tracked files
+ln -s ../../deploy/check-secrets.sh .git/hooks/pre-commit # refuse the commit instead
+```
+
+Rotating is the fix for one already pushed. Removing it from the tip leaves it in history and
+does nothing about whoever already has it.
 
 ## 3. Build
 
