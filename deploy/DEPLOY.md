@@ -745,12 +745,19 @@ VITE_CELESTIA_USDC_ROUTER=<celestia-usdc-token-id>
 VITE_SEPOLIA_RPC=http://<host>:3000/evm/sepolia/
 VITE_ARBITRUM_RPC=http://<host>:3000/evm/arbitrum/
 VITE_BASE_RPC=http://<host>:3000/evm/base/
+VITE_EDEN_RPC=http://<host>:3000/evm/eden/
 VITE_SEPOLIA_ISM=<TeeDcapIsm on sepolia>
 VITE_ARBITRUM_ISM=<TeeDcapIsm on arbitrum>
 VITE_BASE_ISM=<TeeDcapIsm on base>
+VITE_EDEN_ISM=<TeeDcapIsm on eden>
+VITE_SEPOLIA_TIA_ROUTER=<sepolia tia synthetic router>
+VITE_ARBITRUM_TIA_ROUTER=<arbitrum tia synthetic router>
+VITE_BASE_TIA_ROUTER=<base tia synthetic router>
+VITE_EDEN_TIA_ROUTER=<eden tia synthetic router>
 VITE_SEPOLIA_USDC_ROUTER=<sepolia usdc collateral router>
 VITE_ARBITRUM_USDC_ROUTER=<arbitrum usdc synthetic router>
 VITE_BASE_USDC_ROUTER=<base usdc synthetic router>
+VITE_EDEN_USDC_ROUTER=<eden usdc synthetic router>
 VITE_PROVING_SECONDS=30
 ENV
 VITE_DEVNET=1 npm install --silent && VITE_DEVNET=1 npm run build
@@ -759,9 +766,14 @@ cd ../devnet/gateway
 UI_DIST=~/tee-ism-nonzk/bridge-app/dist docker compose up -d
 ```
 
-An empty `VITE_*_USDC_ROUTER` is how a route reports itself as not deployed, so the UI hides
-the control rather than offering one that cannot work. Leave one blank only if that asset
+An empty `VITE_*_ROUTER` is how a route reports itself as not deployed, so the UI hides the
+control rather than offering one that cannot work. Leave one blank only if that asset
 genuinely has no router on that chain.
+
+Adding a chain to the UI is more than these values: `src/config.ts` has to gain a `CHAINS`
+entry, `App.tsx` a name in `COUNTERPARTIES`, and `site.conf` an `/evm/<chain>/` proxy. Eden
+also needed a `nativeCurrency`, because it pays gas in TIA rather than ETH and the default
+tells MetaMask the wrong thing.
 
 `site.conf` ships with `ALCHEMY_ETH/ARB/BASE` placeholders. Substitute them or point them at
 the public endpoints, which is what this deployment does.
