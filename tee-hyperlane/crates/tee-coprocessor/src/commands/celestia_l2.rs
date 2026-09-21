@@ -20,6 +20,11 @@ use crate::ethereum::ExecutionReader;
 /// directory; the recorded height covers every ordinary tick.
 const MAX_STORE_SEARCH: u64 = 400;
 
+/// How far back to look for a Celestia block that actually carries Eden. At roughly one post
+/// a minute against six second blocks, a handful of blocks is plenty; this is slack for a
+/// sequencer that has paused.
+const MAX_DA_WALK: u64 = 60;
+
 fn eden_namespace() -> Namespace {
     let ns = tee_node::origins::celestia_l2::EvolveChain::EDEN.namespace;
     Namespace::new_v0(&ns[18..]).expect("pinned namespace")
@@ -67,27 +72,6 @@ async fn mocha_store_at(
     )
 }
 
-/// Pick the newest Eden header in a Celestia block that advances past the trusted height.
-fn newest_header(
-    blobs: &[celestia_types::Blob],
-    above: u64,
-) -> Option<(usize, tee_node::origins::celestia_l2::EvolveHeader)> {
-    use tee_node::origins::celestia_l2::{decode_evolve_header, EvolveChain};
-    let mut best: Option<(usize, _)> = None;
-    for (i, blob) in blobs.iter().enumerate() {
-        let Ok(header) = decode_evolve_header(&blob.data, EvolveChain::EDEN.chain_id) else {
-            continue;
-        };
-        if header.height <= above {
-            continue;
-        }
-        if best.as_ref().map(|(_, b): &(usize, tee_node::origins::celestia_l2::EvolveHeader)| header.height > b.height).unwrap_or(true) {
-            best = Some((i, header));
-        }
-    }
-    best
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn attest_eden(
     celestia_rpc: &str,
@@ -128,27 +112,37 @@ pub async fn attest_eden(
         "celestia has not advanced past the store ({target} vs {store_height})"
     );
 
-    let blobs = da.blobs(target, &ns).await?;
-    if blobs.is_empty() {
-        super::record_attestable_head(out.as_deref(), trusted.height);
-        anyhow::bail!("nothing to attest; no eden blob in celestia block {target}");
+    // Eden posts about every eleventh Celestia block, and a block without it answers with a
+    // row carrying no shares: an absence proof rather than an error. Walk back to the newest
+    // block that actually carries the namespace.
+    let mut carrying = None;
+    for h in (target.saturating_sub(MAX_DA_WALK)..=target).rev() {
+        let Ok(data) = da.namespace_data(h, &ns).await else {
+            continue;
+        };
+        if data.rows().iter().any(|r| !r.shares.is_empty()) {
+            carrying = Some((h, data));
+            break;
+        }
     }
-    let (index, header) = newest_header(&blobs, trusted.height).ok_or_else(|| {
-        anyhow::anyhow!("nothing to attest; no eden header past {} in this block", trusted.height)
+    let (target, data) = carrying.ok_or_else(|| {
+        anyhow::anyhow!("nothing to attest; no eden data in the last {MAX_DA_WALK} celestia blocks")
     })?;
+    // The same function the enclave runs, so both sides agree on which header is the head.
+    // If they disagreed, the tree would be proven at one height and checked at another.
+    let header = tee_node::origins::celestia_l2::newest_signed_header(
+        &data,
+        &tee_node::origins::celestia_l2::EvolveChain::EDEN,
+    )
+    .ok_or_else(|| anyhow::anyhow!("nothing to attest; no signed eden header in celestia {target}"))?;
     super::record_attestable_head(out.as_deref(), header.height);
-    info!(
-        celestia = target,
-        eden = header.height,
-        blobs = blobs.len(),
-        "attesting eden"
+    anyhow::ensure!(
+        header.height > trusted.height,
+        "eden head {} has not passed the trusted height {}",
+        header.height,
+        trusted.height
     );
-
-    let blob = blobs[index].clone();
-    let proofs = da
-        .proof(target, &ns, blob.commitment.hash())
-        .await
-        .context("blob.GetProof from the DA node")?;
+    info!(celestia = target, eden = header.height, "attesting eden");
 
     // The Hyperlane tree, proven under the state root the sequencer signed for that height.
     let eden = ExecutionReader::new(eden_rpc).with_logs_rpc(logs_rpc);
@@ -190,7 +184,7 @@ pub async fn attest_eden(
                 "store": { "trusted": trusted_block },
                 "updates": [reader.light_block(target).await?],
             },
-            "proof": { "dah": da.dah(target).await?, "blob": blob, "proofs": proofs },
+            "proof": { "dah": da.dah(target).await?, "data": data },
         },
         "tree": evm_tree_input(&tree_proof)?,
         "tree_snapshot": evm_tree_input(&snapshot_proof)?,

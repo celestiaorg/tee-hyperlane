@@ -19,7 +19,8 @@
 //! the request, for the same reason the L2 anchors are: a caller who picks the namespace
 //! picks which chain you are bridging, and a caller who picks the key picks who may sign it.
 
-use celestia_types::nmt::{Namespace, NamespaceProof, NamespacedSha2Hasher, EMPTY_LEAVES};
+use celestia_types::nmt::Namespace;
+use celestia_types::namespace_data::{NamespaceData, NamespaceDataId};
 use celestia_types::{Blob, DataAvailabilityHeader};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
@@ -54,16 +55,19 @@ impl EvolveChain {
     }
 }
 
-/// Everything the caller must supply to place a signed header inside a verified Celestia
+/// Everything the caller must supply to place signed headers inside a verified Celestia
 /// block. All of it is checked; none of it is believed.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvolveHeaderProof {
     /// Must hash to the `data_hash` of the header the light client verified.
     pub dah: DataAvailabilityHeader,
-    /// The blob said to carry the signed header.
-    pub blob: Blob,
-    /// One proof per row root that carries the namespace.
-    pub proofs: Vec<NamespaceProof>,
+    /// Every row of the namespace in that block, with the proof of each.
+    ///
+    /// The whole namespace rather than one blob, because `NamespaceData::verify` also checks
+    /// that the rows are exactly the rows the DAH says carry the namespace. That turns "this
+    /// blob is in the block" into "these are all the blobs in the block", which is what lets
+    /// the newest header be chosen here instead of by the caller.
+    pub data: NamespaceData,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -90,6 +94,8 @@ pub enum EvolveError {
     WrongChain { got: String, want: &'static str },
     #[error("signed header is for a key that is not the pinned sequencer")]
     WrongSigner,
+    #[error("no header in this celestia block is signed by the pinned sequencer")]
+    NoSignedHeader,
 }
 
 /// The fields of a rollkit signed header this bridge reads.
@@ -124,73 +130,69 @@ pub fn verify_evolve_root(
     }
 
     let ns = chain.namespace();
-    if proof.blob.namespace != ns {
-        return Err(EvolveError::WrongNamespace {
-            got: format!("{:?}", proof.blob.namespace),
-            want: format!("{ns:?}"),
-        });
-    }
+    let id = NamespaceDataId::new(ns, height)
+        .map_err(|e| EvolveError::BadProof(e.to_string()))?;
+    // Checks both halves at once: every row proof against its row root, and that the rows
+    // are exactly the ones the DAH says carry this namespace.
+    proof
+        .data
+        .verify(id, &proof.dah)
+        .map_err(|e| EvolveError::BadProof(e.to_string()))?;
 
-    let roots: Vec<_> = proof
-        .dah
-        .row_roots()
-        .iter()
-        .filter(|r| r.contains::<NamespacedSha2Hasher>(ns.into()))
-        .collect();
-    if roots.len() != proof.proofs.len() {
-        return Err(EvolveError::ProofCount {
-            roots: roots.len(),
-            proofs: proof.proofs.len(),
-        });
-    }
-    if roots.is_empty() {
-        return Err(EvolveError::MissingBlob);
-    }
+    let header = newest_signed_header(&proof.data, chain).ok_or(EvolveError::NoSignedHeader)?;
 
-    let shares = proof
-        .blob
-        .to_shares()
-        .map_err(|e| EvolveError::Shares(e.to_string()))?;
-    let leaves: Vec<[u8; 512]> = shares
-        .iter()
-        .map(|s| s.as_ref().try_into().map_err(|_| EvolveError::Malformed("share is not 512 bytes")))
-        .collect::<Result<_, _>>()?;
-
-    // Walk the rows in order, consuming the shares each one proves. An absence proof ends the
-    // walk: it says this row carries the namespace but holds nothing of ours.
-    let mut cursor = 0usize;
-    for (p, root) in proof.proofs.iter().zip(roots) {
-        if p.is_of_absence() {
-            p.verify_complete_namespace(root, EMPTY_LEAVES, ns.into())
-                .map_err(|e| EvolveError::BadProof(format!("{e:?}")))?;
-            break;
-        }
-        let count = (p.end_idx() - p.start_idx()) as usize;
-        let end = cursor
-            .checked_add(count)
-            .filter(|e| *e <= leaves.len())
-            .ok_or(EvolveError::MissingBlob)?;
-        p.verify_complete_namespace(root, &leaves[cursor..end], ns.into())
-            .map_err(|e| EvolveError::BadProof(format!("{e:?}")))?;
-        cursor = end;
-    }
-
-    let (payload, signature, signer) = decode_signed_data(&proof.blob.data)?;
-    if signer != chain.sequencer {
-        return Err(EvolveError::WrongSigner);
-    }
-    let key = VerifyingKey::from_bytes(&chain.sequencer).map_err(|_| EvolveError::BadSignature)?;
-    let sig = Signature::from_slice(signature).map_err(|_| EvolveError::BadSignature)?;
-    // Over the payload exactly as it arrived, never over a re-encoding of it: two encodings
-    // of the same message are both valid protobuf and only one is what was signed.
-    key.verify(payload, &sig).map_err(|_| EvolveError::BadSignature)?;
-
-    let header = decode_evolve_header(payload, chain.chain_id)?;
     Ok(AttestedRoot {
         state_root: alloy_primitives::B256::from(header.state_root),
         height: header.height,
         timestamp: header.time_ns / 1_000_000_000,
     })
+}
+
+/// The newest header in a namespace that the pinned sequencer signed.
+///
+/// Shared with the coprocessor on purpose. The coprocessor has to prove the Hyperlane tree at
+/// whichever height the enclave is going to pick, so both sides running the same function is
+/// what stops them disagreeing about which header is the head.
+///
+/// Anyone may write to a Celestia namespace, so a blob that is not a header this sequencer
+/// signed is skipped rather than fatal.
+pub fn newest_signed_header(data: &NamespaceData, chain: &EvolveChain) -> Option<EvolveHeader> {
+    let ns = chain.namespace();
+    let shares: Vec<_> = data
+        .rows()
+        .iter()
+        .flat_map(|row| row.shares.iter().cloned())
+        .collect();
+    let blobs = Blob::reconstruct_all(shares.iter()).ok()?;
+    let key = VerifyingKey::from_bytes(&chain.sequencer).ok()?;
+
+    let mut best: Option<EvolveHeader> = None;
+    for blob in &blobs {
+        if blob.namespace != ns {
+            continue;
+        }
+        let Ok((payload, signature, signer)) = decode_signed_data(&blob.data) else {
+            continue;
+        };
+        if signer != chain.sequencer {
+            continue;
+        }
+        let Ok(sig) = Signature::from_slice(signature) else {
+            continue;
+        };
+        // Over the payload exactly as it arrived, never over a re-encoding of it: two
+        // encodings of one message are both valid protobuf and only one of them was signed.
+        if key.verify(payload, &sig).is_err() {
+            continue;
+        }
+        let Ok(header) = decode_evolve_header(payload, chain.chain_id) else {
+            continue;
+        };
+        if best.map(|b| header.height > b.height).unwrap_or(true) {
+            best = Some(header);
+        }
+    }
+    best
 }
 
 // ---------------------------------------------------------------- protobuf

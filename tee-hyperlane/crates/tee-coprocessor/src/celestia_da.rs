@@ -10,8 +10,9 @@
 //! roots, blobs or proofs produces an attestation that fails rather than one that is wrong.
 
 use anyhow::{Context, Result};
-use celestia_types::nmt::{Namespace, NamespaceProof};
-use celestia_types::{Blob, DataAvailabilityHeader};
+use celestia_types::namespace_data::NamespaceData;
+use celestia_types::nmt::Namespace;
+use celestia_types::DataAvailabilityHeader;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -73,21 +74,12 @@ impl DaClient {
         Ok(header.dah)
     }
 
-    /// Every blob in one namespace at one height, in square order.
+    /// Every row of one namespace at one height, each with its inclusion proof.
     ///
-    /// An evolve chain posts one blob per block, so a Celestia block that covers a minute of
-    /// Eden holds hundreds of them.
-    pub async fn blobs(&self, height: u64, ns: &Namespace) -> Result<Vec<Blob>> {
-        // `GetAll` answers with null rather than an empty list when the namespace is absent
-        // from the block, which is a normal thing for it to be.
-        let blobs: Option<Vec<Blob>> = self.call("blob.GetAll", json!([height, [ns]])).await?;
-        Ok(blobs.unwrap_or_default())
-    }
-
-    /// The namespace proofs placing one blob in that block's rows.
-    pub async fn proof(&self, height: u64, ns: &Namespace, commitment: &[u8]) -> Result<Vec<NamespaceProof>> {
-        self.call("blob.GetProof", json!([height, ns, commitment]))
-            .await
+    /// The whole namespace rather than a single blob, because the enclave verifies row
+    /// completeness against the DAH and then picks the newest header itself.
+    pub async fn namespace_data(&self, height: u64, ns: &Namespace) -> Result<NamespaceData> {
+        self.call("share.GetNamespaceData", json!([height, ns])).await
     }
 
     pub async fn head(&self) -> Result<u64> {
