@@ -11,6 +11,14 @@ pub struct Config {
     /// is the same whether the chain is busy or idle.
     #[serde(default = "default_tick_secs")]
     pub tick_secs: u64,
+    /// How far behind a Celestia head to attest, in blocks.
+    ///
+    /// One is the structural floor: the app hash for height H lives in the header at H+1, so
+    /// the enclave always reads one block ahead of the state it proves. Anything above that
+    /// is margin against an RPC reporting a head it cannot yet serve proofs for - not against
+    /// reorgs, which Tendermint does not have.
+    #[serde(default = "default_celestia_lag")]
+    pub celestia_lag: u64,
     /// Where finished proofs are kept, so a crash after proving does not discard the work.
     #[serde(default = "default_proof_dir")]
     pub proof_dir: String,
@@ -19,6 +27,14 @@ pub struct Config {
 
 fn default_l2_base_slot() -> u64 {
     151
+}
+
+fn default_ism_module() -> String {
+    "zkism".to_string()
+}
+
+fn default_celestia_lag() -> u64 {
+    2
 }
 
 fn default_tick_secs() -> u64 {
@@ -46,6 +62,25 @@ pub struct RouteConfig {
     /// its own.
     #[serde(default)]
     pub checkpoint: Option<String>,
+    /// Our warp routers on the destination, 32-byte hex, as a Hyperlane message addresses
+    /// them.
+    ///
+    /// What makes a message worth proving for. The destination domain alone is too coarse:
+    /// an origin's tree is shared, so on Sepolia's canonical mailbox every other bridge's
+    /// Celestia-bound traffic reads as ours and starts a proof we have no message in. Naming
+    /// the recipients we actually serve narrows the trigger to our own transfers.
+    ///
+    /// Left empty the route falls back to matching on destination domain, which is the older
+    /// and looser behaviour - wasteful, never unsafe.
+    #[serde(default)]
+    pub routers: Vec<String>,
+    /// Skip proving and submit the enclave's quote as it stands.
+    ///
+    /// A TEE ISM verifies the attestation itself, so wrapping it in a Groth16 proof would
+    /// only re-prove what the destination is about to check anyway. The scanner, the
+    /// finality gate and the trigger are unchanged: all that is removed is the proof.
+    #[serde(default)]
+    pub attest_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +118,13 @@ pub enum ChainConfig {
         grpc: String,
         mailbox_id: String,
         merkle_tree_hook_id: String,
+        /// Which ISM module on the destination holds this route's ISM.
+        ///
+        /// `zkism` verifies a pair of Groth16 proofs; `teeism` verifies the enclave's quote
+        /// directly and needs only one transaction, because there is only ever one quote and
+        /// the second proof existed solely to project it through a second public-value shape.
+        #[serde(default = "default_ism_module")]
+        ism_module: String,
     },
     /// Rides on an Ethereum light client rather than its own.
     EthereumL2 {

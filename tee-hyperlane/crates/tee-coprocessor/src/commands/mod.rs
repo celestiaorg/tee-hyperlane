@@ -94,6 +94,23 @@ const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 
 ///
 /// A heartbeat still needs a non-empty batch: the enclave refuses to attest nothing, and a
 /// chain that has dispatched nothing at all is not falling behind in any sense that matters.
+/// Refuse to commit to a finalized header whose checkpoint has no light-client bootstrap.
+///
+/// A bootstrap exists only for a checkpoint whose block sits on the epoch boundary. When that
+/// slot is empty the finalized checkpoint keeps the root of the block before it, which is
+/// still the canonical checkpoint but which no beacon node will serve. An ISM committed to
+/// such a store can never be rebuilt from, so the route stops for good and the ISM has to be
+/// replaced by hand - the search cannot rescue it either, because it only walks boundaries.
+///
+/// About seven percent of Sepolia boundaries are empty, so this is a regular event rather
+/// than a corner. Waiting costs one epoch; committing costs the route.
+pub fn checkpoint_is_bootstrappable(finalized_slot: u64) -> bool {
+    finalized_slot % SLOTS_PER_EPOCH == 0
+}
+
+/// Slots per epoch. Not a tuning knob: it is what decides which blocks are checkpoints.
+pub const SLOTS_PER_EPOCH: u64 = 32;
+
 pub fn heartbeat_due(out: Option<&str>) -> bool {
     let Some(dir) = out
         .and_then(|o| std::path::Path::new(o).parent())
@@ -143,6 +160,50 @@ pub fn any_for_destination(messages: &[Vec<u8>], destination: u32) -> bool {
             .map(|m| m.destination == destination)
             .unwrap_or(false)
     })
+}
+
+/// Does this batch carry a message for one of our warp routes on this destination?
+///
+/// Stricter than the domain alone, and the difference matters because an origin's tree is
+/// shared. One Celestia transfer bound for Sepolia used to start all three Celestia routes at
+/// once, and every other bridge's Celestia-bound traffic on Sepolia's canonical mailbox
+/// started ours. Matching the recipient against the routers we actually serve means a route
+/// proves for its own transfers and nobody else's.
+///
+/// With no routers configured this is the domain check, unchanged: a route that has not been
+/// told what belongs to it must not conclude that nothing does.
+///
+/// This narrows only the decision to start. The batch still carries every leaf in its range -
+/// that is what makes the replay reproduce the on-chain root - so a message that does not
+/// trigger a proof is still authorised by the next proof that runs, and the twelve-hour
+/// heartbeat bounds how long that can take. Gating affects latency, never delivery.
+pub fn any_for_route(messages: &[Vec<u8>], destination: u32, routers: &[String]) -> bool {
+    if routers.is_empty() {
+        return any_for_destination(messages, destination);
+    }
+    let ours: Vec<[u8; 32]> = routers.iter().filter_map(|r| parse_recipient(r)).collect();
+    if ours.is_empty() {
+        return any_for_destination(messages, destination);
+    }
+    messages.iter().any(|raw| {
+        hyperlane_types::decode_hyperlane_message(raw)
+            .map(|m| m.destination == destination && ours.contains(&m.recipient))
+            .unwrap_or(false)
+    })
+}
+
+/// A router as a Hyperlane message addresses it: 32 bytes, an EVM address left-padded.
+fn parse_recipient(value: &str) -> Option<[u8; 32]> {
+    let raw = hex::decode(value.trim_start_matches("0x")).ok()?;
+    match raw.len() {
+        32 => raw.as_slice().try_into().ok(),
+        20 => {
+            let mut out = [0u8; 32];
+            out[12..].copy_from_slice(&raw);
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 /// Wrap an EVM tree proof as the enclave's internally-tagged `TreeInput`, whose variant
@@ -322,6 +383,7 @@ pub fn enclave_measurements(attestation: &serde_json::Value) -> Result<crate::ap
 
 pub async fn run(config: Config) -> Result<()> {
     let tick = Duration::from_secs(config.tick_secs);
+    let lag = config.celestia_lag;
     let cpu = cpu_prover_permit();
     let store = std::sync::Arc::new(ProofStore::new(expand_home(&config.proof_dir)));
 
@@ -338,6 +400,7 @@ pub async fn run(config: Config) -> Result<()> {
             store.clone(),
             cpu.clone(),
             tick,
+            lag,
         )));
     }
     info!(

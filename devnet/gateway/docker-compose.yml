@@ -1,0 +1,19 @@
+# The public face of the deployment: the UI, the chain RPC and the chain REST on one origin.
+#
+# A container rather than the host's nginx. The host's nginx also serves two unrelated sites
+# that bind port 80, and port 80 is held by another service entirely, so the host nginx
+# cannot start at all. Running our own means this deployment neither depends on that being
+# fixed nor risks changing it.
+#
+# host networking, so 127.0.0.1:26657 and :1317 in site.conf reach the chain directly and
+# the container binds 3000 on the host. 3000 is forwarded from the outside; 26657 and 1317
+# are not, which is the whole reason this proxy exists.
+services:
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: teeism-gateway
+    network_mode: host
+    volumes:
+      - ./site.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${UI_DIST:-./ui}:/opt/bridge-app:ro
+    restart: unless-stopped

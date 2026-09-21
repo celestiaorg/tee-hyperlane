@@ -57,6 +57,7 @@ pub async fn attest_celestia(
     enclave_url: &str,
     trusted_state_hex: &str,
     destination_domain: u32,
+    routers: &[String],
     merkle_tree_hook_hex: &str,
     lag: u64,
     out: Option<String>,
@@ -113,17 +114,30 @@ pub async fn attest_celestia(
 
     // Everything inserted since the ISM's trusted height, in tree order.
     let inserted = history
-        .dispatched_messages(trusted.height + 1, target)
+        .dispatched_messages(trusted.height + 1, target, hook_id)
         .await?;
-    // The tree says how many there should be, so a search that quietly returns too few is
-    // caught here rather than by the enclave rejecting the replay an hour later.
-    anyhow::ensure!(
-        inserted.len() == expected,
-        "the tree grew by {expected} leaves between {} and {target} but the search found {}; \
-         the origin RPC is missing transactions",
-        trusted.height,
-        inserted.len()
-    );
+    // The tree says how many there should be, so a search that disagrees is caught here
+    // rather than by the enclave rejecting the replay an hour later.
+    //
+    // Both directions are real and they have opposite causes, so the message says which it
+    // is. Too few means the origin is not reporting everything: a pruned endpoint answering
+    // an old range with an empty array rather than an error. Too many means the search is
+    // counting what is not in this tree, which is what happens when a second merkle tree hook
+    // exists on the chain and the scan asks for the event rather than for the hook.
+    if inserted.len() != expected {
+        let found = inserted.len();
+        anyhow::bail!(
+            "the tree grew by {expected} leaves between {} and {target} but the search found \
+             {found}; {}",
+            trusted.height,
+            if found < expected {
+                "the origin is not reporting all of them, which a pruned endpoint does by \
+                 answering an empty array rather than an error"
+            } else {
+                "the search is counting leaves from another tree on this chain"
+            }
+        );
+    }
     info!(
         head,
         height = target,
@@ -138,10 +152,10 @@ pub async fn attest_celestia(
     // question as "something was sent here". Proving on the former burned two extra proofs
     // per transfer.
     let ours: Vec<Vec<u8>> = inserted.iter().map(|m| m.message.clone()).collect();
-    if !super::any_for_destination(&ours, destination_domain)
+    if !super::any_for_route(&ours, destination_domain, routers)
         && !super::heartbeat_due(out.as_deref())
     {
-        anyhow::bail!("nothing to attest; no messages for domain {destination_domain}");
+        anyhow::bail!("nothing to attest; no messages for our routes on domain {destination_domain}");
     }
 
     anyhow::ensure!(

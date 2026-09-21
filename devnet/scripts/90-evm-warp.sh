@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Deploy the EVM side of every warp route on every chain, and enroll both directions.
+#
+# This runs after 80-evm-isms.sh because a router's security module is set at initialize
+# time and never changed afterwards: the ISM has to exist before the router that points at
+# it. Both are redeployed on every `make init`, since the ISM pins a fresh enclave and a
+# fresh chain genesis, and a router left pointing at the previous cycle's ISM would accept
+# nothing.
+#
+# Enrollment lives here rather than in 50-warp-celestia.sh so that one step owns both
+# directions of one route. Splitting it across two steps meant the Celestia half ran before
+# the EVM half existed, so it silently enrolled nothing.
+#
+# Two assets run in opposite directions, which is the point of carrying both:
+#
+#   TIA   Celestia native  -> synthetic on all three EVM chains
+#   USDC  EVM native       -> collateral on Sepolia, synthetic on the two L2s
+#
+# Adding a third asset is a row in TOKENS plus its per-chain kind, and nothing else.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+need cast
+need forge
+
+CONTRACTS="${REPO_DIR}/tee-hyperlane/contracts"
+: "${EVM_PRIVATE_KEY:?set EVM_PRIVATE_KEY}"
+
+# Destination gas for a warp delivery. Quoted by the origin hook, which is the noop hook on
+# this devnet, so the value is recorded but never charged.
+WARP_DEST_GAS="${WARP_DEST_GAS:-50000}"
+
+# Circle's own testnet USDC on Sepolia. The collateral router wraps it, so this is the one
+# address here that is not ours and must not be redeployed.
+SEPOLIA_USDC_ERC20="${SEPOLIA_USDC_ERC20:-0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238}"
+
+wait_for_chain
+
+DOMAIN="$(load celestia-domain)"
+
+# chain : chain-id : hyperlane mailbox
+CHAINS="arbitrum:421614:0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8
+base:84532:0x6966b0E55883d49BFB24539356a2f8A673E02039
+sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+
+# label : celestia token state key : state key suffix : name : symbol : decimals
+TOKENS="tia:celestia-token-id:router:Celestia TIA:TIA:6
+usdc:celestia-usdc-token-id:usdc-router:USD Coin:USDC:6"
+
+# Which shape each asset takes on a given chain. Everything is a synthetic except the chain
+# the asset is actually native to, where the router escrows the real ERC20.
+kind_for() {
+  case "$1:$2" in
+    usdc:sepolia) echo collateral ;;
+    *)            echo synthetic  ;;
+  esac
+}
+
+# Reuse a router only if it is real code pointing at the current ISM. Checking the code size
+# and not just the saved address matters: a previous run recorded an address that a simulated
+# deployment had predicted but never broadcast, and every later step trusted it.
+reusable() {
+  local cand="$1" rpc="$2" ism="$3" code cur
+  code="$(cast code "${cand}" --rpc-url "${rpc}" 2>/dev/null || true)"
+  [ -n "${code}" ] && [ "${code}" != "0x" ] || return 1
+  cur="$(cast call "${cand}" "interchainSecurityModule()(address)" --rpc-url "${rpc}" 2>/dev/null || true)"
+  [ "$(printf '%s' "${cur}" | tr 'A-Z' 'a-z')" = "$(printf '%s' "${ism}" | tr 'A-Z' 'a-z')" ]
+}
+
+# `forge script` prints the address it simulated, which exists whether or not the broadcast
+# succeeded, so the printed address alone is not evidence that anything landed.
+confirm_code() {
+  local addr="$1" rpc="$2" code=""
+  for _ in $(seq 1 15); do
+    code="$(cast code "${addr}" --rpc-url "${rpc}" 2>/dev/null || true)"
+    [ -n "${code}" ] && [ "${code}" != "0x" ] && return 0
+    sleep 3
+  done
+  return 1
+}
+
+# A here-string, not a pipe: a piped `while` runs in a subshell, where `die` exits only the
+# subshell and `save` writes state the parent never sees.
+while IFS=: read -r name chainid mailbox; do
+  addr_file="${OUT_DIR}/pccs-${name}.json"
+  [ -f "${addr_file}" ] || { warn "no PCCS on ${name}; skipping"; continue; }
+  rpc="$(python3 -c "import json;print(json.load(open('${addr_file}'))['rpc'])")"
+  has "ism-${name}" || { warn "no ISM on ${name}; skipping"; continue; }
+  ism="$(load "ism-${name}")"
+
+  while IFS=: read -r label token_key suffix tname tsymbol tdec; do
+    has "${token_key}" || { warn "no ${label} token on celestia; skipping"; continue; }
+    token="$(load "${token_key}")"
+    kind="$(kind_for "${label}" "${name}")"
+    key="${name}-${suffix}"
+
+    router=""
+    if has "${key}" && reusable "$(load "${key}")" "${rpc}" "${ism}"; then
+      router="$(load "${key}")"
+      say "${name} already has the ${label} router ${router} on this ISM, skipping"
+    fi
+
+    if [ -z "${router}" ]; then
+      say "deploying the ${kind} ${label} router on ${name}"
+      if [ "${kind}" = collateral ]; then
+        out="$(cd "${CONTRACTS}" && MAILBOX="${mailbox}" TEE_ISM="${ism}" \
+          COLLATERAL_TOKEN="${SEPOLIA_USDC_ERC20}" \
+          forge script script/DeployWarpCollateral.s.sol:DeployWarpCollateral \
+            --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" --broadcast --slow 2>&1)"
+        router="$(printf '%s' "${out}" | sed -n 's/.*HypERC20Collateral.*\(0x[0-9a-fA-F]\{40\}\).*/\1/p' | tail -1)"
+      else
+        out="$(cd "${CONTRACTS}" && MAILBOX="${mailbox}" TEE_ISM="${ism}" \
+          ORIGIN_DOMAIN="${DOMAIN}" ORIGIN_ROUTER="${token}" \
+          TOKEN_NAME="${tname}" TOKEN_SYMBOL="${tsymbol}" TOKEN_DECIMALS="${tdec}" \
+          forge script script/DeployWarpSynthetic.s.sol:DeployWarpSynthetic \
+            --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" --broadcast --slow 2>&1)"
+        router="$(printf '%s' "${out}" | sed -n 's/.*HypERC20 *\(0x[0-9a-fA-F]\{40\}\).*/\1/p' | tail -1)"
+      fi
+      if [ -z "${router}" ]; then
+        printf '%s\n' "${out}" | tail -20 >&2
+        die "${label} router deployment failed on ${name}"
+      fi
+      confirm_code "${router}" "${rpc}" \
+        || die "no code at ${router} on ${name}; the broadcast did not land"
+      save "${key}" "${router}"
+      save "warp-${label}-${name}" "${router}"
+    fi
+
+    # EVM -> Celestia. Idempotent on its own: enrolling the same domain twice overwrites.
+    got="$(cast call "${router}" "routers(uint32)(bytes32)" "${DOMAIN}" --rpc-url "${rpc}" 2>/dev/null || true)"
+    if [ "${got}" != "${token}" ]; then
+      say "enrolling the celestia ${label} token on ${name}"
+      cast send "${router}" "enrollRemoteRouter(uint32,bytes32)" "${DOMAIN}" "${token}" \
+        --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null \
+        || die "enrollRemoteRouter failed for ${label} on ${name}"
+      got="$(cast call "${router}" "routers(uint32)(bytes32)" "${DOMAIN}" --rpc-url "${rpc}" 2>/dev/null || true)"
+    fi
+    [ "${got}" = "${token}" ] || die "${name} ${label} router points at '${got}', expected ${token}"
+    say "  ${label} ${router} ism ${ism}"
+  done <<< "${TOKENS}"
+done <<< "${CHAINS}"
+
+# ---------------------------------------------------------------- Celestia -> EVM
+#
+# Read what the chain actually holds rather than a saved marker. The markers went stale the
+# first time a router address changed underneath them, and the chain rejects enrolling a
+# domain that is already enrolled, so a repoint has to unroll first.
+enroll_from_celestia() {
+  local token="$1" domain="$2" name="$3" label="$4" key="$5"
+  has "${key}" || { warn "no ${name} ${label} router; skipping"; return 0; }
+  local router want got
+  router="$(load "${key}")"
+  want="0x000000000000000000000000$(printf '%s' "${router#0x}" | tr 'A-Z' 'a-z')"
+  got="$(appd query warp remote-routers "${token}" --node "${CELESTIA_RPC}" -o json 2>/dev/null \
+    | jq -r --argjson d "${domain}" '.remote_routers[]? | select(.receiver_domain == $d) | .receiver_contract' \
+    | tr 'A-Z' 'a-z')"
+
+  if [ "${got}" = "${want}" ]; then
+    say "${name} ${label} already enrolled on domain ${domain}"
+    return 0
+  fi
+  if [ -n "${got}" ]; then
+    say "repointing ${label} domain ${domain} from ${got}"
+    tx relayer warp unroll-remote-router "${token}" "${domain}" >/dev/null
+  fi
+  # The 32-byte form, not the 20-byte address: Hyperlane addresses are 32 bytes everywhere,
+  # and this CLI rejects a bare address rather than padding it.
+  say "enrolling ${name} ${label} router ${router} on domain ${domain}"
+  tx relayer warp enroll-remote-router "${token}" "${domain}" "${want}" "${WARP_DEST_GAS}" >/dev/null
+  save "enrolled-${label}-${domain}" "${router}"
+}
+
+while IFS=: read -r label token_key suffix tname tsymbol tdec; do
+  has "${token_key}" || continue
+  token="$(load "${token_key}")"
+  enroll_from_celestia "${token}" "${SEPOLIA_DOMAIN}"          sepolia  "${label}" "sepolia-${suffix}"
+  enroll_from_celestia "${token}" "${BASE_SEPOLIA_DOMAIN}"     base     "${label}" "base-${suffix}"
+  enroll_from_celestia "${token}" "${ARBITRUM_SEPOLIA_DOMAIN}" arbitrum "${label}" "arbitrum-${suffix}"
+done <<< "${TOKENS}"
+
+say "evm warp side ready"

@@ -53,6 +53,14 @@ impl ProofStore {
 
     pub fn prepare(&self, route: &str) -> Result<()> {
         std::fs::create_dir_all(self.root.join(route).join("staging"))?;
+        // A proving marker found at startup is always stale.
+        //
+        // The marker is removed when its guard drops, and a guard does not drop when the
+        // process is killed - so every restart used to leave one behind, and the dashboard
+        // then reported that route as proving for as long as the file sat there. Which is the
+        // misreport the marker was added to fix, arriving by another door. On boot this
+        // process holds no permit by definition, so anything here belongs to a dead one.
+        std::fs::remove_file(self.root.join(route).join("proving")).ok();
         Ok(())
     }
 
@@ -105,43 +113,111 @@ impl Drop for ProvingMarker {
     }
 }
 
-/// Drive one route forever.
+/// Drive one route forever, as two tasks that do not wait on each other.
+///
+/// They used to be one. A route attested, then blocked on the prover permit, then proved,
+/// then submitted - so for the whole of a proof it was not looking at the origin at all.
+/// Anything that arrived behind the batch being proved went unnoticed until the proof
+/// finished, which on this hardware meant hours. Detection was only ever as fast as the tick
+/// for a route that happened to be idle, and with one CPU shared by six routes, idle was the
+/// exception.
+///
+/// Splitting them costs nothing in safety because the constraint that made the loop
+/// sequential is not the loop: it is the chain. A route's trusted height moves one batch at a
+/// time, so there is never a second batch to prove ahead of the first. What the split buys is
+/// that noticing is no longer hostage to proving - the scanner records what is pending the
+/// moment it lands, and the prover starts the instant the CPU is free rather than at the next
+/// tick after it.
 pub async fn run_route(
     route: RouteConfig,
     store: Arc<ProofStore>,
     cpu: Arc<Semaphore>,
     tick: Duration,
+    lag: u64,
 ) {
     store.prepare(&route.name).ok();
-    let mut failures: u32 = 0;
+    let scanning = tokio::spawn(scan_loop(route.clone(), store.clone(), tick, lag));
+    let proving = tokio::spawn(prove_loop(route, store, cpu, tick));
+    // Neither returns. If either ever does, the route is finished either way.
+    let _ = tokio::join!(scanning, proving);
+}
 
+/// Look for work and stage it. Never waits for the prover.
+async fn scan_loop(route: RouteConfig, store: Arc<ProofStore>, tick: Duration, lag: u64) {
+    let mut failures: u32 = 0;
     loop {
-        match advance(&route, &store, &cpu).await {
+        // One batch in flight at a time, because the trusted height only moves one at a time.
+        // While one is staged there is nothing to stage, but the scan still runs: it is what
+        // keeps the attestable head current, which is how the dashboard shows a route as
+        // behind rather than idle.
+        if store.staging(&route.name, "attestation.json").exists()
+            || store.staging(&route.name, "proved.json").exists()
+        {
+            tokio::time::sleep(tick).await;
+            continue;
+        }
+        match attest_once(&route, &store, lag).await {
+            Ok(()) => {
+                failures = 0;
+                store.clear_blocker(&route.name);
+            }
+            Err(e) => {
+                let quiet = is_quiet(&e);
+                if !quiet {
+                    failures = failures.saturating_add(1);
+                    store.record_blocker(&route.name, &e.to_string(), failures);
+                    warn!(
+                        route = %route.name,
+                        error = %e,
+                        consecutive_failures = failures,
+                        retry_in_secs = backoff(tick, failures).as_secs(),
+                        "scan failed"
+                    );
+                } else {
+                    failures = 0;
+                }
+            }
+        }
+        tokio::time::sleep(backoff(tick, failures)).await;
+    }
+}
+
+/// Prove and submit whatever the scanner has staged.
+async fn prove_loop(
+    route: RouteConfig,
+    store: Arc<ProofStore>,
+    cpu: Arc<Semaphore>,
+    tick: Duration,
+) {
+    let mut failures: u32 = 0;
+    loop {
+        match prove_staged(&route, &store, &cpu).await {
             Ok(Some(height)) => {
                 failures = 0;
                 store.clear_blocker(&route.name);
                 info!(route = %route.name, height, "batch delivered");
+                // Straight round again: if the scanner has already staged the next batch
+                // there is no reason to wait a tick to notice.
+                continue;
             }
             Ok(None) => {
+                // Nothing staged. Noticing that one appears costs a local stat, not an RPC,
+                // so there is no reason to wait a whole scan tick to look again: doing so
+                // added up to a full tick of dead time to every transfer, spent showing the
+                // batch as queued while nothing was happening to it.
                 failures = 0;
-                store.clear_blocker(&route.name);
+                tokio::time::sleep(IDLE_POLL.min(tick)).await;
+                continue;
             }
-            // Most failures are transient: the head has not moved, an RPC is down, finality
-            // has not caught up. A few are not, and a batch that can never succeed would
-            // otherwise retry every tick forever. Backing off keeps the log readable and the
-            // gas estimation calls rare, while still reporting every attempt.
             Err(e) => {
                 failures = failures.saturating_add(1);
-                // Recorded as well as logged. A route that has finished proving and cannot
-                // submit looks identical on the dashboard to one still working, unless the
-                // reason it stopped is carried somewhere the dashboard can read.
                 store.record_blocker(&route.name, &e.to_string(), failures);
                 warn!(
                     route = %route.name,
                     error = %e,
                     consecutive_failures = failures,
                     retry_in_secs = backoff(tick, failures).as_secs(),
-                    "tick failed"
+                    "submit failed"
                 );
             }
         }
@@ -163,24 +239,27 @@ fn backoff(tick: Duration, failures: u32) -> Duration {
     tick.saturating_mul(1 << doublings).min(ceiling)
 }
 
+/// How often the submit loop looks for a batch the scanner has staged. Cheap by design: it
+/// is a file stat, and the scan tick is what paces the expensive work.
+const IDLE_POLL: Duration = Duration::from_secs(2);
+
 const MAX_BACKOFF_DOUBLINGS: u32 = 8;
 const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
-/// One pass. Returns the height delivered, or `None` when there was nothing to do.
-///
-/// The stages are the same functions the `attest-*`, `prove` and submit subcommands call,
-/// so a route that misbehaves here can be stepped through by hand with identical results.
-async fn advance(
+/// "Nothing dispatched" is the common case and not worth a warning every tick.
+fn is_quiet(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("nothing to attest")
+        || text.contains("waiting for the next epoch")
+        || text.contains("has not advanced")
+        || text.contains("has not passed")
+}
+
+async fn attest_once(
     route: &RouteConfig,
     store: &ProofStore,
-    cpu: &Arc<Semaphore>,
-) -> Result<Option<u64>> {
-    // A batch left over from a crash is finished first. Attesting past it would strand its
-    // messages permanently - see the module comment.
-    if let Some(height) = finish_staged_batch(route, store)? {
-        return Ok(Some(height));
-    }
-
+    lag: u64,
+) -> Result<()> {
     let trusted = read_ism_state(&route.destination, &route.ism_id)?;
 
     let attestation = store.staging(&route.name, "attestation.json");
@@ -197,8 +276,9 @@ async fn advance(
                 &route.tee_node_url,
                 &trusted,
                 route.destination.domain(),
+                &route.routers,
                 merkle_tree_hook_id,
-                DEFAULT_LAG,
+                lag,
                 Some(path_string(&attestation)),
             )
             .await
@@ -230,6 +310,7 @@ async fn advance(
                 route.checkpoint.as_deref(),
                 &trusted,
                 route.destination.domain(),
+                &route.routers,
                 merkle_tree_hook,
                 mailbox,
                 merkle_tree_base_slot,
@@ -274,6 +355,7 @@ async fn advance(
                 &route.tee_node_url,
                 &trusted,
                 route.destination.domain(),
+                &route.routers,
                 l1_anchor_contract,
                 merkle_tree_hook,
                 mailbox,
@@ -285,32 +367,53 @@ async fn advance(
         }
     };
 
-    // "Nothing dispatched" is the common case and not worth a warning every tick.
-    if let Err(error) = attested {
-        let quiet = error.to_string().contains("nothing to attest")
-            || error.to_string().contains("has not advanced")
-            || error.to_string().contains("has not passed");
-        return if quiet { Ok(None) } else { Err(error) };
+    attested?;
+    Ok(())
+}
+
+/// Prove whatever is staged and submit it. Runs alongside the scan, never in front of it.
+async fn prove_staged(
+    route: &RouteConfig,
+    store: &ProofStore,
+    cpu: &Arc<Semaphore>,
+) -> Result<Option<u64>> {
+    // A batch left over from a crash is finished first. Attesting past it would strand its
+    // messages permanently - see the module comment.
+    if let Some(height) = finish_staged_batch(route, store)? {
+        return Ok(Some(height));
+    }
+
+    let attestation = store.staging(&route.name, "attestation.json");
+    if !attestation.exists() {
+        return Ok(None);
     }
 
     // Hours of CPU are about to be spent on a batch that is no use unless it can be
     // submitted, so establish that it can before spending them rather than after.
-    Destination::new(route.destination.clone(), route.ism_id.clone()).preflight()?;
+    Destination::new(route.destination.clone(), route.ism_id.clone(), route.attest_only).preflight()?;
 
-    // Proving is minutes of CPU, so routes take turns rather than competing for cores.
-    info!(route = %route.name, "waiting for the prover");
-    let _permit = cpu.acquire().await?;
-    // Only one route holds this at a time, so the marker is what lets the dashboard say
-    // "proving" about the one that is, and "queued" about the ones that merely want to be.
-    let _proving = store.mark_proving(&route.name);
     let proved = store.staging(&route.name, "proved.json");
-    commands::prove_for_route(
-        &route.name,
-        &path_string(&attestation),
-        &elf_dir(),
-        &path_string(&proved),
-    )
-    .await?;
+
+    if route.attest_only {
+        // A TEE ISM verifies the quote itself, so there is nothing to prove and no reason to
+        // queue for a core. The staged attestation is already what the destination reads.
+        std::fs::rename(&attestation, &proved)?;
+    } else {
+        // Proving is minutes of CPU, so routes take turns rather than competing for cores.
+        info!(route = %route.name, "waiting for the prover");
+        let _permit = cpu.acquire().await?;
+        // Only one route holds this at a time, so the marker is what lets the dashboard say
+        // "proving" about the one that is, and "queued" about the ones that merely want to
+        // be.
+        let _proving = store.mark_proving(&route.name);
+        commands::prove_for_route(
+            &route.name,
+            &path_string(&attestation),
+            &elf_dir(),
+            &path_string(&proved),
+        )
+        .await?;
+    }
 
     let height = submit_and_file(route, store, &proved)?;
     Ok(Some(height))
@@ -324,7 +427,7 @@ async fn advance(
 /// still in flight.
 fn submit_and_file(route: &RouteConfig, store: &ProofStore, proved: &Path) -> Result<u64> {
     info!(route = %route.name, destination = route.destination.domain(), "submitting");
-    Destination::new(route.destination.clone(), route.ism_id.clone()).submit(proved)?;
+    Destination::new(route.destination.clone(), route.ism_id.clone(), route.attest_only).submit(proved)?;
 
     let height = std::fs::read(proved)
         .ok()
@@ -343,12 +446,56 @@ fn finish_staged_batch(route: &RouteConfig, store: &ProofStore) -> Result<Option
     if !proved.exists() {
         return Ok(None);
     }
+
+    // Both verifiers refuse an attestation older than their skew window, so past that age
+    // this batch can never be accepted however many times it is retried - and because the
+    // scanner will not stage a new batch while one exists, retrying it forever is what turns
+    // a passing outage into a permanently stalled route. Discard it instead: the next scan
+    // rebuilds from the same on-chain checkpoint with a fresh quote, so nothing is skipped.
+    //
+    // This is what lets a route come back on its own after an outage longer than the window,
+    // such as collateral left expired for a few days.
+    if let Ok(age) = std::fs::metadata(&proved).and_then(|m| m.modified()).and_then(|t| {
+        t.elapsed()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    }) {
+        if age > STAGED_BATCH_MAX_AGE {
+            warn!(
+                route = %route.name,
+                age_secs = age.as_secs(),
+                "discarding a staged batch older than the attestation window; rebuilding"
+            );
+            std::fs::remove_file(&proved)?;
+            return Ok(None);
+        }
+    }
+
     warn!(route = %route.name, "resuming a batch left unfinished by an earlier run");
-    submit_and_file(route, store, &proved).map(Some)
+    match submit_and_file(route, store, &proved) {
+        Ok(height) => Ok(Some(height)),
+        Err(e) => {
+            // A batch is built against one ISM state. If the chain has moved past it the
+            // batch is worthless and every retry reverts the same way, while the scanner
+            // refuses to build a replacement because one is staged. Discarding lets the next
+            // scan start from where the chain actually is, which is the only place a new
+            // batch could start from anyway.
+            if e.to_string().contains("stale batch") {
+                warn!(route = %route.name, "discarding a batch the ISM has moved past; rebuilding");
+                std::fs::remove_file(&proved)?;
+                return Ok(None);
+            }
+            Err(e)
+        }
+    }
 }
 
-/// How far behind a Celestia head to attest. The app hash for height H lives in H+1.
-const DEFAULT_LAG: u64 = 8;
+/// How long a staged batch stays worth retrying.
+///
+/// Matches `maxQuoteSkew` on the EVM ISMs and `MaxQuoteSkewSecs` in `x/teeism`, both 24h. Set
+/// slightly under so a batch is rebuilt just before it would start being rejected for age
+/// rather than just after.
+const STAGED_BATCH_MAX_AGE: Duration = Duration::from_secs(23 * 60 * 60);
+
 
 fn elf_dir() -> String {
     std::env::var("TEE_HYPERLANE_ELF_DIR").unwrap_or_else(|_| "../tee-circuit/elf".to_string())
@@ -361,6 +508,48 @@ fn path_string(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipping_an_unbootstrappable_checkpoint_is_not_a_failure() {
+        // The guard fires on roughly seven percent of ticks. Counted as a failure it would
+        // drive the backoff to its thirty minute ceiling and turn a one epoch wait into a
+        // half hour one, while showing a blocker on the dashboard for a route that is fine.
+        let skipped = anyhow::anyhow!(
+            "finalized header at slot 11155871 is mid-epoch, so its checkpoint has no \
+             light-client bootstrap; waiting for the next epoch"
+        );
+        assert!(is_quiet(&skipped));
+        assert!(is_quiet(&anyhow::anyhow!("nothing to attest; no messages for our routes")));
+        assert!(!is_quiet(&anyhow::anyhow!("eth_getLogs refuses even 10 blocks")));
+    }
+
+    #[test]
+    fn only_epoch_boundaries_carry_a_bootstrap() {
+        use crate::commands::{checkpoint_is_bootstrappable, SLOTS_PER_EPOCH};
+        // Measured against the live beacon: slot 11156224 (mod 0) served a bootstrap, slots
+        // 11156159 and 11155871 (mod 31) returned 404 although both were genuine finalized
+        // checkpoints. The empty boundary slot is what moves the checkpoint off the boundary.
+        assert!(checkpoint_is_bootstrappable(11156224));
+        assert!(!checkpoint_is_bootstrappable(11156159));
+        assert!(!checkpoint_is_bootstrappable(11155871));
+        assert_eq!(SLOTS_PER_EPOCH, 32);
+    }
+
+    #[test]
+    fn a_staged_batch_is_discarded_once_it_is_too_old_to_be_accepted() {
+        // Both verifiers reject an attestation older than 24h, so a batch past that age is
+        // unsubmittable no matter how often it is retried. Retrying it anyway is what would
+        // keep a route stalled after the outage that caused it had passed, because the
+        // scanner refuses to stage a new batch while one exists.
+        assert!(
+            STAGED_BATCH_MAX_AGE < Duration::from_secs(24 * 60 * 60),
+            "must expire before the verifiers start rejecting for age, not after"
+        );
+        assert!(
+            STAGED_BATCH_MAX_AGE > MAX_BACKOFF,
+            "a batch must outlive the longest retry pause, or it is thrown away between attempts"
+        );
+    }
 
     #[test]
     fn backoff_grows_then_stops() {

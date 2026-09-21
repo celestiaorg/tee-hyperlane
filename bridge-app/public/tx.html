@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Transaction</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0e14; --fg:#e6e6e6; --dim:#8b93a7; --line:#1e2430; --ok:#4ade80; --bad:#f87171; }
+  body { margin:0; padding:32px 16px; background:var(--bg); color:var(--fg);
+         font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  main { max-width:820px; margin:0 auto; }
+  h1 { font-size:15px; font-weight:600; margin:0 0 4px; letter-spacing:.02em; }
+  .hash { color:var(--dim); word-break:break-all; margin-bottom:24px; }
+  dl { display:grid; grid-template-columns:150px 1fr; gap:8px 16px; margin:0 0 24px; }
+  dt { color:var(--dim); }
+  dd { margin:0; word-break:break-all; }
+  h2 { font-size:13px; color:var(--dim); font-weight:600; margin:24px 0 8px;
+       border-top:1px solid var(--line); padding-top:16px; }
+  pre { background:#111520; border:1px solid var(--line); border-radius:6px; padding:12px;
+        overflow-x:auto; margin:0 0 12px; font-size:12px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  a { color:#7dd3fc; }
+  @media (max-width:560px) { dl { grid-template-columns:1fr; gap:2px 0; } dt { margin-top:8px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Transaction</h1>
+  <div class="hash" id="hash"></div>
+  <div id="out">loading…</div>
+</main>
+<script>
+// The devnet chain has no block explorer, and the UI linked at one that does not exist for
+// it. This renders the transaction straight from the chain's own REST endpoint, which is the
+// only authoritative source here anyway.
+const hash = decodeURIComponent(location.pathname.replace(/^\/tx\//, "")).trim();
+document.getElementById("hash").textContent = hash || "(no hash in url)";
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;" }[c]));
+
+async function render() {
+  const out = document.getElementById("out");
+  if (!hash) { out.textContent = "No transaction hash."; return; }
+  let body;
+  try {
+    const r = await fetch(`/rest/cosmos/tx/v1beta1/txs/${hash}`);
+    if (!r.ok) { out.innerHTML = `<p class="bad">Chain returned ${r.status}. It may not be indexed yet.</p>`; return; }
+    body = await r.json();
+  } catch (e) {
+    out.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return;
+  }
+  const res = body.tx_response || {};
+  const failed = Number(res.code || 0) !== 0;
+  let html = `<dl>
+    <dt>Status</dt><dd class="${failed ? "bad" : "ok"}">${failed ? "failed, code " + res.code : "success"}</dd>
+    <dt>Height</dt><dd>${esc(res.height ?? "?")}</dd>
+    <dt>Timestamp</dt><dd>${esc(res.timestamp ?? "?")}</dd>
+    <dt>Gas used</dt><dd>${esc(res.gas_used ?? "?")} / ${esc(res.gas_wanted ?? "?")}</dd>
+  </dl>`;
+  if (failed && res.raw_log) html += `<h2>Error</h2><pre>${esc(res.raw_log)}</pre>`;
+
+  // The interesting part of a bridge transfer is the hyperlane events, so surface those
+  // above the rest rather than making someone scroll a full tx dump for them.
+  const events = (res.events || []).filter((e) => /hyperlane|teeism/.test(e.type));
+  if (events.length) {
+    html += `<h2>Bridge events</h2>`;
+    for (const ev of events) {
+      const attrs = (ev.attributes || [])
+        .map((a) => `  ${a.key} = ${String(a.value).replace(/^"|"$/g, "")}`).join("\n");
+      html += `<pre>${esc(ev.type)}\n${esc(attrs)}</pre>`;
+    }
+  }
+  const msgs = body.tx?.body?.messages || [];
+  if (msgs.length) html += `<h2>Messages</h2><pre>${esc(JSON.stringify(msgs, null, 2))}</pre>`;
+  out.innerHTML = html;
+}
+render();
+</script>
+</body>
+</html>

@@ -35,7 +35,10 @@ impl EnclaveClient {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into().trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("http client"),
         }
     }
 

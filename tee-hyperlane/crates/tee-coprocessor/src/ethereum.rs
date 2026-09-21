@@ -28,7 +28,10 @@ impl EthereumReader {
     pub fn new(beacon_url: &str) -> Self {
         Self {
             beacon: beacon_url.trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("http client"),
         }
     }
 
@@ -221,7 +224,10 @@ impl ExecutionReader {
         Self {
             rpc: rpc.to_string(),
             logs_rpc: rpc.to_string(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("http client"),
         }
     }
 

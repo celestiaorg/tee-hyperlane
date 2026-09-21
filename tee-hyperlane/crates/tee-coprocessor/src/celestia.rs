@@ -163,6 +163,7 @@ impl CelestiaReader {
         &self,
         from_height: u64,
         to_height: u64,
+        hook_id: [u8; 32],
     ) -> Result<Vec<DispatchedMessage>> {
         // Scanned in windows, because the height range is unbounded in practice.
         //
@@ -196,7 +197,7 @@ impl CelestiaReader {
                     break;
                 }
                 for tx in &results.txs {
-                    out.extend(inserts_in(tx.height.value(), &tx.tx_result.events)?);
+                    out.extend(inserts_in(tx.height.value(), &tx.tx_result.events, hook_id)?);
                 }
                 if results.txs.len() < 100 {
                     break;
@@ -211,7 +212,21 @@ impl CelestiaReader {
 }
 
 /// Pair each tree insertion with the dispatch it came from, matching on message id.
-fn inserts_in(height: u64, events: &[tendermint::abci::Event]) -> Result<Vec<DispatchedMessage>> {
+/// Exposed so the hook filter can be tested against a block carrying two trees' insertions,
+/// which is the shape of the failure that motivated it.
+pub fn inserts_for_test(
+    height: u64,
+    events: &[tendermint::abci::Event],
+    hook_id: [u8; 32],
+) -> Result<Vec<DispatchedMessage>> {
+    inserts_in(height, events, hook_id)
+}
+
+fn inserts_in(
+    height: u64,
+    events: &[tendermint::abci::Event],
+    hook_id: [u8; 32],
+) -> Result<Vec<DispatchedMessage>> {
     let mut dispatched: Vec<Vec<u8>> = Vec::new();
     let mut inserts: Vec<(u32, [u8; 32])> = Vec::new();
 
@@ -223,6 +238,16 @@ fn inserts_in(height: u64, events: &[tendermint::abci::Event]) -> Result<Vec<Dis
                 }
             }
             "hyperlane.core.post_dispatch.v1.EventInsertedIntoTree" => {
+                // Only this route's tree. A chain can carry more than one merkle tree hook,
+                // and the indexed query asks for the event rather than for the hook, so
+                // another deployment's insertions arrive here too. Counting them made a
+                // route report seventy-nine leaves where its own tree had grown by one.
+                let into = attribute(ev, "merkle_tree_hook_id")
+                    .map(|v| decode_hex(&v))
+                    .transpose()?;
+                if into.is_some_and(|id| id.as_slice() != hook_id.as_slice()) {
+                    continue;
+                }
                 let index: u32 = attribute(ev, "index")
                     .context("insert event without index")?
                     .parse()?;

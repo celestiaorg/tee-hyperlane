@@ -1,0 +1,67 @@
+# What a transfer is charged for gas on the far side, in both directions.
+#
+# Once an hour is enough. The quote only has to be close enough that the relayer is not
+# systematically underpaid; between rounds the IGP keeps the last values, which are stale but
+# never zero.
+interval_secs = 3600
+
+igp_id = "0x726f757465725f706f73745f6469737061746368000000040000000000000002"
+celestia_rpc = "http://localhost:26657"
+chain_id = "teeism-local"
+local_price_id = "celestia"
+
+# Signs the EVM-side oracle updates. A path, so the key is never in this file.
+evm_key_file = "/home/chef/tee-ism-nonzk/devnet/.state/evm-key"
+
+# Celestia-origin quotes: what delivery costs on each EVM chain.
+[[destinations]]
+name = "Ethereum Sepolia"
+domain = 11155111
+rpc = "https://ethereum-sepolia-rpc.publicnode.com"
+decimals = 18
+price_id = "ethereum"
+# Measured, not guessed: mailbox.process cost 89k-127k across this deployment's transfers.
+gas_overhead = 150000
+
+[[destinations]]
+name = "Arbitrum Sepolia"
+domain = 421614
+rpc = "https://arbitrum-sepolia-rpc.publicnode.com"
+decimals = 18
+price_id = "ethereum"
+gas_overhead = 150000
+
+[[destinations]]
+name = "Base Sepolia"
+domain = 84532
+rpc = "https://base-sepolia-rpc.publicnode.com"
+decimals = 18
+price_id = "ethereum"
+gas_overhead = 150000
+
+# The other direction: each EVM chain's own StorageGasOracle, quoting Celestia gas for
+# transfers leaving that chain. Without these the routers quote from an empty oracle, which
+# quotes zero. remote_domain is this deployment's Celestia domain, not mocha's.
+[[evm_origins]]
+name = "Ethereum Sepolia"
+rpc = "https://ethereum-sepolia-rpc.publicnode.com"
+storage_gas_oracle = "0x225B8488242c90085B7A8Ea33Ce8e39Ae9f79722"
+remote_domain = 1297040299
+decimals = 18
+price_id = "ethereum"
+
+[[evm_origins]]
+name = "Arbitrum Sepolia"
+rpc = "https://arbitrum-sepolia-rpc.publicnode.com"
+storage_gas_oracle = "0xfA8036Cb092079B095ed60750d7b39c3C220F288"
+remote_domain = 1297040299
+decimals = 18
+price_id = "ethereum"
+
+[[evm_origins]]
+name = "Base Sepolia"
+rpc = "https://base-sepolia-rpc.publicnode.com"
+storage_gas_oracle = "0x7A7042C8784700618be87Aac7F9336620e216Bb9"
+remote_domain = 1297040299
+decimals = 18
+price_id = "ethereum"

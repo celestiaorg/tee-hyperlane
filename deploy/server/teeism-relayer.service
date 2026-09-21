@@ -1,0 +1,28 @@
+[Unit]
+Description=TEE ISM relayer (direct attestation, no proving)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chef
+WorkingDirectory=/home/chef/tee-ism-nonzk
+Environment=HOME=/home/chef
+Environment=PATH=/home/chef/tee-ism-nonzk/devnet/.state/bin:/home/chef/.foundry/bin:/usr/local/go/bin:/home/chef/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=APPD=/home/chef/tee-ism-nonzk/devnet/.state/bin/celestia-appd
+Environment=COLLATERAL_BIN=/home/chef/tee-ism-nonzk/devnet/.state/bin/teeism-collateral
+Environment=CELHOME=/home/chef/tee-ism-nonzk/devnet/.state/celestia
+Environment=CELESTIA_CHAIN_ID=teeism-local
+Environment=CELESTIA_KEY=relayer
+Environment=CELESTIA_DOMAIN=1297040299
+Environment=CELESTIA_RPC=http://localhost:26657
+Environment=TEE_HYPERLANE_DEPLOY_DIR=/home/chef/tee-ism-nonzk/deploy
+Environment=TEE_COPROCESSOR_CONFIG=/home/chef/tee-ism-nonzk/devnet/.state/coprocessor.toml
+Environment=RUST_LOG=info
+EnvironmentFile=/home/chef/tee-ism-nonzk/devnet/.env
+ExecStart=/home/chef/tee-ism-nonzk/tee-hyperlane/target/release/tee-hyperlane run --config /home/chef/tee-ism-nonzk/devnet/.state/coprocessor.toml
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

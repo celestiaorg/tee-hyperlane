@@ -10,6 +10,20 @@
 const sameOrigin = (path: string): string =>
   typeof window === "undefined" ? path : `${window.location.origin}${path}`;
 
+/// A deployment value that the local devnet overrides.
+///
+/// `make start` writes these into .env.local from what `make init` actually deployed, so the
+/// devnet points at a chain whose ids are minted at genesis and cannot be known in advance.
+/// Unset, every one of them falls back to the live testnet value below.
+const env = (key: string, fallback: string): string =>
+  (import.meta.env[key] as string | undefined) ?? fallback;
+
+const envNum = (key: string, fallback: number): number => {
+  const raw = import.meta.env[key] as string | undefined;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 export type ChainId = "sepolia" | "arbitrum" | "base" | "celestia";
 export type TokenId = "TIA" | "USDC";
 
@@ -51,10 +65,12 @@ export const CHAINS: Record<ChainId, Chain> = {
     name: "Ethereum Sepolia",
     domain: 11155111,
     chainIdHex: "0xaa36a7",
-    rpc: "https://ethereum-sepolia-rpc.publicnode.com",
+    // Proxied by the server that serves this app, so the browser never depends on a
+    // rate-limited public endpoint and the upstream key stays server side.
+    rpc: env("VITE_SEPOLIA_RPC", "https://ethereum-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.etherscan.io",
     mailbox: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
-    ism: "0x6f31D79D898f86a60832Fd1caB31ceC67Bc71Fb6",
+    ism: env("VITE_SEPOLIA_ISM", "0x6f31D79D898f86a60832Fd1caB31ceC67Bc71Fb6") as `0x${string}`,
   },
   arbitrum: {
     kind: "evm",
@@ -62,10 +78,10 @@ export const CHAINS: Record<ChainId, Chain> = {
     name: "Arbitrum Sepolia",
     domain: 421614,
     chainIdHex: "0x66eee",
-    rpc: "https://arbitrum-sepolia-rpc.publicnode.com",
+    rpc: env("VITE_ARBITRUM_RPC", "https://arbitrum-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.arbiscan.io",
     mailbox: "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8",
-    ism: "0x21bdf13D66D3e5F0D4793B64bb4c85034B9EDc88",
+    ism: env("VITE_ARBITRUM_ISM", "0x21bdf13D66D3e5F0D4793B64bb4c85034B9EDc88") as `0x${string}`,
   },
   base: {
     kind: "evm",
@@ -73,17 +89,17 @@ export const CHAINS: Record<ChainId, Chain> = {
     name: "Base Sepolia",
     domain: 84532,
     chainIdHex: "0x14a34",
-    rpc: "https://base-sepolia-rpc.publicnode.com",
+    rpc: env("VITE_BASE_RPC", "https://base-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.basescan.org",
     mailbox: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
-    ism: "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729",
+    ism: env("VITE_BASE_ISM", "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729") as `0x${string}`,
   },
   celestia: {
     kind: "cosmos",
     id: "celestia",
-    name: "Celestia Mocha",
-    domain: 1297040200,
-    chainId: "mocha-5",
+    name: env("VITE_CELESTIA_NAME", "Celestia Mocha"),
+    domain: envNum("VITE_CELESTIA_DOMAIN", 1297040200),
+    chainId: env("VITE_CELESTIA_CHAIN_ID", "mocha-5"),
     // Same-origin by default, both of them, and for the same reason in two flavours.
     //
     // Mocha's public REST sends no CORS header at all. Its RPC is worse: it answers the
@@ -93,29 +109,47 @@ export const CHAINS: Record<ChainId, Chain> = {
     // the console pointing at the cause. Both are proxied by the server that serves this app.
     rpc: import.meta.env.VITE_CELESTIA_RPC ?? sameOrigin("/celestia-rpc"),
     rest: import.meta.env.VITE_CELESTIA_REST ?? "/celestia",
-    explorer: "https://mocha.celenium.io",
+    explorer: env("VITE_CELESTIA_EXPLORER", "https://mocha.celenium.io"),
     bech32Prefix: "celestia",
     denom: "utia",
-    mailboxId: "0x68797065726c616e650000000000000000000000000000000000000000000000",
+    mailboxId: env(
+      "VITE_CELESTIA_MAILBOX_ID",
+      "0x68797065726c616e650000000000000000000000000000000000000000000000",
+    ),
     /// The paymaster a Celestia-origin transfer pays, quoted live before sending.
-    igpId: "0x726f757465725f706f73745f6469737061746368000000040000000000000002",
-    ismId: "0x726f757465725f69736d0000000000000000000000000001000000000000000c",
+    ///
+    /// The devnet has no paymaster: its mailbox has no required hook, so dispatch is free and
+    /// there is nothing to quote.
+    igpId: env(
+      "VITE_CELESTIA_IGP_ID",
+      "0x726f757465725f706f73745f6469737061746368000000040000000000000002",
+    ),
+    ismId: env(
+      "VITE_CELESTIA_ISM_ID",
+      "0x726f757465725f69736d0000000000000000000000000001000000000000000c",
+    ),
   },
 };
 
 /** A warp router, per chain, per token. `null` where the route is not deployed yet. */
 export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
   TIA: {
-    celestia: "0x726f757465725f61707000000000000000000000000000010000000000000000",
-    sepolia: "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE",
+    celestia: env(
+      "VITE_CELESTIA_TIA_ROUTER",
+      "0x726f757465725f61707000000000000000000000000000010000000000000000",
+    ),
+    sepolia: env("VITE_SEPOLIA_TIA_ROUTER", "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE"),
     arbitrum: "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE",
     base: "0xf4197C55C944987E9b10e09C0A47915211769B78",
   },
+  // A deployment that has not created these leaves them unset, and the route reports itself
+  // as not deployed rather than offering a Bridge button that cannot work. The addresses are
+  // the previous deployment's; they are defaults, not a claim that this one has them.
   USDC: {
-    celestia: "0x726f757465725f61707000000000000000000000000000020000000000000001",
-    sepolia: "0xfb611B6f6CE92033960e99C2D65cee4237e64cDD",
-    arbitrum: "0xb9E5E3eb926EA22B951d2fb7392F9F3D6c704054",
-    base: "0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B",
+    celestia: env("VITE_CELESTIA_USDC_ROUTER", "0x726f757465725f61707000000000000000000000000000020000000000000001"),
+    sepolia: env("VITE_SEPOLIA_USDC_ROUTER", "0xfb611B6f6CE92033960e99C2D65cee4237e64cDD"),
+    arbitrum: env("VITE_ARBITRUM_USDC_ROUTER", "0xb9E5E3eb926EA22B951d2fb7392F9F3D6c704054"),
+    base: env("VITE_BASE_USDC_ROUTER", "0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B"),
   },
 };
 
@@ -131,12 +165,13 @@ export const CELESTIA_DENOM: Record<TokenId, string> = {
   USDC: "hyperlane/0x726f757465725f61707000000000000000000000000000020000000000000001",
 };
 
-/// Two Groth16 proofs on the coprocessor's CPU, plus the wait for a free prover.
+/// What happens between the origin finalising and the funds arriving.
 ///
-/// Measured on the machine actually running this, not estimated: 2857s and 2592s for the two
-/// proofs of one batch. Routes share a single prover, so a transfer can also queue behind
-/// another route's batch, which is why this is not simply the sum.
-export const PROVING_SECONDS = 100 * 60;
+/// Nothing is proved any more: the destination verifies the enclave's quote itself, so this
+/// is one attestation plus one transaction. Measured end to end on this deployment, not
+/// estimated: 16s and 23s for Celestia to Arbitrum. The default leaves room for a relayer
+/// tick and a slow destination block.
+export const PROVING_SECONDS = envNum("VITE_PROVING_SECONDS", 45);
 
 /// How long each origin takes to reach the finality the enclave will attest, and why.
 ///
@@ -186,13 +221,32 @@ export const SLOW_ORIGIN_SECONDS = 60 * 60;
 export const RELAYER_API = import.meta.env.VITE_RELAYER_API ?? "/api";
 
 export function routerFor(token: TokenId, chain: ChainId): string | null {
-  return ROUTERS[token][chain] ?? null;
+  // An empty string means "this deployment does not have it", which is how a route is turned
+  // off from configuration without shipping a different build.
+  const router = ROUTERS[token][chain];
+  return router ? router : null;
 }
 
 /// Celestia is the hub: every route has it on one side. No EVM chain's ISM trusts another
 /// EVM chain, so an EVM-to-EVM pair is not a route even when both routers exist.
 export function routeIsLive(token: TokenId, from: ChainId, to: ChainId): boolean {
-  if (from === to) return false;
-  if (from !== "celestia" && to !== "celestia") return false;
-  return routerFor(token, from) !== null && routerFor(token, to) !== null;
+  return whyNotLive(token, from, to) === null;
+}
+
+/// Why this pair cannot be bridged, or null if it can.
+///
+/// Worth separating, because the two reasons are nothing alike and one message for both
+/// blamed the wrong thing. An EVM to EVM pair is not a route for *any* token, so saying the
+/// token is not deployed sends someone looking for a missing deployment that was never meant
+/// to exist. A missing router really is a missing deployment, and names the chain it is
+/// missing on.
+export function whyNotLive(token: TokenId, from: ChainId, to: ChainId): string | null {
+  if (from === to) return "Pick two different chains.";
+  if (from !== "celestia" && to !== "celestia") {
+    return `Every route goes through ${CHAINS.celestia.name}, so ${CHAINS[from].name} to ${CHAINS[to].name} is two transfers rather than one. Bridge to ${CHAINS.celestia.name} first.`;
+  }
+  for (const c of [from, to]) {
+    if (routerFor(token, c) === null) return `${token} is not deployed on ${CHAINS[c].name} yet.`;
+  }
+  return null;
 }

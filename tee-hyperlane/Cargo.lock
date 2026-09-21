@@ -7763,6 +7763,7 @@ dependencies = [
  "sp1-sdk",
  "tee-attestation",
  "tee-node",
+ "tempfile",
  "tendermint",
  "tendermint-light-client-verifier",
  "tendermint-rpc",
