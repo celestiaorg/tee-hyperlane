@@ -137,7 +137,7 @@ if [ "${REBUILD}" -eq 1 ]; then
     note "rebuilt config digest ${CONFIG}"
     note "compose pins manifest digest ${DIGEST}"
     note "these are different objects and are not expected to be equal; compare the config"
-    note "digest against docs/verify-deployment.md, which records the expected value"
+    note "digest against deploy/MAINTAIN.md, which records the expected value"
   fi
 else
   note "not rebuilt. ${DIGEST} is the registry's word until you run --rebuild,"

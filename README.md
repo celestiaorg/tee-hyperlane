@@ -39,28 +39,25 @@ tee-circuit/     enclave identity check, and the SP1 programs the testnet path u
 tee-hyperlane/   the enclave, the coprocessor, TeeDcapIsm.sol, the CLI
 bridge-app/      React UI, MetaMask + Keplr
 devnet/          the whole stack against a local chain, and the gateway
-deploy/          compose file, submit scripts, systemd and nginx
-docs/            integration guide
+deploy/          the guides, the measured compose file, submit scripts, systemd units
 ```
 
 ## Docs
 
-- [docs/integrations.md](docs/integrations.md) - adding a chain: EVM rollups, evolve-stack,
-  and entirely new chains like Solana.
-- [deploy/DEPLOYMENT.md](deploy/DEPLOYMENT.md) - live addresses and the deployment footguns.
-- [deploy/E2E.md](deploy/E2E.md) - the four testnet transfers, with what each cost.
-- [deploy/server/TEEISM-SERVER.md](deploy/server/TEEISM-SERVER.md) - the live deployment:
-  routers, the routing ISM, the paymaster and the oracle.
-- [deploy/server/REPRODUCE.md](deploy/server/REPRODUCE.md) - standing the whole thing up on
-  another host, including the parts that only fail on Linux.
-- [deploy/server/README.md](deploy/server/README.md) - the Groth16 deployment this replaced.
-- [bridge-app/README.md](bridge-app/README.md) - the UI.
-- [docs/verify-deployment.md](docs/verify-deployment.md) - checking that what is deployed is
-  what is in this repo, without taking its word for it.
-- [docs/redeploy.md](docs/redeploy.md) - replacing an enclave.
+Three guides, all in [deploy/](deploy/):
 
-See [docs/verify-deployment.md](docs/verify-deployment.md) to check any of the values
-below yourself, without trusting this file.
+- **[deploy/DEPLOY.md](deploy/DEPLOY.md)** - standing up a whole bridge from nothing: where
+  every config lives and what goes in it, the enclave image, the Phala CVMs, the chain, the
+  Automata DCAP stack per EVM chain, the ISMs, warp routes, adding your own asset, and adding
+  a chain the bridge has never seen.
+- **[deploy/MAINTAIN.md](deploy/MAINTAIN.md)** - the monthly collateral job, replacing an
+  enclave, what forces a redeploy, telling a waiting route from a stuck one, and the trust
+  model.
+- **[deploy/INTERACT.md](deploy/INTERACT.md)** - Keplr and MetaMask, the CLI, what each route
+  should take, what it costs, and how to check the chain rather than the UI.
+
+Run `deploy/verify-digest.sh <app-id>` to check any value below yourself, without trusting
+this file.
 
 ## Deployments
 
@@ -123,16 +120,16 @@ on both creation and runtime bytecode:
 
 | chain | ISM |
 |---|---|
-| Ethereum Sepolia | `0xa3F11DD21ed9cf1dEe688c68F1393E6810B379ce` |
-| Arbitrum Sepolia | `0xA3754E3358EF03D62A59da08B501cFb70357F4A2` |
-| Base Sepolia | `0x218D41065A4599426c8dD8a3eb33d1b29F23A488` |
+| Ethereum Sepolia | `0xa360fCc411D20a200CE122B21769Fb48ca40DA0B` |
+| Arbitrum Sepolia | `0xD68553577b121b47C30b3a53284DaAbD2A64F16E` |
+| Base Sepolia | `0xA3754E3358EF03D62A59da08B501cFb70357F4A2` |
 
 EVM-origin, all on `teeism-local`, one per origin:
 
 | origin | ISM |
 |---|---|
-| Sepolia (11155111) | `0x726f757465725f69736d000000000000000000000000002b0000000000000001` |
-| Arbitrum (421614) | `0x726f757465725f69736d000000000000000000000000002b0000000000000002` |
+| Sepolia (11155111) | `0x726f757465725f69736d000000000000000000000000002b0000000000000005` |
+| Arbitrum (421614) | `0x726f757465725f69736d000000000000000000000000002b0000000000000006` |
 | Base (84532) | `0x726f757465725f69736d000000000000000000000000002b0000000000000003` |
 
 Three origins deliver into one Celestia token, so a routing ISM fans them out by origin
@@ -146,8 +143,8 @@ routing ism  0x726f757465725f69736d00000000000000000000000000010000000000000004
 It is the token's ISM and the mailbox default.
 
 The EVM side verifies through our own Automata DCAP deployment, not Automata's, so the
-collateral is ours to keep current. Addresses and the monthly job are in
-[devnet/DEPLOYMENT.md](devnet/DEPLOYMENT.md).
+collateral is ours to keep current. Addresses are in [deploy/DEPLOY.md](deploy/DEPLOY.md) and
+the monthly job is in [deploy/MAINTAIN.md](deploy/MAINTAIN.md).
 
 ### Tokens
 
@@ -202,9 +199,9 @@ One host runs everything that is not an enclave, including the chain.
 ```
 
 Only 3000 and 80 are reachable from outside that host, and 80 is taken, which is why the
-chain's own ports are proxied rather than exposed. Units and configuration are in
-[deploy/server/](deploy/server/); [deploy/server/TEEISM-SERVER.md](deploy/server/TEEISM-SERVER.md)
-is how to stand the whole thing up, including the parts `make init` does not cover.
+chain's own ports are proxied rather than exposed. Units and configuration templates are in [deploy/server/](deploy/server/);
+[deploy/DEPLOY.md](deploy/DEPLOY.md) is how to stand the whole thing up, including the parts
+`make init` does not cover.
 
 ```
 teeism-celestia     docker   the chain
@@ -214,7 +211,7 @@ teeism-api          systemd  attestation lookup
 teeism-gas-oracle   systemd  paymaster upkeep
 ```
 
-Full detail, including deployment footguns, in [deploy/DEPLOYMENT.md](deploy/DEPLOYMENT.md).
+Full detail, including the deployment footguns, in [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 ## Run the tests
 
@@ -260,15 +257,15 @@ enclave exists.
 7. Create the paymaster and start the oracle.
 8. `tee-hyperlane run`.
 
-`make init` does steps 1 to 5. Steps 6 and 7 are in
-[deploy/server/TEEISM-SERVER.md](deploy/server/TEEISM-SERVER.md).
+`make init` does steps 1 to 5. Every step, including 6 and 7, is in
+[deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 Until step 3, `require_enclave = false` builds a circuit that accepts any genuine non-debug
 TDX enclave on an acceptable TCB level. That is enough to develop and test against, and it is
 not silent: such a build warns at compile time and produces a distinct
 `ANY-DEVELOPMENT-ONLY` identity digest that is visible in the ISM state on chain.
 
-Two things bite here, both recorded in `deploy/DEPLOYMENT.md`: `phala deploy` picks a *dev*
+Two things bite here, both recorded in `deploy/DEPLOY.md`: `phala deploy` picks a *dev*
 OS image unless you pass `--image`, and dev images allow SSH into the CVM. And a Phala node
 whose teepod reports no gateway domain will accept TLS and then answer nothing, however
 healthy the container is.

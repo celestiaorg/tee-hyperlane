@@ -1,0 +1,79 @@
+# CLAUDE.md
+
+## What this repo is
+
+A Hyperlane bridge between Celestia and three EVM testnets where messages are authorised by a
+light client running inside a TDX enclave. The destination verifies the enclave's TDX quote
+directly. There is no zero-knowledge proof anywhere in this path. `README.md` has the
+architecture.
+
+**The SP1/Groth16 stack that used to sit at this path is gone.** It survives only as `main` on
+GitHub (`jonas089/tee-hyperlane`, commit `e2272a0`). If you find yourself reading about
+`tee-circuit/programs/state-transition`, SP1 vkeys, or a Groth16 verifier contract, you are
+looking at the old stack, not at what runs. The two differ in a way that matters: the old one
+ran DCAP inside the circuit, so nothing expired on chain; this one verifies DCAP on chain via
+Automata PCCS on each EVM chain, so EVM-destination routes depend on collateral that goes stale.
+Celestia-destination routes carry fresh collateral in the transaction and do not.
+
+## Branch
+
+`jonas/tee-ism` is the live branch and the one to work on. `main` is the old ZK stack. Do not
+merge or push to `main` without asking.
+
+## What is deployed
+
+Server "ark", Zurich, `chef@178.199.12.26`, checkout at `~/tee-ism-nonzk`. It is an rsync of
+this tree with no `.git`, so nothing there is committable.
+
+- systemd: `teeism-relayer`, `teeism-api`, `teeism-gas-oracle`, `bridge-ui`
+- a local celestia-app devnet, not mocha, with pruning disabled
+- nginx gateway on `:3000` exposing `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`
+- six routes: `celestia-to-sepolia`, `celestia-to-arbitrum`, `celestia-to-base`,
+  `sepolia-to-celestia`, `arbitrum-to-celestia`, `base-to-celestia`
+- two tokens: TIA (Celestia collateral, synthetic on EVM) and USDC (Sepolia collateral,
+  synthetic elsewhere)
+
+## Where the answers already are
+
+| file | covers |
+|---|---|
+| `deploy/DEPLOY.md` | standing up a whole bridge, and where every config lives |
+| `deploy/MAINTAIN.md` | the monthly job, redeploys, waiting vs stuck, the trust model |
+| `deploy/INTERACT.md` | wallets, the CLI, expected latency and cost |
+| `deploy/coprocessor.toml.example` | the deployed route config, verbatim but for the one key |
+| `deploy/verify-digest.sh` | compose file to `compose_hash` to `mr_config_id`, against the signed quote |
+| `deploy/check-secrets.sh` | run before every commit |
+
+## Secrets
+
+`keys/` and `devnet/.state/` are gitignored and hold real credentials (Phala API token, Sepolia
+key, mnemonics). Never commit them, never copy them into a tracked file, never send them to an
+external service. `deploy/check-secrets.sh` must pass before any commit.
+
+Only the Base route uses a metered RPC: an Alchemy key at `devnet/.state/alchemy-base-key` on
+ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier, so archive
+`eth_getProof` works but `eth_getLogs` is capped at 10 blocks; Base logs therefore go to
+`sepolia.base.org`. Every other endpoint is a free public one.
+
+## Gotchas worth knowing before debugging
+
+- **L2 origin routes are slow by design.** `base-to-celestia` and `arbitrum-to-celestia` derive
+  their root from the L2's dispute anchor on L1, so a transfer cannot land until the dispute game
+  covering its block resolves. On Base Sepolia that is exactly 5 days plus about 3 minutes, and
+  the anchor adopts a game the moment it resolves. A transfer sitting for days is normal, not a
+  stall. Check `AnchorStateRegistry.getAnchorRoot()` against the dispatch block before assuming
+  anything is broken.
+- **We reuse the canonical Hyperlane deployments on the EVM chains**, so their merkle tree hooks
+  carry other people's traffic. A `leaves=N` line in the relayer log is the batch size, not the
+  tree size.
+- **The `routers` list is a trigger filter**, affecting latency rather than delivery, because
+  merkle tree replay forces batch completeness.
+
+## Hard constraints
+
+- **celestia-app**: only ever the `jonas/tee-ism` branch. `main` is critical company
+  infrastructure and must never be touched.
+- **No co-author or "generated with" trailers** in commits or PR descriptions. Commits are in the
+  user's name.
+- **No em-dashes in UI copy.**
+- Ask before adding components or changing the stack.

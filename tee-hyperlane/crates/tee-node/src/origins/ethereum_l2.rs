@@ -50,7 +50,7 @@ impl RollupLayout {
 /// Which L1 contract defines an L2's state, and how to read it.
 ///
 /// Pinned here rather than taken from the request, which is the whole security of an L2
-/// origin: a proof against a caller-named contract proves nothing. See docs/security.md.
+/// origin: a proof against a caller-named contract proves nothing. See deploy/MAINTAIN.md.
 pub struct L2Anchor;
 
 impl L2Anchor {
