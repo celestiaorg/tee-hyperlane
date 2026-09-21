@@ -9,11 +9,18 @@
 # signature on upload, so a tampered or stale blob is rejected on chain rather than believed.
 #
 #   usage: seed-evm-collateral.sh <chain>
-#   env:   FMSPC (default 20a06f000000), PRIVATE_KEY, and the per-chain RPC
+#   env:   FMSPC (default 20a06f000000), PRIVATE_KEY or EVM_PRIVATE_KEY, and the per-chain RPC
 set -euo pipefail
 
 CHAIN="${1:?usage: seed-evm-collateral.sh <arbitrum|base|sepolia>}"
 FMSPC="${FMSPC:-20a06f000000}"
+
+# `lib.sh` exports EVM_PRIVATE_KEY, this script has always read PRIVATE_KEY. Under `set -u` an
+# unattended run died on the unbound name several minutes in, at the first send, rather than
+# saying up front which variable it wanted. Either name works, with or without the 0x.
+PRIVATE_KEY="${PRIVATE_KEY:-${EVM_PRIVATE_KEY:-}}"
+: "${PRIVATE_KEY:?set PRIVATE_KEY or EVM_PRIVATE_KEY}"
+case "${PRIVATE_KEY}" in 0x*) ;; *) PRIVATE_KEY="0x${PRIVATE_KEY}" ;; esac
 SGX=https://api.trustedservices.intel.com/sgx/certification/v4
 TDX=https://api.trustedservices.intel.com/tdx/certification/v4
 
@@ -29,12 +36,17 @@ QEID="$(python3 -c "import json;print(json.load(open('${ADDR_FILE}'))['EnclaveId
 WORK="$(mktemp -d)"; trap 'rm -rf "${WORK}"' EXIT
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 
+# `--fail` matters: without it an Intel 5xx writes its error body into tcb.json, and the
+# failure resurfaces minutes later as an opaque revert from the DAO instead of as a fetch
+# error. `--retry` rides out their rate limiter, which is the common case for a scheduled run.
+fetch() { curl -sS --fail --retry 3 --retry-delay 2 --retry-connrefused --max-time 60 "$@"; }
+
 # ---------------------------------------------------------------- fetch from Intel
 say "fetching collateral from Intel for fmspc ${FMSPC}"
-curl -sS -D "${WORK}/tcb.h"  -o "${WORK}/tcb.json"      "${TDX}/tcb?fmspc=${FMSPC}"
-curl -sS -D "${WORK}/qe.h"   -o "${WORK}/qe.json"       "${TDX}/qe/identity"
-curl -sS -D "${WORK}/plat.h" -o "${WORK}/plat.crl.der"  "${SGX}/pckcrl?ca=platform&encoding=der"
-curl -sS -D "${WORK}/proc.h" -o "${WORK}/proc.crl.der"  "${SGX}/pckcrl?ca=processor&encoding=der"
+fetch -D "${WORK}/tcb.h"  -o "${WORK}/tcb.json"      "${TDX}/tcb?fmspc=${FMSPC}"
+fetch -D "${WORK}/qe.h"   -o "${WORK}/qe.json"       "${TDX}/qe/identity"
+fetch -D "${WORK}/plat.h" -o "${WORK}/plat.crl.der"  "${SGX}/pckcrl?ca=platform&encoding=der"
+fetch -D "${WORK}/proc.h" -o "${WORK}/proc.crl.der"  "${SGX}/pckcrl?ca=processor&encoding=der"
 
 # The issuer chains ride in response headers as URL-escaped PEM: intermediate, then root.
 python3 - "${WORK}" <<'PY'
@@ -75,7 +87,11 @@ CRL_URL="$(openssl x509 -inform DER -in "${WORK}/root.der" -noout -ext crlDistri
   | grep -oE 'https?://[^ ,]+' | head -1 || true)"
 CRL_URL="${CRL_URL:-https://certificates.trustedservices.intel.com/IntelSGXRootCA.der}"
 say "root CA CRL from ${CRL_URL}"
-curl -sS -o "${WORK}/rootca.crl.der" "${CRL_URL}" || warn_no_crl=1
+fetch -o "${WORK}/rootca.crl.der" "${CRL_URL}" || warn_no_crl=1
+
+# Counted, not just printed: this ran to completion with a zero exit status while every
+# artifact reported FAILED, so anything scheduling it saw a success.
+FAILURES=0
 
 # Sends are serialised with a pause. Firing these back to back races the node's nonce
 # tracking and returns "replacement transaction underpriced", which looks identical to a
@@ -92,7 +108,11 @@ send() {
   out="$(cast send "$1" "$2" "${@:3}" --rpc-url "${RPC}" --private-key "${PRIVATE_KEY}" --json 2>&1)" || rc=$?
   if [ $rc -eq 0 ]; then echo "    published"
   elif printf '%s' "$out" | grep -qiE "duplicate|already"; then echo "    already current"
-  else echo "    FAILED: $(printf '%s' "$out" | grep -oiE "[a-z_ ]*(underpriced|revert|insufficient|unauthorized)[a-z_ ]*" | head -1 | tr -d '\n')"
+  else
+    echo "    FAILED: $(printf '%s' "$out" | grep -oiE "[a-z_ ]*(underpriced|revert|insufficient|unauthorized)[a-z_ ]*" | head -1 | tr -d '\n')"
+    # An assignment, never `((FAILURES++))`: that returns 1 on the first increment and `set -e`
+    # would kill the run at the very failure it is trying to record.
+    FAILURES=$((FAILURES + 1))
   fi
   sleep 3
 }
@@ -107,7 +127,7 @@ printf '  PCK platform   '; send "${PCS}" "upsertPcsCertificates(uint8,bytes)" 2
 printf '  PCK processor  '; send "${PCS}" "upsertPcsCertificates(uint8,bytes)" 1 "$(hexof "${WORK}/pckproc.der")"
 
 say "publishing revocation lists"
-[ -f "${WORK}/rootca.crl.der" ] && { printf '  root CA CRL    '; send "${PCS}" "upsertRootCACrl(bytes)" "$(hexof "${WORK}/rootca.crl.der")"; }
+[ -s "${WORK}/rootca.crl.der" ] && { printf '  root CA CRL    '; send "${PCS}" "upsertRootCACrl(bytes)" "$(hexof "${WORK}/rootca.crl.der")"; }
 printf '  PCK platform   '; send "${PCS}" "upsertPckCrl(uint8,bytes)" 2 "$(hexof "${WORK}/plat.crl.der")"
 printf '  PCK processor  '; send "${PCS}" "upsertPckCrl(uint8,bytes)" 1 "$(hexof "${WORK}/proc.crl.der")"
 
@@ -163,7 +183,7 @@ say "publishing TCB evaluation data numbers"
 EVAL_SEL="$(cast sig 'upsertTcbEvaluationData((string,bytes))')"
 EVALDAO="$(python3 -c "import json;print(json.load(open('${ADDR_FILE}'))['TcbEvalDao'])")"
 for plat in sgx tdx; do
-  curl -sS -o "${WORK}/eval-${plat}.json" "https://api.trustedservices.intel.com/${plat}/certification/v4/tcbevaluationdatanumbers"
+  fetch -o "${WORK}/eval-${plat}.json" "https://api.trustedservices.intel.com/${plat}/certification/v4/tcbevaluationdatanumbers"
   printf '  %s eval numbers  ' "${plat}"
   send "${EVALDAO}" "$(encode_tuple "${EVAL_SEL}" "${WORK}/eval-${plat}.json" tcbEvaluationDataNumbers)"
 done
@@ -172,5 +192,10 @@ say "publishing TCB info for ${FMSPC}"
 TCB_SEL="$(cast sig 'upsertFmspcTcb((string,bytes))')"
 TCBDAO="$(python3 -c "import json;print(json.load(open('${ADDR_FILE}'))['FmspcTcbDaoVersioned'])")"
 printf '  TDX TCB info     '; send "${TCBDAO}" "$(encode_tuple "${TCB_SEL}" "${WORK}/tcb.json" tcbInfo)"
+
+if [ "${FAILURES}" -gt 0 ]; then
+  say "${FAILURES} artifact(s) could not be published on ${CHAIN}"
+  exit 1
+fi
 
 say "done. re-run this when the thirty day validity window lapses."
