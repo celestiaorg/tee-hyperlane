@@ -582,6 +582,70 @@ determined one. The real bound is the funding account's balance.
 
 ---
 
+## 11c. Eden, an evolve-stack chain
+
+Eden differs from the other three in two ways that matter. It has **no canonical Hyperlane
+deployment**, so its mailbox and merkle tree hook are ours. And as an *origin* it has no
+consensus to run a light client against, so its state root comes from a sequencer-signed
+header published to Celestia. See MAINTAIN.md for what that costs in trust.
+
+```
+chain id        3735928814 (0xdeadbfee)   ~10 blocks/s, 18 decimals
+DA              mocha-5, namespace 0000000000000000000000000000000000005d2e074163aa3b4d9818
+sequencer       ed25519 4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d630b68d51
+chain id string edennet-2
+```
+
+The namespace and key are pinned in `origins/celestia_l2.rs`, not configured, for the same
+reason the L2 anchors are. Neither came from a spec sheet: Eden's blocks are empty so its
+state root is constant, and using that as a needle found a Celestia blob carrying 657 Eden
+headers that all verify under this key.
+
+**An evolve origin needs a DA node.** The consensus RPC gives a `data_hash` but not the row
+roots behind it, so a celestia-node light node for mocha runs beside the chain:
+
+```sh
+IMG=ghcr.io/celestiaorg/celestia-node:v0.34.2-mocha
+docker run --rm -v $D:/home/celestia -u "$(id -u):$(id -g)" $IMG celestia light init --p2p.network mocha
+# `init` writes a config `start` then rejects. Both need fixing by hand:
+#   add   [Share.LightAvailability] / SampleAmount = 16
+#   set   Header.Syncer.PruningWindow = "800h0m0s"   (must be >= the 721h sampling window)
+docker run -d --name mocha-light --restart unless-stopped -p 127.0.0.1:26658:26658 \
+  -v $D:/home/celestia -u "$(id -u):$(id -g)" $IMG \
+  celestia light start --p2p.network mocha --rpc.addr 0.0.0.0 --rpc.port 26658 --rpc.skip-auth
+```
+
+> Use a **-mocha** tagged release. `v0.26.0-arabica` speaks `/mocha-4/` protocol ids and can
+> never sync mocha-5; it fails with "protocols not supported" and looks like a peering
+> problem.
+
+**Eden's own RPC serves `eth_getProof` for the `latest` tag only.** Not a pruning window: a
+numbered block is refused even at head-minus-zero, because ten blocks a second means the
+block has moved on before the request lands. The relayer therefore captures a proof each tick
+and files it under its height, then attests once Celestia carries the signed header for that
+same height. Nothing to configure; it is how `attest_eden` works. `bootstrap-eden` does the
+same, anchoring only at a height it managed to capture.
+
+```sh
+tee-hyperlane bootstrap-eden --rpc https://rpc-mocha.pops.one \
+  --da-rpc http://localhost:26658 --identity-digest <digest> \
+  --out .state/proofs/eden-to-celestia/staging/attestation.json
+```
+
+The rest is ordinary: the Automata stack from step 8, Hyperlane core from `DeployHyperlaneCore`
+then `InitHyperlaneCore`, an ISM, and the two synthetic routers.
+
+> Eden's TCB info only lands in the **V1** versioned FMSPC DAO; the V2 one reverts
+> `0x331b9eaa` with the same calldata. Point `FmspcTcbDaoVersioned` and the router at V1
+> there. The other three chains use V2.
+
+> The Automata repos need submodules that are not vendored here: `forge-std`, `solady` and
+> `openzeppelin-contracts` **pinned to v5.0.2**, since master needs Cancun while the project
+> compiles for paris. The attestation repo additionally wants `risc0-ethereum`,
+> `sp1-contracts`, and the pccs repo symlinked in as `lib/automata-on-chain-pccs`.
+
+---
+
 ## 12. The relayer config
 
 Write `.state/coprocessor.toml` from [coprocessor.toml.example](coprocessor.toml.example),

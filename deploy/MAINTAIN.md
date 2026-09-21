@@ -308,6 +308,25 @@ different clothes - a value that looked like configuration was in fact a request
 proving something *about* it proved nothing about the bridge. Hence the merkle tree address,
 the L2 anchor contract and its slot layout all being compiled in rather than accepted.
 
+## Eden, and what it costs in trust
+
+Eden is an evolve-stack chain: an EVM chain with no consensus of its own, whose single
+sequencer signs each block header and publishes it as a blob in one Celestia namespace on
+mocha. The enclave proves the blob was in a Celestia block its light client verified, checks
+the sequencer's ed25519 signature, and takes the state root out of the signed header.
+
+**It does not re-execute.** So the state root is whatever the sequencer says it is. A
+compromised or dishonest Eden sequencer can sign a header naming any state root it likes, and
+every Eden route will attest it: forged messages, minted synthetics, no recourse. That is
+strictly weaker than every other origin here, where the root comes from consensus or from an
+L1 the enclave verified for itself.
+
+What the DA check still buys, even without re-execution, is that a header must have been
+published where anyone can see it, rather than handed privately to our relayer.
+
+celestia-zkevm closes the gap by re-executing the blocks from witnesses, and doing the same
+here is the upgrade path. Until then, treat Eden routes as trusting one operator.
+
 ### Residual risks
 
 - A TDX break, or an unrevoked but vulnerable TCB, forges any root. This is the irreducible
@@ -324,3 +343,4 @@ the L2 anchor contract and its slot layout all being compiled in rather than acc
   set or sync committee to equivocate.
 - L2 roots are trustless only once confirmed, gated on each chain's challenge window.
 - ISM and warp router owners are single EOAs today.
+- Eden's state root is the sequencer's word, as above. It is the weakest link in the set.

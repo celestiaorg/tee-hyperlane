@@ -109,13 +109,24 @@ the only wait is origin finality plus one transaction.
 ```
 Celestia -> Arbitrum    11-18 s
 Celestia -> Base        13-18 s
-Celestia -> Sepolia     14-29 s    the spread is one Sepolia block
-Sepolia  -> Celestia    ~15 min    Ethereum finality, two epochs
-Arbitrum -> Celestia    ~31 min    the validator's posting cadence
-Base     -> Celestia    ~5 days    the dispute window
+Celestia -> Sepolia     14-29 s     the spread is one Sepolia block
+Celestia -> Eden        ~30 s
+Sepolia  -> Celestia    ~15 min     Ethereum finality, two epochs
+Eden     -> Celestia    1-2 min     Eden's DA posting interval
+Arbitrum -> Celestia    ~1h 40m     see below
+Base     -> Celestia    ~5 days     the dispute window
 ```
 
-**None of the last three is our latency.** Celestia to anywhere is fast because Celestia
+Arbitrum's figure is not its challenge period, which is 20 L1 blocks or about four minutes.
+A new confirmed root lands every ~31 minutes, each covering ~7,500 L2 blocks, and the newest
+one is already ~1h40m behind Eden's head because a validator asserts over data it already
+treats as settled on L1. So a message waits the standing lag plus up to one cycle.
+
+Eden is fast because there is nothing to wait out: its sequencer posts signed headers to
+Celestia about once a minute, and once a header is in a Celestia block the light client has
+verified, the route can attest it.
+
+**None of the slow ones is our latency.** Celestia to anywhere is fast because Celestia
 finalises in a block. The reverse waits on the origin proving itself, and for the two
 optimistic rollups that means a challenge or dispute window. Base is the extreme case and it
 is entirely Base's: five days plus about three minutes, which is when the dispute game
