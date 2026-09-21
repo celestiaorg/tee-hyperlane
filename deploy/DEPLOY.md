@@ -43,28 +43,38 @@ Keplr reach the chain on a single origin.
 
 ## 1. Where every config lives, and what goes in it
 
-This is the part that is easiest to get wrong, so it is up front. Nothing below is created by
-a clone. Every one of these is written by you or by a script during the steps that follow.
+Nothing here is created by a clone. Three files start as a template you copy and edit, two
+more you write from scratch, and everything else a script writes for you.
 
-| path | written by | holds |
+```sh
+cp devnet/.env.example             devnet/.env                      # every secret, one file
+cp deploy/coprocessor.toml.example devnet/.state/coprocessor.toml   # the six routes
+cp deploy/gas-oracle.toml.example  devnet/.state/gas-oracle.toml    # paymaster upkeep
+chmod 600 devnet/.env
+```
+
+The two `.state/` copies can wait until step 2 has created that directory. Only `devnet/.env`
+is needed before anything else runs.
+
+| you fill in | at | holds |
 |---|---|---|
-| `devnet/.state/evm-key` | you, step 2 | EVM private key, no `0x`, mode 600 |
-| `devnet/.state/mnemonic` | you, or step 4 | 24 words. Copy an existing one to keep the funded address across rebuilds |
-| `devnet/.state/alchemy-key` | you, step 2 | optional metered key, if you use one at all |
-| `devnet/.state/alchemy-base-key` | you, step 2 | the Base L2 archive key. See step 12; Base is the one route with no free archive |
-| `devnet/.state/relayer.env` | you, step 13 | `EVM_PRIVATE_KEY=0x…`, read by the relayer unit |
-| `devnet/.state/coprocessor.toml` | you, step 12 | the six routes. Template: [coprocessor.toml.example](coprocessor.toml.example) |
-| `devnet/.state/gas-oracle.toml` | you, step 11 | paymaster upkeep. Template: [gas-oracle.toml.example](gas-oracle.toml.example) |
-| `devnet/.state/out/*` | the numbered scripts | one deployed id per file. Everything downstream reads these |
-| `devnet/.state/out/pccs-<chain>.json` | step 8, or copied | the Automata addresses per EVM chain |
+| `devnet/.env` | step 2 | every secret and metered key. One value is required, three are optional |
+| `devnet/.state/coprocessor.toml` | step 12 | the six routes. Every ISM and router address |
+| `devnet/.state/gas-oracle.toml` | step 11 | `igp_id` and `evm_key_file` |
+| `bridge-app/.env.local` | step 14 | every address the UI shows |
+| `deploy/docker-compose.yml` | step 5, only if you rebuild the enclave | the image digest. **Measured** |
+
+| written for you | by | holds |
+|---|---|---|
+| `devnet/.state/out/*` | the numbered scripts | one deployed id per file |
+| `devnet/.state/out/pccs-<chain>.json` | step 8, or copied from another host | the Automata addresses per EVM chain |
 | `devnet/.state/bin/*` | step 3 | `celestia-appd`, `teeism-collateral`, `teeism-identity` |
 | `devnet/.state/celestia/` | step 4 | chain data and the keyring |
-| `bridge-app/.env.local` | you, step 14 | every address the UI shows |
-| `deploy/docker-compose.yml` | you, step 5 | the enclave image digest. **Measured** |
 | `/etc/systemd/system/teeism-*.service` | step 13 | copied from [server/](server/) |
 
-`devnet/.gitignore` excludes `.state/`, so nothing there is committable. Tracked files carry
-placeholders like `ALCHEMY_KEY` instead of values.
+`devnet/.env` sits outside `.state/` deliberately, because `make stop` deletes that directory.
+Both are gitignored, so nothing here is committable; tracked files carry placeholders like
+`ALCHEMY_KEY` instead of values.
 
 **`.state/out/` is the source of truth between steps.** Each file holds one id. Later scripts
 and the relayer read them back rather than re-parsing transaction logs, so if a step fails
@@ -83,13 +93,17 @@ git clone -b jonas/tee-ism https://github.com/celestiaorg/celestia-app.git ~/cel
 two paths; change either and change the units too.
 
 ```sh
-mkdir -p ~/tee-ism-nonzk/devnet/.state && chmod 700 ~/tee-ism-nonzk/devnet/.state
-cd ~/tee-ism-nonzk/devnet/.state
-printf '%s' "<evm private key>" > evm-key  && chmod 600 evm-key
-printf '%s' "<24 words>"        > mnemonic && chmod 600 mnemonic
+cd ~/tee-ism-nonzk
+mkdir -p devnet/.state && chmod 700 devnet/.state
+cp devnet/.env.example devnet/.env && chmod 600 devnet/.env
+$EDITOR devnet/.env
 ```
 
-`make stop` preserves both.
+Only `EVM_PRIVATE_KEY` is required. Leave `CELESTIA_MNEMONIC` empty on a first deploy and step
+4 generates one and writes it back into the same file. `ALCHEMY_API_KEY` and `ALCHEMY_BASE_KEY`
+are wanted by two routes each; the file says which and why.
+
+`devnet/.env` survives `make stop`, which is the point of keeping it out of `.state/`.
 
 **This repository is public.** An Alchemy key was committed to it once and reached `main`,
 where it was scraped. Install the guard before you do anything else:
@@ -131,11 +145,16 @@ cargo build --release -p tee-coprocessor -p gas-oracle
 
 ```sh
 cd ~/tee-ism-nonzk/devnet
-export DEVNET_MNEMONIC="$(head -1 .state/mnemonic)"
+set -a; . .env; set +a       # CELESTIA_MNEMONIC, and everything else, from the one file
 STATE_DIR=../.state CELESTIA_IMAGE=celestia-app-teeism:local CHAINID=teeism-local \
-CELESTIA_UID="$(id -u):$(id -g)" DEVNET_MNEMONIC="$DEVNET_MNEMONIC" \
+CELESTIA_UID="$(id -u):$(id -g)" DEVNET_MNEMONIC="$CELESTIA_MNEMONIC" \
   docker compose -f celestia/docker-compose.yml up -d
 ```
+
+> **On a first deploy, run `./scripts/10-celestia-up.sh` instead of the compose command
+> above.** It generates the genesis mnemonic, writes it back into `devnet/.env`, builds the
+> host binaries, and brings the chain up the same way. The raw form is here for when you need
+> to vary something in it.
 
 > **`CELESTIA_UID` is not optional on Linux.** The home directory is a bind mount and the
 > image runs as uid 10001. Without it the chain dies immediately with `permission denied`
@@ -554,7 +573,7 @@ base      l2 archive            a metered key; see below
 > **Base origin is the one route that needs a paid archive.** It calls `eth_getProof` roughly
 > 220k blocks back, the five day dispute window. Every free endpoint tried refuses with
 > "distance to target block exceeds maximum permitted", and Base's own RPC does not serve the
-> method at all. Put the key in `.state/alchemy-base-key` and wire it to `base-to-celestia`'s
+> method at all. Put the key in `ALCHEMY_BASE_KEY` in `devnet/.env` and wire it to `base-to-celestia`'s
 > `l2_rpc` **only**. A free Alchemy tier is enough: archive `eth_getProof` works, and the
 > 10-block `eth_getLogs` cap does not matter because Base logs go to `sepolia.base.org`.
 
@@ -569,11 +588,13 @@ base      l2 archive            a metered key; see below
 
 ```sh
 sudo cp deploy/server/teeism-{relayer,api,gas-oracle}.service /etc/systemd/system/
-printf 'EVM_PRIVATE_KEY=0x%s\n' "$(cat .state/evm-key)" > .state/relayer.env
-chmod 600 .state/relayer.env
 sudo systemctl daemon-reload
 sudo systemctl enable --now teeism-relayer teeism-api teeism-gas-oracle
 ```
+
+> The relayer unit reads `devnet/.env` directly as its `EnvironmentFile`, so there is no second
+> copy of the key to write and keep in step. That is also why `EVM_PRIVATE_KEY` in that file
+> needs its `0x`: systemd passes the value through untouched.
 
 > Each unit puts `.state/bin` **first** on PATH. The API and the oracle shell out to
 > `celestia-appd` by name, and any other build on the host will not have the teeism module.

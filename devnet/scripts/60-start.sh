@@ -24,17 +24,17 @@ SEPOLIA_RPC="${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
 # eth_getProof for the head block only, so the read that matters is always outside the window.
 # This is the same constraint the testnet deployment documents for its L2 origins.
 #
-# Taken from the environment, or from a key file dropped in .state, so no key lives in the
-# repository.
+# ALCHEMY_API_KEY comes from devnet/.env, which lib.sh has already sourced. The
+# .state/alchemy-key fallback only carries a pre-.env deployment across.
 if [ -z "${SEPOLIA_ARCHIVE:-}" ]; then
   key="${ALCHEMY_API_KEY:-}"
   [ -z "${key}" ] && [ -f "${STATE_DIR}/alchemy-key" ] && key="$(tr -d ' \n\r' < "${STATE_DIR}/alchemy-key")"
   [ -n "${key}" ] && SEPOLIA_ARCHIVE="https://eth-sepolia.g.alchemy.com/v2/${key}"
 fi
 if [ -z "${SEPOLIA_ARCHIVE:-}" ]; then
-  warn "no Sepolia archive endpoint. Set SEPOLIA_ARCHIVE, or ALCHEMY_API_KEY, or write the"
-  warn "key to ${STATE_DIR}/alchemy-key. Without one the route cannot read state proofs at"
-  warn "its trusted height and every scan will fail."
+  warn "no Sepolia archive endpoint. Set ALCHEMY_API_KEY in ${ENV_FILE} (copy it from"
+  warn "devnet/.env.example), or set SEPOLIA_ARCHIVE directly. Without one the route cannot"
+  warn "read state proofs at its trusted height and every scan will fail."
 else
   probe="$(curl -s -m 15 -X POST "${SEPOLIA_ARCHIVE}" -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' 2>/dev/null || true)"

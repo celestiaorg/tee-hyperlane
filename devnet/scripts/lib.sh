@@ -8,6 +8,17 @@ REPO_DIR="$(cd "${DEVNET_DIR}/.." && pwd)"
 STATE_DIR="${STATE_DIR:-${DEVNET_DIR}/.state}"
 OUT_DIR="${STATE_DIR}/out"
 
+# Every secret this devnet needs lives in one file, devnet/.env, copied from devnet/.env.example.
+# It sits outside .state deliberately: `make stop` deletes that directory, and a teardown has
+# no business eating the phrase behind an imported wallet.
+ENV_FILE="${ENV_FILE:-${DEVNET_DIR}/.env}"
+if [ -f "${ENV_FILE}" ]; then
+  # `set -a` so every assignment in the file is exported without the file needing to say so.
+  # That keeps the syntax the same one systemd accepts, since the relayer unit reads this
+  # very file as its EnvironmentFile.
+  set -a; . "${ENV_FILE}"; set +a
+fi
+
 CELESTIA_APP_DIR="${CELESTIA_APP_DIR:-${REPO_DIR}/../celestia-app-local}"
 CELESTIA_IMAGE="${CELESTIA_IMAGE:-celestia-app-teeism:local}"
 CELESTIA_CONTAINER="${CELESTIA_CONTAINER:-teeism-celestia}"
@@ -33,6 +44,25 @@ die()  { printf '\033[1;31merror\033[0m %s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"; }
 
+# set_env <key> <value> - record a generated value in devnet/.env, replacing the line if it
+# is already there. Anything the scripts mint that must outlive a teardown goes back into the
+# one file the operator already knows about, rather than getting a second home under .state.
+set_env() {
+  local key="$1" val="$2" tmp
+  if [ ! -f "${ENV_FILE}" ]; then
+    printf '# Written by the devnet scripts. See devnet/.env.example.\n' > "${ENV_FILE}"
+    chmod 600 "${ENV_FILE}"
+  fi
+  # A temp file and a copy, never `sed -i`: its in-place spelling differs between GNU and
+  # BSD. This file may hold the only copy of a seed phrase, so that is not a difference to
+  # discover here. The copy rather than a move preserves the mode already on the file.
+  tmp="$(mktemp)"
+  grep -v "^${key}=" "${ENV_FILE}" > "${tmp}" || true
+  printf '%s="%s"\n' "${key}" "${val}" >> "${tmp}"
+  cat "${tmp}" > "${ENV_FILE}"
+  rm -f "${tmp}"
+}
+
 BIN_DIR="${BIN_DIR:-${STATE_DIR}/bin}"
 APPD="${APPD:-${BIN_DIR}/celestia-appd}"
 COLLATERAL_BIN="${COLLATERAL_BIN:-${BIN_DIR}/teeism-collateral}"
@@ -42,21 +72,32 @@ CELHOME="${CELHOME:-${STATE_DIR}/celestia}"
 # teardowns, so the address a wallet imported still holds funds after the chain is rebuilt.
 # Without this every genesis mints fresh random keys and the imported wallet goes empty.
 ensure_mnemonic() {
-  if [ ! -s "${STATE_DIR}/mnemonic" ]; then
-    mkdir -p "${STATE_DIR}"
-    "${APPD}" keys mnemonic > "${STATE_DIR}/mnemonic" 2>/dev/null \
-      || die "could not generate a mnemonic"
-    chmod 600 "${STATE_DIR}/mnemonic"
-    say "generated a new genesis mnemonic at ${STATE_DIR}/mnemonic"
+  # Carry over a pre-.env deployment rather than silently minting a new chain under it.
+  if [ -z "${CELESTIA_MNEMONIC:-}" ] && [ -s "${STATE_DIR}/mnemonic" ]; then
+    CELESTIA_MNEMONIC="$(tr -d '\r' < "${STATE_DIR}/mnemonic" | head -1)"
+    set_env CELESTIA_MNEMONIC "${CELESTIA_MNEMONIC}"
+    warn "moved ${STATE_DIR}/mnemonic into ${ENV_FILE}; the old file is now unused"
   fi
-  DEVNET_MNEMONIC="$(tr -d '\r' < "${STATE_DIR}/mnemonic" | head -1)"
-  export DEVNET_MNEMONIC
+  if [ -z "${CELESTIA_MNEMONIC:-}" ]; then
+    CELESTIA_MNEMONIC="$("${APPD}" keys mnemonic 2>/dev/null | tr -d '\r' | head -1)"
+    [ -n "${CELESTIA_MNEMONIC}" ] || die "could not generate a mnemonic"
+    set_env CELESTIA_MNEMONIC "${CELESTIA_MNEMONIC}"
+    say "generated a genesis mnemonic and wrote it to ${ENV_FILE}"
+  fi
+  DEVNET_MNEMONIC="${CELESTIA_MNEMONIC}"
+  export DEVNET_MNEMONIC CELESTIA_MNEMONIC
 }
 
-# The key that pays for EVM deployments. Taken from the environment, or from a file dropped in
-# .state, so nothing sensitive lives in the repository. .state survives `make stop`.
+# The key that pays for EVM deployments, from devnet/.env or from the environment. The
+# .state/evm-key fallback is only here to carry a pre-.env deployment across; it can go once
+# no host still has one.
 if [ -z "${EVM_PRIVATE_KEY:-}" ] && [ -f "${STATE_DIR}/evm-key" ]; then
   EVM_PRIVATE_KEY="$(tr -d ' \n\r' < "${STATE_DIR}/evm-key")"
+  warn "read the EVM key from ${STATE_DIR}/evm-key; move it to EVM_PRIVATE_KEY in ${ENV_FILE}"
+fi
+# Accept it with or without the 0x, because systemd's copy of this file needs the prefix and
+# a pasted key often does not have one.
+if [ -n "${EVM_PRIVATE_KEY:-}" ]; then
   case "${EVM_PRIVATE_KEY}" in 0x*) ;; *) EVM_PRIVATE_KEY="0x${EVM_PRIVATE_KEY}" ;; esac
   export EVM_PRIVATE_KEY
 fi

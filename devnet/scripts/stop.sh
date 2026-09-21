@@ -25,15 +25,22 @@ say "stopping the chain"
 STATE_DIR="${STATE_DIR}" docker compose -f "${DEVNET_DIR}/celestia/docker-compose.yml" down -v 2>&1 | tail -3 || true
 
 say "pruning state"
-# The PCCS address records are not devnet state: those contracts live on public testnets and
-# outlive any number of make stop/init cycles. Losing them would mean redeploying seventeen
-# contracts per chain to recover addresses that are still perfectly good.
-# The host binaries are build output and the archive key is configuration. Neither is chain
-# state, and pruning either one costs a rebuild or breaks the next init. KEEP_BIN=0 removes
-# the binaries too; the key is always kept, since it is the user's to delete.
+# Three things under .state are not chain state and must survive.
+#
+# The PCCS address records: those contracts live on public testnets and outlive any number of
+# stop/init cycles. Losing them means redeploying seventeen contracts per chain to recover
+# addresses that are still perfectly good.
+#
+# The hand-written route config. coprocessor.toml and gas-oracle.toml take three steps of
+# DEPLOY.md to fill in and nothing regenerates them; a teardown used to delete both.
+#
+# The host binaries, which are build output. KEEP_BIN=0 removes those too.
+#
+# Secrets are not on this list any more: they live in devnet/.env, outside .state, where a
+# teardown cannot reach them. The legacy names stay only to carry a pre-.env host across.
 tmp="$(mktemp -d)"
 [ "${KEEP_BIN}" = "1" ] && [ -d "${BIN_DIR}" ] && mv "${BIN_DIR}" "${tmp}/bin"
-for keep in alchemy-key evm-key mnemonic; do
+for keep in alchemy-key alchemy-base-key evm-key mnemonic coprocessor.toml gas-oracle.toml relayer.env; do
   [ -f "${STATE_DIR}/${keep}" ] && mv "${STATE_DIR}/${keep}" "${tmp}/${keep}"
 done
 mkdir -p "${tmp}/pccs"
@@ -41,7 +48,7 @@ for f in "${OUT_DIR}"/pccs-*.json; do [ -f "$f" ] && cp "$f" "${tmp}/pccs/"; don
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 [ -d "${tmp}/bin" ] && mv "${tmp}/bin" "${BIN_DIR}"
-for keep in alchemy-key evm-key mnemonic; do
+for keep in alchemy-key alchemy-base-key evm-key mnemonic coprocessor.toml gas-oracle.toml relayer.env; do
   [ -f "${tmp}/${keep}" ] && mv "${tmp}/${keep}" "${STATE_DIR}/${keep}"
 done
 mkdir -p "${OUT_DIR}"

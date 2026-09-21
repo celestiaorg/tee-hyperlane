@@ -38,7 +38,7 @@ Keplr cannot add a custom chain from its own settings. **Open the UI and connect
 `experimentalSuggestChain` with the values from `.env.local`, which is what registers
 `teeism-local` in the wallet. Nothing to configure by hand.
 
-Import the mnemonic from `devnet/.state/mnemonic`. **Account 0 is the funded one.** Genesis
+Import the mnemonic from `CELESTIA_MNEMONIC` in `devnet/.env`. **Account 0 is the funded one.** Genesis
 accounts derive from that fixed mnemonic, so the funded address survives a rebuild of the
 chain.
 

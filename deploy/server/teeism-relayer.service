@@ -19,7 +19,7 @@ Environment=CELESTIA_RPC=http://localhost:26657
 Environment=TEE_HYPERLANE_DEPLOY_DIR=/home/chef/tee-ism-nonzk/deploy
 Environment=TEE_COPROCESSOR_CONFIG=/home/chef/tee-ism-nonzk/devnet/.state/coprocessor.toml
 Environment=RUST_LOG=info
-EnvironmentFile=/home/chef/tee-ism-nonzk/devnet/.state/relayer.env
+EnvironmentFile=/home/chef/tee-ism-nonzk/devnet/.env
 ExecStart=/home/chef/tee-ism-nonzk/tee-hyperlane/target/release/tee-hyperlane run --config /home/chef/tee-ism-nonzk/devnet/.state/coprocessor.toml
 Restart=always
 RestartSec=10
