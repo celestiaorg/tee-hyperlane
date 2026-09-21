@@ -29,9 +29,34 @@ STATE_DIR="${STATE_DIR:-${DEVNET_DIR}/.state}"
 ADDR_FILE="${STATE_DIR}/out/pccs-${CHAIN}.json"
 [ -f "${ADDR_FILE}" ] || { echo "no PCCS addresses for ${CHAIN} at ${ADDR_FILE}" >&2; exit 1; }
 
-RPC="$(python3 -c "import json;print(json.load(open('${ADDR_FILE}'))['rpc'])")"
-PCS="$(python3 -c "import json;print(json.load(open('${ADDR_FILE}'))['PcsDao'])")"
-QEID="$(python3 -c "import json;print(json.load(open('${ADDR_FILE}'))['EnclaveIdentityDaoVersioned'])")"
+# Every address up front, and every one checked, before the first transaction.
+#
+# These used to be read where they were first needed, with a bare subscript. A record missing
+# one name then raised KeyError two thirds of the way in, after the certificates, the CRLs and
+# the QE identity had already been published and paid for, leaving a partial seed behind.
+# pccs-arbitrum.json was missing TcbEvalDao and would have done exactly that.
+field() {
+  python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get(sys.argv[2],''))" "${ADDR_FILE}" "$1"
+}
+RPC="$(field rpc)"
+PCS="$(field PcsDao)"
+QEID="$(field EnclaveIdentityDaoVersioned)"
+EVALDAO="$(field TcbEvalDao)"
+TCBDAO="$(field FmspcTcbDaoVersioned)"
+
+# The variable name and the record's name for it are split before the indirection, not
+# inside it: `${!pair%%:*}` expands a variable literally called "RPC:rpc", finds nothing, and
+# reports every field missing on a record that is perfectly complete.
+missing=""
+for pair in RPC:rpc PCS:PcsDao QEID:EnclaveIdentityDaoVersioned EVALDAO:TcbEvalDao TCBDAO:FmspcTcbDaoVersioned; do
+  var="${pair%%:*}"
+  [ -n "${!var:-}" ] || missing="${missing} ${pair#*:}"
+done
+[ -z "${missing}" ] || {
+  echo "${ADDR_FILE} names no:${missing}" >&2
+  echo "nothing was published. Add the missing address and re-run." >&2
+  exit 1
+}
 
 WORK="$(mktemp -d)"; trap 'rm -rf "${WORK}"' EXIT
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -181,7 +206,6 @@ printf '  TDX QE identity  '; send "${QEID}" "$(cat "${WORK}/qe.calldata")"
 
 say "publishing TCB evaluation data numbers"
 EVAL_SEL="$(cast sig 'upsertTcbEvaluationData((string,bytes))')"
-EVALDAO="$(python3 -c "import json;print(json.load(open('${ADDR_FILE}'))['TcbEvalDao'])")"
 for plat in sgx tdx; do
   fetch -o "${WORK}/eval-${plat}.json" "https://api.trustedservices.intel.com/${plat}/certification/v4/tcbevaluationdatanumbers"
   printf '  %s eval numbers  ' "${plat}"
@@ -190,7 +214,6 @@ done
 
 say "publishing TCB info for ${FMSPC}"
 TCB_SEL="$(cast sig 'upsertFmspcTcb((string,bytes))')"
-TCBDAO="$(python3 -c "import json;print(json.load(open('${ADDR_FILE}'))['FmspcTcbDaoVersioned'])")"
 printf '  TDX TCB info     '; send "${TCBDAO}" "$(encode_tuple "${TCB_SEL}" "${WORK}/tcb.json" tcbInfo)"
 
 if [ "${FAILURES}" -gt 0 ]; then
