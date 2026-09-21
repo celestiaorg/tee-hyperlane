@@ -36,11 +36,11 @@ say "pruning state"
 #
 # The host binaries, which are build output. KEEP_BIN=0 removes those too.
 #
-# Secrets are not on this list any more: they live in devnet/.env, outside .state, where a
-# teardown cannot reach them. The legacy names stay only to carry a pre-.env host across.
+# Secrets are not on this list at all: they live in devnet/.env, outside .state, where a
+# teardown cannot reach them.
 tmp="$(mktemp -d)"
 [ "${KEEP_BIN}" = "1" ] && [ -d "${BIN_DIR}" ] && mv "${BIN_DIR}" "${tmp}/bin"
-for keep in alchemy-key alchemy-base-key evm-key mnemonic coprocessor.toml gas-oracle.toml relayer.env; do
+for keep in coprocessor.toml gas-oracle.toml; do
   [ -f "${STATE_DIR}/${keep}" ] && mv "${STATE_DIR}/${keep}" "${tmp}/${keep}"
 done
 mkdir -p "${tmp}/pccs"
@@ -48,7 +48,7 @@ for f in "${OUT_DIR}"/pccs-*.json; do [ -f "$f" ] && cp "$f" "${tmp}/pccs/"; don
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 [ -d "${tmp}/bin" ] && mv "${tmp}/bin" "${BIN_DIR}"
-for keep in alchemy-key alchemy-base-key evm-key mnemonic coprocessor.toml gas-oracle.toml relayer.env; do
+for keep in coprocessor.toml gas-oracle.toml; do
   [ -f "${tmp}/${keep}" ] && mv "${tmp}/${keep}" "${STATE_DIR}/${keep}"
 done
 mkdir -p "${OUT_DIR}"

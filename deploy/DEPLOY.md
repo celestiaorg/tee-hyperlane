@@ -105,6 +105,11 @@ are wanted by two routes each; the file says which and why.
 
 `devnet/.env` survives `make stop`, which is the point of keeping it out of `.state/`.
 
+> **Upgrading a host that predates this file**, and still has `.state/evm-key`,
+> `.state/mnemonic`, `.state/alchemy-key`, `.state/alchemy-base-key` or `.state/relayer.env`:
+> nothing reads those any more. Copy their values into `devnet/.env`, point the relayer unit
+> at it, restart, and only then delete them.
+
 **This repository is public.** An Alchemy key was committed to it once and reached `main`,
 where it was scraped. Install the guard before you do anything else:
 

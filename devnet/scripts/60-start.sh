@@ -24,12 +24,9 @@ SEPOLIA_RPC="${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
 # eth_getProof for the head block only, so the read that matters is always outside the window.
 # This is the same constraint the testnet deployment documents for its L2 origins.
 #
-# ALCHEMY_API_KEY comes from devnet/.env, which lib.sh has already sourced. The
-# .state/alchemy-key fallback only carries a pre-.env deployment across.
-if [ -z "${SEPOLIA_ARCHIVE:-}" ]; then
-  key="${ALCHEMY_API_KEY:-}"
-  [ -z "${key}" ] && [ -f "${STATE_DIR}/alchemy-key" ] && key="$(tr -d ' \n\r' < "${STATE_DIR}/alchemy-key")"
-  [ -n "${key}" ] && SEPOLIA_ARCHIVE="https://eth-sepolia.g.alchemy.com/v2/${key}"
+# ALCHEMY_API_KEY comes from devnet/.env, which lib.sh has already sourced.
+if [ -z "${SEPOLIA_ARCHIVE:-}" ] && [ -n "${ALCHEMY_API_KEY:-}" ]; then
+  SEPOLIA_ARCHIVE="https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}"
 fi
 if [ -z "${SEPOLIA_ARCHIVE:-}" ]; then
   warn "no Sepolia archive endpoint. Set ALCHEMY_API_KEY in ${ENV_FILE} (copy it from"

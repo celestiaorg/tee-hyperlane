@@ -17,6 +17,11 @@ if [ -f "${ENV_FILE}" ]; then
   # That keeps the syntax the same one systemd accepts, since the relayer unit reads this
   # very file as its EnvironmentFile.
   set -a; . "${ENV_FILE}"; set +a
+elif [ -z "${EVM_PRIVATE_KEY:-}" ]; then
+  # Not fatal, because bringing the chain up needs none of it. Said once, here, rather than
+  # left for whichever step first wants a key to fail on an unset variable.
+  printf '\033[1;33m warn\033[0m no %s. Copy %s/.env.example to it and fill it in.\n' \
+    "${ENV_FILE}" "${DEVNET_DIR}" >&2
 fi
 
 CELESTIA_APP_DIR="${CELESTIA_APP_DIR:-${REPO_DIR}/../celestia-app-local}"
@@ -72,12 +77,6 @@ CELHOME="${CELHOME:-${STATE_DIR}/celestia}"
 # teardowns, so the address a wallet imported still holds funds after the chain is rebuilt.
 # Without this every genesis mints fresh random keys and the imported wallet goes empty.
 ensure_mnemonic() {
-  # Carry over a pre-.env deployment rather than silently minting a new chain under it.
-  if [ -z "${CELESTIA_MNEMONIC:-}" ] && [ -s "${STATE_DIR}/mnemonic" ]; then
-    CELESTIA_MNEMONIC="$(tr -d '\r' < "${STATE_DIR}/mnemonic" | head -1)"
-    set_env CELESTIA_MNEMONIC "${CELESTIA_MNEMONIC}"
-    warn "moved ${STATE_DIR}/mnemonic into ${ENV_FILE}; the old file is now unused"
-  fi
   if [ -z "${CELESTIA_MNEMONIC:-}" ]; then
     CELESTIA_MNEMONIC="$("${APPD}" keys mnemonic 2>/dev/null | tr -d '\r' | head -1)"
     [ -n "${CELESTIA_MNEMONIC}" ] || die "could not generate a mnemonic"
@@ -88,15 +87,9 @@ ensure_mnemonic() {
   export DEVNET_MNEMONIC CELESTIA_MNEMONIC
 }
 
-# The key that pays for EVM deployments, from devnet/.env or from the environment. The
-# .state/evm-key fallback is only here to carry a pre-.env deployment across; it can go once
-# no host still has one.
-if [ -z "${EVM_PRIVATE_KEY:-}" ] && [ -f "${STATE_DIR}/evm-key" ]; then
-  EVM_PRIVATE_KEY="$(tr -d ' \n\r' < "${STATE_DIR}/evm-key")"
-  warn "read the EVM key from ${STATE_DIR}/evm-key; move it to EVM_PRIVATE_KEY in ${ENV_FILE}"
-fi
-# Accept it with or without the 0x, because systemd's copy of this file needs the prefix and
-# a pasted key often does not have one.
+# The key that pays for EVM deployments, from devnet/.env and nowhere else. Accepted with or
+# without the 0x, because systemd reads this same file and needs the prefix, while a pasted
+# key often does not have one.
 if [ -n "${EVM_PRIVATE_KEY:-}" ]; then
   case "${EVM_PRIVATE_KEY}" in 0x*) ;; *) EVM_PRIVATE_KEY="0x${EVM_PRIVATE_KEY}" ;; esac
   export EVM_PRIVATE_KEY
