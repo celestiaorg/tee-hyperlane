@@ -23,6 +23,8 @@ pub enum Origin {
     Celestia,
     Arbitrum,
     Base,
+    /// Evolve-stack chains, which ride on Celestia rather than on Ethereum.
+    Eden,
 }
 
 impl Origin {
@@ -33,12 +35,19 @@ impl Origin {
             Origin::Celestia => 1297040200,
             Origin::Arbitrum => 421614,
             Origin::Base => 84532,
+            Origin::Eden => 3735928814,
         }
     }
 
     /// Whether this origin rides on another origin's light client rather than its own.
     pub fn is_derived_from_ethereum(&self) -> bool {
         matches!(self, Origin::Arbitrum | Origin::Base)
+    }
+
+    /// Evolve chains ride on Celestia the way an L2 rides on Ethereum: no light client of
+    /// their own, a root read out of a chain the enclave already verified.
+    pub fn is_derived_from_celestia(&self) -> bool {
+        matches!(self, Origin::Eden)
     }
 }
 

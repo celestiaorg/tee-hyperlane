@@ -26,6 +26,7 @@ use crate::origins::ethereum_l2::{
     BaseRootProof,
 };
 use crate::origins::{AttestedRoot, Origin};
+use crate::origins::celestia_l2::{verify_evolve_root, EvolveChain, EvolveHeaderProof};
 use crate::state_proofs::{verify_celestia_merkle_tree, CelestiaStateError, Ics23TreeProof};
 use hyperlane_types::MerkleTree;
 
@@ -101,6 +102,13 @@ pub enum OriginInput {
         ethereum: Box<OriginInput>,
         proof: BaseRootProof,
     },
+    /// An evolve chain rides on Celestia the way an L2 rides on Ethereum: the sequencer's
+    /// signed header is a blob in a Celestia block, so verifying Celestia first is what makes
+    /// the header worth reading.
+    Eden {
+        celestia: Box<OriginInput>,
+        proof: EvolveHeaderProof,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -116,6 +124,10 @@ pub enum TreeInput {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AttestError {
+    #[error("an evolve origin must carry a Celestia light client")]
+    EvolveNeedsCelestia,
+    #[error(transparent)]
+    Evolve(#[from] crate::origins::celestia_l2::EvolveError),
     #[error("supplied light-client store does not match the commitment in the ISM state")]
     StoreCommitmentMismatch,
     #[error("origin domain {got} does not match the ISM's {expected}")]
@@ -294,6 +306,7 @@ fn origin_of(input: &OriginInput) -> Origin {
         OriginInput::Celestia { .. } => Origin::Celestia,
         OriginInput::Arbitrum { .. } => Origin::Arbitrum,
         OriginInput::Base { .. } => Origin::Base,
+        OriginInput::Eden { .. } => Origin::Eden,
     }
 }
 
@@ -348,6 +361,32 @@ fn verify_origin_head(
                 l1.timestamp,
             ))
         }
+        // Same shape as an L2, with Celestia in place of Ethereum. The Celestia head is what
+        // dates the attestation; the evolve header's own timestamp dates the state.
+        OriginInput::Eden { celestia, proof } => {
+            let (_, commit, celestia_time) = verify_celestia_head(celestia, trusted)?;
+            let header = match celestia.as_ref() {
+                OriginInput::Celestia { store, .. } => celestia::celestia_header(store).clone(),
+                _ => return Err(AttestError::EvolveNeedsCelestia),
+            };
+            Ok((
+                verify_evolve_root(&header, &EvolveChain::EDEN, proof)?,
+                commit,
+                celestia_time,
+            ))
+        }
+    }
+}
+
+/// An evolve chain is only as good as the Celestia block its header sits in, so the inner
+/// origin has to be Celestia and nothing else.
+fn verify_celestia_head(
+    input: &mut OriginInput,
+    trusted: &IsmState,
+) -> Result<(AttestedRoot, [u8; 32], u64), AttestError> {
+    match input {
+        OriginInput::Celestia { .. } => verify_origin_head(input, trusted),
+        _ => Err(AttestError::EvolveNeedsCelestia),
     }
 }
 
