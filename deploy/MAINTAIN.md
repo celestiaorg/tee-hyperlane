@@ -79,7 +79,7 @@ curl -s https://<new-app-id>-8080.dstack-pha-prod9.phala.network/identity | jq -
 Compare against what the ISMs already trust:
 
 ```
-identity  0xd803bb1e4068d907f8a1343df8cc4aecbcec29a287ba1d1f029588f84a641905
+identity  0x6fc758842ebcb3d8398ca8d77374356128779bd4c1d545e722b62b662dda3961
 ```
 
 **If it matches**, there is nothing else to do. Edit `tee_node_url` for that route in
@@ -308,6 +308,96 @@ different clothes - a value that looked like configuration was in fact a request
 proving something *about* it proved nothing about the bridge. Hence the merkle tree address,
 the L2 anchor contract and its slot layout all being compiled in rather than accepted.
 
+## One enclave per origin family
+
+The identity an ISM pins is a hash of the enclave image, and the ISM cannot be told to trust a
+different one: it is `immutable` in `TeeDcapIsm.sol` and `x/teeism` has no update message. So
+every origin sharing one image meant every ISM sharing one identity, and a change to Eden's
+executor re-deployed the Ethereum side too.
+
+There are now three images, one per origin family:
+
+| family | attests | pinned by |
+|---|---|---|
+| `celestia` | the Celestia origin | the four `TeeDcapIsm` on the EVM chains |
+| `ethereum` | Sepolia, Arbitrum, Base | three Celestia-side ISMs |
+| `evolve` | Eden | one Celestia-side ISM |
+
+So a change to the evolve executor re-deploys one ISM, not eight. A change to shared code -
+`attest.rs`, the tree verification, the state layout - still moves all three, which is correct:
+they all run it.
+
+**A dependency change also moves all three**, because `Cargo.lock` is in every image's source.
+Enabling revm's standard precompiles added crates to the lock, and all three digests changed
+even though only the evolve build links them. The split bounds *code* changes, not dependency
+changes. Worth knowing before planning a rotation around it.
+
+Each is `nix build .#image-<family>` from the cargo feature of the same name, pinned by
+`deploy/docker-compose.<family>.yml`. Adding a family is an entry in the `families` list in
+`flake.nix`, a feature in `crates/tee-node/Cargo.toml`, a module under `origins/` and a compose
+file; nothing in the build is per-family except the name.
+
+`devnet/scripts/85-celestia-isms.sh` knows which family each origin belongs to, and
+`80-evm-isms.sh` takes `ENCLAVE_FAMILY` (default `celestia`).
+
+### Re-deployment moves the checkpoint
+
+A new identity means a new ISM, and the new one is anchored at the origin's **current head**.
+Anything dispatched and not yet delivered is below that anchor and never arrives. On Base,
+where a transfer is in flight for five days, that is the normal case rather than the corner
+one. It is accepted here; the testnet is not worth coupling every deployment to the last.
+
+To recover such a message, anchor the replacement at the old checkpoint instead:
+
+```sh
+cast call <old-ism> "state()(bytes)" --rpc-url <rpc>
+tee-hyperlane rotate-state --state <that> --identity-digest <new identity>
+ISM_GENESIS=<the genesis state it prints> ./devnet/scripts/80-evm-isms.sh
+```
+
+`rotate-state` keeps the root, height, timestamp and store commitment and changes only the
+identity, which is the one field the ISM checks against itself. The route then replays the gap
+and delivers what the old one had seen. `ISM_GENESIS_<ORIGIN>` does the same for the
+Celestia-side ISMs.
+
+## Eden, and what it costs in trust
+
+Eden is an evolve-stack chain: an EVM chain with no consensus of its own, whose single
+sequencer signs each block header and publishes it as a blob in one Celestia namespace on
+mocha. Three things have to hold before the enclave will attest a root from it:
+
+1. the blob was in a Celestia block the light client verified,
+2. the pinned sequencer key signed the header in it, and
+3. **the enclave re-executed the blocks that produced that root** and reached the same root,
+   starting from the state the ISM already trusts.
+
+The third is the one that matters. A signature says who claimed a root, not whether it is the
+root executing the chain produces, so without re-execution a dishonest sequencer could sign a
+header naming any state it liked and mint whatever it wanted on the far side. With it the
+sequencer keeps the powers a sequencer must have - deciding which transactions run and in
+what order - and loses the one it must not, which is inventing a state those transactions
+would never reach. It cannot sign other people's transactions, so it cannot move their funds.
+
+Only the blocks that changed the state are executed. That is not a shortcut: the executions
+chain by state root and the chain has to arrive at the root the sequencer signed for the
+target height, so a block left out is an effect missing from the result and the roots stop
+matching. Eden makes ten blocks a second and nearly all of them are empty, which is the
+difference between verifying a handful of blocks per batch and verifying a million.
+
+The executor lives in `tee-hyperlane/crates/tee-node/src/evm/`: revm for execution, and a
+merkle-patricia trie that reads and rewrites itself through the witness rather than a
+database. It is held to Eden's own answers by `tests/eden_exec.rs`, which replays real blocks
+off the chain, and to a trie built from scratch by `tests/eden_trie.rs`.
+
+**One quirk worth knowing**: Eden does not burn the base fee, it pays it to the block's
+beneficiary along with the priority fee. revm burns it, following Ethereum, so the executor
+credits it back. The first run of it came out short on exactly one account by exactly
+`base_fee * gas_used`, which is how this was found. If Eden ever changes that rule, every
+Eden attestation stops rather than starts lying.
+
+What is left to trust: the sequencer can still censor and reorder, and it can still stop.
+Neither takes anyone's funds, and both are visible.
+
 ### Residual risks
 
 - A TDX break, or an unrevoked but vulnerable TCB, forges any root. This is the irreducible
@@ -324,3 +414,8 @@ the L2 anchor contract and its slot layout all being compiled in rather than acc
   set or sync committee to equivocate.
 - L2 roots are trustless only once confirmed, gated on each chain's challenge window.
 - ISM and warp router owners are single EOAs today.
+- Eden's sequencer can censor and reorder, and can stop. It cannot forge a state, because the
+  enclave re-executes; see above.
+- Eden's executor is ours rather than reth's, so a transaction it disagrees with halts Eden's
+  routes. That is the safe direction - a disagreement is a refusal, never an acceptance - but
+  it is a liveness risk the other origins do not carry.

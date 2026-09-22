@@ -119,6 +119,12 @@ impl Destination {
                 mailbox,
                 domain,
                 ..
+            }
+            | ChainConfig::CelestiaL2 {
+                l2_rpc,
+                mailbox,
+                domain,
+                ..
             } => {
                 command
                     .env("EVM_RPC", l2_rpc)
@@ -166,6 +172,10 @@ pub fn read_ism_state(chain: &ChainConfig, ism: &str) -> Result<String> {
             .with_context(|| format!("celestia-appd query {ism_module} ism"))?,
         ChainConfig::Ethereum { execution_rpc, .. }
         | ChainConfig::EthereumL2 {
+            l2_rpc: execution_rpc,
+            ..
+        }
+        | ChainConfig::CelestiaL2 {
             l2_rpc: execution_rpc,
             ..
         } => Command::new("cast")

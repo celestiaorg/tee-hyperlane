@@ -15,8 +15,8 @@
 #
 #   deploy/verify-digest.sh <app-id> [--ism <addr> --rpc <url>] [--rebuild]
 #
-# --rebuild also builds the image from source with Nix and compares digests, which takes
-# about thirty five minutes. Without it the image leg is reported as unverified rather than
+# --rebuild also builds the image from source with Nix and compares it against the one the
+# compose pins, which takes a while. Without it the image leg is reported as unverified rather than
 # passed, because the digest in the compose file is only the registry's word until rebuilt.
 set -uo pipefail
 
@@ -35,7 +35,15 @@ while [ $# -gt 0 ]; do
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE="${ROOT}/devnet/enclave/docker-compose.yml"
+# The devnet's by default, because that is what a developer running this locally has just
+# deployed. A testnet enclave measures one of deploy/docker-compose.<family>.yml, so checking
+# one of those means naming it:
+#
+#   COMPOSE=deploy/docker-compose.evolve.yml ./deploy/verify-digest.sh <app-id>
+#
+# Without this the script could only ever pass for the devnet, and step 3 read as a real
+# failure on every live enclave.
+COMPOSE="${COMPOSE:-${ROOT}/devnet/enclave/docker-compose.yml}"
 GATEWAY="${GATEWAY:-dstack-pha-prod9.phala.network}"
 URL="${ENCLAVE_URL:-https://${APP_ID}-8080.${GATEWAY}}"
 WORK="$(mktemp -d)"; trap 'rm -rf "${WORK}"' EXIT
@@ -93,7 +101,7 @@ PY
 echo
 echo "3. the measured compose is this checkout's compose"
 if diff -q "${WORK}/compose_in_quote" "${COMPOSE}" >/dev/null 2>&1; then
-  ok "byte for byte identical to devnet/enclave/docker-compose.yml"
+  ok "byte for byte identical to ${COMPOSE#${ROOT}/}"
 else
   bad "the enclave measured a different compose file"
   diff "${COMPOSE}" "${WORK}/compose_in_quote" | head -20 | sed 's/^/       /'
@@ -132,12 +140,29 @@ echo "6. the image is what this source builds"
 if [ "${REBUILD}" -eq 1 ]; then
   command -v nix >/dev/null 2>&1 || { bad "nix is not installed"; }
   if command -v nix >/dev/null 2>&1; then
-    ( cd "${ROOT}" && nix build .#image ) || bad "nix build failed"
-    CONFIG="$(tar -xOf "${ROOT}/result" manifest.json 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["Config"])' 2>/dev/null)"
-    note "rebuilt config digest ${CONFIG}"
-    note "compose pins manifest digest ${DIGEST}"
-    note "these are different objects and are not expected to be equal; compare the config"
-    note "digest against deploy/MAINTAIN.md, which records the expected value"
+    # One image per origin family, so the output to build is named by the compose file being
+    # checked. FAMILY overrides it for a compose file that is not named that way.
+    fam="${FAMILY:-$(basename "${COMPOSE}" .yml | sed -n 's/^docker-compose\.//p')}"
+    if [ -z "${fam}" ]; then
+      bad "cannot tell which family ${COMPOSE} is; set FAMILY=celestia|ethereum|evolve"
+    else
+      ( cd "${ROOT}" && nix build ".#image-${fam}" -o "result-verify-${fam}" ) \
+        || bad "nix build of .#image-${fam} failed"
+      built="$(tar -xOf "${ROOT}/result-verify-${fam}" manifest.json 2>/dev/null \
+        | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["Config"])' 2>/dev/null)"
+      # The compose pins a manifest digest; a tarball has no manifest digest, because that is
+      # computed when it is pushed. Both name the same config blob though, so comparing that
+      # answers the real question: is the image the chain trusts the one this source builds.
+      docker pull -q "ghcr.io/jonas089/tee-node@${DIGEST}" >/dev/null 2>&1
+      pinned="$(docker image inspect --format '{{.Id}}' "ghcr.io/jonas089/tee-node@${DIGEST}" 2>/dev/null \
+        | sed 's/^sha256://')"
+      built="${built#sha256:}"; built="${built%.json}"; built="${built#*/}"
+      if [ -n "${pinned}" ] && [ "${built}" = "${pinned}" ]; then
+        ok "rebuilt from this source and it is the image the compose pins"
+      else
+        bad "rebuilt ${built}, but the pinned image is ${pinned:-unreadable}"
+      fi
+    fi
   fi
 else
   note "not rebuilt. ${DIGEST} is the registry's word until you run --rebuild,"

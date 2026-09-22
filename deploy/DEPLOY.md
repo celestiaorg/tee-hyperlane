@@ -189,37 +189,22 @@ image digest -> app_compose document -> sha256 = compose_hash
              -> mr_config_id in the TDX quote -> identity pinned by every ISM
 ```
 
-Reuse the published image unless you have changed `crates/tee-node`:
-
-```
-ghcr.io/jonas089/tee-node@sha256:77283ad03dd5f2dfbbbb718e4b08f63397ce829c48a4e3cc7b3635d18fe3e0d8
-```
-
-To build your own, which is reproducible:
+There are three images, one per origin family, so that a change to one origin does not
+re-deploy the ISMs of the others:
 
 ```sh
-nix build .#image          # ~35 min cold
-nix build .#image --rebuild  # proves it is bit-identical, not merely repeatable
+nix build .#image-celestia    # the Celestia origin; the EVM ISMs pin it
+nix build .#image-ethereum    # Sepolia, Arbitrum and Base origins
+nix build .#image-evolve      # Eden: a mocha light client and the ev-reth executor
 ```
 
-Push it, then pin the **manifest** digest in `deploy/docker-compose.yml`.
+Load, tag and push each, then pin its digest in `deploy/docker-compose.<family>.yml`. Those
+three compose files are what the three CVMs are deployed from, and their hashes are the three
+identities.
 
-> Two digests are involved and confusing them wastes an afternoon. `tar -xOf result
-> manifest.json | jq -r '.[0].Config'` gives the *config* digest, content-addressed over the
-> image. The compose file pins the *manifest* digest. Compare like with like using
-> `docker manifest inspect <ref> | jq -r .config.digest`.
-
-The Nix source filter is deliberately narrow: only `tee-hyperlane/{Cargo.toml,Cargo.lock,
-rust-toolchain}`, `crates/hyperlane-types`, `crates/tee-node`, `tee-circuit/Cargo.toml` and
-`tee-circuit/tee-attestation`, minus every `tests/` and `testdata/`. Editing the coprocessor,
-the gas oracle or a test therefore cannot move the digest, which matters because a moved
-digest means a new identity and six new ISMs.
-
-> `devnet/enclave/docker-compose.yml` is deliberately **not** byte-identical to
-> `deploy/docker-compose.yml`. Its hash is measured, so keeping them distinct means a devnet
-> enclave can never satisfy a testnet ISM's identity, or the reverse. Do not "tidy" them into
-> one file.
-
+Adding a family is four small things: the `families` list in `flake.nix`, a cargo feature in
+`crates/tee-node/Cargo.toml`, a module under `crates/tee-node/src/origins/`, and a compose
+file. Nothing else in the build is per-family.
 ---
 
 ## 6. The two Phala CVMs
@@ -273,11 +258,11 @@ The two outputs must be identical. The live deployment measures:
 ```
 mr_td          f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077
 os_image_hash  bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033
-compose_hash   f6ad454d9125b4512c72309e55b4e4fe7bab3b527327dd1c12199ad06cd80f5f
+compose_hash   e549507dee0bf80dcd84c29d03937428d2d8419a8212945b2697440f34497ab9
 mr_kms         92a4bf40c88734b0e56f54b09b1f0fe4b8d3e230047e9298f491968ada8dedf8
 
-identity       0xd803bb1e4068d907f8a1343df8cc4aecbcec29a287ba1d1f029588f84a641905
-measurements   0xbccc1d1a0259eb0fc7476eb9812eb37d6a516ecd74f2de9595f24fbd4c37b8cd
+identity       0x6fc758842ebcb3d8398ca8d77374356128779bd4c1d545e722b62b662dda3961
+measurements   0xd0c526566573a72dea28d837a12ccc23d12b576ea53d221625d4d5163ec824b9
 ```
 
 `measurements` is what the EVM ISMs pin: `keccak(mr_td ++ mr_config_id ++ rtmr0..2)`. rtmr3 is
@@ -386,8 +371,8 @@ the key that pays gas. Split them before this carries value.
 
 ## 9. The ISMs
 
-An ISM pins **exactly one origin domain** and one enclave identity. Six routes therefore need
-six ISMs, three on each side.
+An ISM pins **exactly one origin domain** and one enclave identity. Eight routes therefore
+need eight ISMs, four on each side.
 
 ```sh
 ENCLAVE_URL="https://<eth-app-id>-8080.dstack-pha-prod9.phala.network" ./scripts/40-create-ism.sh
@@ -399,35 +384,39 @@ reads a live checkpoint from the origin, and creates the Celestia-side ISM, reco
 `ism-celestia-sepolia`, `identity-digest` and `genesis-state`. `80-evm-isms.sh` deploys
 `TeeDcapIsm` on each EVM chain from `pccs-<chain>.json` plus the same identity.
 
-The two L2-origin Celestia ISMs are created the same way with the origin changed. Live values:
+The other three origin ISMs are created the same way with the origin changed; Eden's uses
+`bootstrap-eden` for its checkpoint (step 11c). Live values:
 
 | origin | ISM on `teeism-local` |
 |---|---|
-| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b0000000000000005` |
-| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b0000000000000006` |
-| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b0000000000000003` |
+| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b000000000000002c` |
+| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b000000000000002d` |
+| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b000000000000002e` |
+| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b000000000000002f` |
 
 | destination | `TeeDcapIsm` |
 |---|---|
-| Ethereum Sepolia | `0xa360fCc411D20a200CE122B21769Fb48ca40DA0B` |
-| Arbitrum Sepolia | `0xD68553577b121b47C30b3a53284DaAbD2A64F16E` |
-| Base Sepolia | `0xA3754E3358EF03D62A59da08B501cFb70357F4A2` |
+| Ethereum Sepolia | `0xA4c237Ca7Fa8e5831490AE1904EC8B2AB647B4b5` |
+| Arbitrum Sepolia | `0x2705e8CaE7302f2515F3a5294bb03e59D47498dC` |
+| Base Sepolia | `0x285E29dbac544C2075A6A0C1D5b3f9669bab6ECB` |
+| Eden | `0x0e5bd5F1B32Ac35Ce078dba29343B3BfDc0cBdE1` |
 
 ### One ISM is not enough on the Celestia side
 
-Three EVM origins deliver into one Celestia token, and each ISM pins one `origin_domain`, so a
-single ISM rejects two of the three. A routing ISM fans them out:
+Four EVM origins deliver into one Celestia token, and each ISM pins one `origin_domain`, so a
+single ISM rejects three of the four. A routing ISM fans them out:
 
 ```sh
 celestia-appd tx hyperlane ism create-routing
 celestia-appd tx hyperlane ism set-routing-ism-domain $ROUTING 11155111 $SEPOLIA_ISM
 celestia-appd tx hyperlane ism set-routing-ism-domain $ROUTING 421614   $ARBITRUM_ISM
 celestia-appd tx hyperlane ism set-routing-ism-domain $ROUTING 84532    $BASE_ISM
+celestia-appd tx hyperlane ism set-routing-ism-domain $ROUTING 3735928814 $EDEN_ISM
 celestia-appd tx warp set-token $TOKEN --ism-id $ROUTING
 celestia-appd tx hyperlane mailbox set $MAILBOX --default-ism $ROUTING
 ```
 
-Live: `0x726f757465725f69736d00000000000000000000000000010000000000000004`. It is both the
+Live: `0x726f757465725f69736d00000000000000000000000000010000000000000030`. It is both the
 token's ISM and the mailbox default.
 
 > Rotating a route is **remove then set**, not set. `set-routing-ism-domain` inserts a domain
@@ -538,6 +527,126 @@ gas-oracle --config .state/gas-oracle.toml --once   # one round, printed, then e
 
 ---
 
+## 11b. The faucet
+
+The UI's Faucet tab grants a fixed 1000 TIA per address, once. It signs with `celestia-appd`
+from its own account, deliberately not the relayer's: this is the one endpoint a stranger can
+spend from, so what it can give away should be all it can reach. Draining it stops the faucet
+and nothing else.
+
+`10-celestia-up.sh` derives a `faucet` key at account **4** and funds it at genesis with
+`FAUCET_COINS`, a thousand grants by default. Account 3 is reserved for the oracle's `bridge`
+key, which the paymaster setup derives by hand; two names on one index fail with
+`duplicated address created` at whichever runs second.
+
+On a chain that already exists, derive and fund it instead:
+
+```sh
+A=.state/bin/celestia-appd; H="--home .state/celestia --keyring-backend test"
+printf '%s\n' "$(cat .state/mnemonic)" | $A keys add faucet --recover --account 4 $H --output json
+$A tx bank send validator "$($A keys show faucet -a $H)" 1000000000000utia $H \
+  --chain-id teeism-local --node http://localhost:26657 --fees 200000utia --gas 200000 -y
+```
+
+> `keys add` takes `--output json`, not `-o json`. `-o` is rejected as an unknown shorthand.
+
+The endpoint lives in the attestation API, so `teeism-api.service` needs a keyring to sign
+with. Without `CELHOME` the endpoint reports itself unconfigured and the UI hides the tab
+rather than offering a button that cannot work:
+
+```
+Environment=APPD=/home/chef/tee-ism-nonzk/devnet/.state/bin/celestia-appd
+Environment=CELHOME=/home/chef/tee-ism-nonzk/devnet/.state/celestia
+Environment=CELESTIA_CHAIN_ID=teeism-local
+Environment=CELESTIA_RPC=http://localhost:26657
+Environment=FAUCET_KEY=faucet
+```
+
+Claims are recorded under `<proof_dir>/.faucet/<address>`, one file each, created before the
+send so two racing requests cannot both be paid. A failed send removes the marker so the
+address can try again. Deleting the directory re-opens every claim.
+
+Addresses are free to mint, so one-per-address bounds a careless user rather than a
+determined one. The real bound is the funding account's balance.
+
+---
+
+## 11c. Eden, an evolve-stack chain
+
+Eden differs from the other three in two ways that matter. It has **no canonical Hyperlane
+deployment**, so its mailbox and merkle tree hook are ours. And as an *origin* it has no
+consensus to run a light client against, so its state root is found in a sequencer-signed
+header published to Celestia and then **re-executed by the enclave** before it is believed.
+See MAINTAIN.md for what that does and does not buy.
+
+```
+chain id        3735928814 (0xdeadbfee)   ~10 blocks/s, 18 decimals
+DA              mocha-5, namespace 0000000000000000000000000000000000005d2e074163aa3b4d9818
+sequencer       ed25519 4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d630b68d51
+chain id string edennet-2
+```
+
+The namespace and key are pinned in `origins/celestia_l2.rs`, not configured, for the same
+reason the L2 anchors are. Neither came from a spec sheet: Eden's blocks are empty so its
+state root is constant, and using that as a needle found a Celestia blob carrying 657 Eden
+headers that all verify under this key.
+
+**An evolve origin needs a DA node.** The consensus RPC gives a `data_hash` but not the row
+roots behind it, so a celestia-node light node for mocha runs beside the chain:
+
+```sh
+IMG=ghcr.io/celestiaorg/celestia-node:v0.34.2-mocha
+docker run --rm -v $D:/home/celestia -u "$(id -u):$(id -g)" $IMG celestia light init --p2p.network mocha
+# `init` writes a config `start` then rejects. Both need fixing by hand:
+#   add   [Share.LightAvailability] / SampleAmount = 16
+#   set   Header.Syncer.PruningWindow = "800h0m0s"   (must be >= the 721h sampling window)
+docker run -d --name mocha-light --restart unless-stopped -p 127.0.0.1:26658:26658 \
+  -v $D:/home/celestia -u "$(id -u):$(id -g)" $IMG \
+  celestia light start --p2p.network mocha --rpc.addr 0.0.0.0 --rpc.port 26658 --rpc.skip-auth
+```
+
+> Use a **-mocha** tagged release. `v0.26.0-arabica` speaks `/mocha-4/` protocol ids and can
+> never sync mocha-5; it fails with "protocols not supported" and looks like a peering
+> problem.
+
+**Eden's own RPC serves `eth_getProof` for the `latest` tag only.** Not a pruning window: a
+numbered block is refused even at head-minus-zero, because ten blocks a second means the
+block has moved on before the request lands. The relayer therefore captures a proof each tick
+and files it under its height, then attests once Celestia carries the signed header for that
+same height. Nothing to configure; it is how `attest_eden` works. `bootstrap-eden` does the
+same, anchoring only at a height it managed to capture.
+
+```sh
+tee-hyperlane bootstrap-eden --rpc https://rpc-mocha.pops.one \
+  --da-rpc http://localhost:26658 --identity-digest <digest> \
+  --out .state/proofs/eden-to-celestia/staging/attestation.json
+```
+
+**`l2_rpc` must serve `debug_executionWitness`.** That is what the enclave re-executes
+against, and it is the one field on this route that a plain public endpoint will not answer.
+Unlike `eth_getProof` it is served for historical blocks, so no capture-ahead is needed for
+it. The relayer finds the blocks that changed Eden's state by bisecting on the state root
+between the trusted height and the target, so a quiet stretch costs a handful of
+`eth_getBlockByNumber` calls rather than one per block.
+
+> A route that falls a long way behind will report that a span is "too long to re-execute in
+> one step". That is not a stall: it steps forward through the backlog one attestation at a
+> time, taking the newest height whose re-execution fits.
+
+The rest is ordinary: the Automata stack from step 8, Hyperlane core from `DeployHyperlaneCore`
+then `InitHyperlaneCore`, an ISM, and the two synthetic routers.
+
+> Eden's TCB info only lands in the **V1** versioned FMSPC DAO; the V2 one reverts
+> `0x331b9eaa` with the same calldata. Point `FmspcTcbDaoVersioned` and the router at V1
+> there. The other three chains use V2.
+
+> The Automata repos need submodules that are not vendored here: `forge-std`, `solady` and
+> `openzeppelin-contracts` **pinned to v5.0.2**, since master needs Cancun while the project
+> compiles for paris. The attestation repo additionally wants `risc0-ethereum`,
+> `sp1-contracts`, and the pccs repo symlinked in as `lib/automata-on-chain-pccs`.
+
+---
+
 ## 12. The relayer config
 
 Write `.state/coprocessor.toml` from [coprocessor.toml.example](coprocessor.toml.example),
@@ -633,12 +742,19 @@ VITE_CELESTIA_USDC_ROUTER=<celestia-usdc-token-id>
 VITE_SEPOLIA_RPC=http://<host>:3000/evm/sepolia/
 VITE_ARBITRUM_RPC=http://<host>:3000/evm/arbitrum/
 VITE_BASE_RPC=http://<host>:3000/evm/base/
+VITE_EDEN_RPC=http://<host>:3000/evm/eden/
 VITE_SEPOLIA_ISM=<TeeDcapIsm on sepolia>
 VITE_ARBITRUM_ISM=<TeeDcapIsm on arbitrum>
 VITE_BASE_ISM=<TeeDcapIsm on base>
+VITE_EDEN_ISM=<TeeDcapIsm on eden>
+VITE_SEPOLIA_TIA_ROUTER=<sepolia tia synthetic router>
+VITE_ARBITRUM_TIA_ROUTER=<arbitrum tia synthetic router>
+VITE_BASE_TIA_ROUTER=<base tia synthetic router>
+VITE_EDEN_TIA_ROUTER=<eden tia synthetic router>
 VITE_SEPOLIA_USDC_ROUTER=<sepolia usdc collateral router>
 VITE_ARBITRUM_USDC_ROUTER=<arbitrum usdc synthetic router>
 VITE_BASE_USDC_ROUTER=<base usdc synthetic router>
+VITE_EDEN_USDC_ROUTER=<eden usdc synthetic router>
 VITE_PROVING_SECONDS=30
 ENV
 VITE_DEVNET=1 npm install --silent && VITE_DEVNET=1 npm run build
@@ -647,9 +763,14 @@ cd ../devnet/gateway
 UI_DIST=~/tee-ism-nonzk/bridge-app/dist docker compose up -d
 ```
 
-An empty `VITE_*_USDC_ROUTER` is how a route reports itself as not deployed, so the UI hides
-the control rather than offering one that cannot work. Leave one blank only if that asset
+An empty `VITE_*_ROUTER` is how a route reports itself as not deployed, so the UI hides the
+control rather than offering one that cannot work. Leave one blank only if that asset
 genuinely has no router on that chain.
+
+Adding a chain to the UI is more than these values: `src/config.ts` has to gain a `CHAINS`
+entry, `App.tsx` a name in `COUNTERPARTIES`, and `site.conf` an `/evm/<chain>/` proxy. Eden
+also needed a `nativeCurrency`, because it pays gas in TIA rather than ETH and the default
+tells MetaMask the wrong thing.
 
 `site.conf` ships with `ALCHEMY_ETH/ARB/BASE` placeholders. Substitute them or point them at
 the public endpoints, which is what this deployment does.

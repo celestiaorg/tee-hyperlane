@@ -144,6 +144,15 @@ pub fn verify_celestia_updates(
 /// That off-by-one is inherent to Cosmos: `header[H].app_hash` is the result of executing
 /// block `H-1`. Messages dispatched in block `H-1` are therefore provable under this root,
 /// and `height` is reported as `H-1` so the ISM state names the state it actually describes.
+/// The header the light client currently trusts.
+///
+/// `celestia_root` returns the app hash, which is what a Celestia *origin* attests. An
+/// evolve chain needs the `data_hash` from the same header instead, to place a blob inside
+/// the block, so it takes the header rather than the root.
+pub fn celestia_header(store: &CelestiaStore) -> &tendermint::block::Header {
+    &store.trusted.signed_header.header
+}
+
 pub fn celestia_root(store: &CelestiaStore) -> Result<AttestedRoot, CelestiaError> {
     let header = &store.trusted.signed_header.header;
     let height = header.height.value();

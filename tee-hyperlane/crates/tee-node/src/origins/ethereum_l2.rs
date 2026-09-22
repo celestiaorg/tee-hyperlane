@@ -28,9 +28,13 @@ const ASSERTION_STATUS_BYTE_OFFSET: u32 = 25;
 /// `AssertionStatus.Confirmed`. Anything else has not survived its challenge window.
 const ASSERTION_CONFIRMED: u8 = 2;
 
-/// Layout of the `RollupCore` storage this bridge reads. Deployment-specific, so it is
-/// configuration rather than a constant - the same lesson as the merkle tree hook's base
-/// slot, which differs between Hyperlane's Sepolia deployment and celestia-zkevm's.
+/// Layout of the `RollupCore` storage this bridge reads.
+///
+/// Deployment-specific, and therefore pinned rather than accepted: `verify_arbitrum_root`
+/// binds `ARBITRUM_SEPOLIA` itself and ignores whatever a request carries. A caller-supplied
+/// layout would be the same hole as a caller-named anchor contract - point the enclave at
+/// slots of your choosing and any storage proof becomes a proof about nothing. It derives
+/// `Serialize` only because it rides inside the proof the untrusted coprocessor assembles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RollupLayout {
     /// Slot holding `_latestConfirmed`, the hash of the newest confirmed assertion.

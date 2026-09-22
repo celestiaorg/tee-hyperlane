@@ -80,6 +80,27 @@ empty in `.env.local`. That is the deliberate signal for "not deployed here", no
 
 ---
 
+## Getting test funds
+
+The **Faucet** tab grants **1000 TIA, once per address**. Connect Keplr and press claim; it
+sends to the connected address and lands in the next block.
+
+```sh
+curl -s $B/api/faucet                       # {"enabled":true,"amountTia":1000}
+curl -s $B/api/faucet/<celestia1...>        # {"claimed":false}
+curl -s -X POST $B/api/faucet -H 'content-type: application/json' \
+     -d '{"address":"<celestia1...>"}'      # {"tx_hash":"...","amount_tia":1000}
+```
+
+A second claim for the same address returns 409, and the tab says so before offering the
+button. The claim is recorded on the host, not in the browser, so clearing site data or
+switching browser does not grant a second one.
+
+If the tab reports the faucet is not configured, the API has no keyring to sign with. See
+DEPLOY.md step 11b.
+
+---
+
 ## What each route should take
 
 Measured end to end on the live deployment, not estimated. There is no proving anywhere, so
@@ -88,13 +109,25 @@ the only wait is origin finality plus one transaction.
 ```
 Celestia -> Arbitrum    11-18 s
 Celestia -> Base        13-18 s
-Celestia -> Sepolia     14-29 s    the spread is one Sepolia block
-Sepolia  -> Celestia    ~15 min    Ethereum finality, two epochs
-Arbitrum -> Celestia    ~31 min    the validator's posting cadence
-Base     -> Celestia    ~5 days    the dispute window
+Celestia -> Sepolia     14-29 s     the spread is one Sepolia block
+Celestia -> Eden        ~30 s
+Sepolia  -> Celestia    ~15 min     Ethereum finality, two epochs
+Eden     -> Celestia    1-2 min     Eden's DA posting interval
+Arbitrum -> Celestia    ~1h 40m     see below
+Base     -> Celestia    ~5 days     the dispute window
 ```
 
-**None of the last three is our latency.** Celestia to anywhere is fast because Celestia
+Arbitrum's figure is not its challenge period, which is 20 L1 blocks or about four minutes.
+A new confirmed root lands every ~31 minutes, each covering ~7,500 L2 blocks, and the newest
+one is already ~1h40m behind Arbitrum's head because a validator asserts over data it
+already treats as settled on L1. So a message waits the standing lag plus up to one cycle.
+
+Eden is fast because there is nothing to wait out: its sequencer posts signed headers to
+Celestia about once a minute, and once a header is in a Celestia block the light client has
+verified, the route can attest it. The enclave re-executes Eden's blocks before it does, but
+only the ones that changed anything, which on a chain of empty blocks is a handful.
+
+**None of the slow ones is our latency.** Celestia to anywhere is fast because Celestia
 finalises in a block. The reverse waits on the origin proving itself, and for the two
 optimistic rollups that means a challenge or dispute window. Base is the extreme case and it
 is entirely Base's: five days plus about three minutes, which is when the dispute game
@@ -107,14 +140,55 @@ waiting rather than stuck.
 
 ## Sending from the command line
 
+There is no `tee-hyperlane send`: a transfer is an ordinary warp transaction, so it goes
+through each chain's own tooling and needs no wrapper.
+
+Leaving Celestia. The recipient is a 32-byte Hyperlane address, so a 20-byte EVM address is
+left-padded with twelve zero bytes. `--max-hyperlane-fee` is what the paymaster may charge;
+set it too low and the transaction fails naming the amount it wanted.
+
 ```sh
-tee-hyperlane send --route celestia-to-sepolia --token TIA --amount 1000000 --to 0x…
-tee-hyperlane verify --message-id 0x…
-tee-hyperlane status
+celestia-appd tx warp transfer <celestia-token-id> <destination-domain> \
+  0x000000000000000000000000<evm-address> <amount> \
+  --from <key> --chain-id teeism-local --node tcp://localhost:26657 \
+  --gas auto --gas-adjustment 1.5 --gas-prices 0.002utia --max-hyperlane-fee 10000000utia -y
 ```
 
-`verify` is the authoritative answer to "did it arrive": it reports whether the id was
-consumed from the ISM. A consumed id cannot be replayed.
+Leaving an EVM chain. A collateral router needs an `approve` first; a synthetic burns its own
+supply and does not. `--value` pays the origin mailbox's protocol fee, which Sepolia's
+canonical mailbox charges and the other three do not.
+
+```sh
+cast send <router> "transferRemote(uint32,bytes32,uint256)(bytes32)" \
+  1297040299 0x000000000000000000000000<celestia-address-bytes> <amount> \
+  --value $(cast call <router> "quoteGasPayment(uint32)(uint256)" 1297040299) \
+  --rpc-url <rpc> --private-key $EVM_PRIVATE_KEY
+```
+
+Where each route stands, by name, ISM and domain:
+
+```sh
+tee-hyperlane --config .state/coprocessor.toml status
+```
+
+### Did it arrive
+
+The authoritative answer is the destination mailbox, which records a delivered id and will
+not accept it twice:
+
+```sh
+cast call <mailbox> "delivered(bytes32)(bool)" <message-id> --rpc-url <rpc>
+celestia-appd query hyperlane delivered <mailbox-id> <message-id>
+```
+
+Ask the Celestia one only about a message that *arrived* on Celestia. The module writes a
+dispatched id into the same set it writes a delivered one into, so asking it about a message
+Celestia itself sent returns true the moment it is sent and says nothing about arrival. An
+inbound id was minted on the other chain, so there a true can only mean delivery.
+
+A balance is the other half of the answer and the faster one to read: on the EVM side the
+warp router *is* the ERC20, so `cast call <router> "balanceOf(address)(uint256)" <you>`, and
+on Celestia the synthetic lands as a bank denom named after its token id.
 
 ---
 

@@ -63,7 +63,10 @@ pub enum HyperlaneStateError {
 pub fn merkle_tree_base_slot(origin_domain: u32) -> Option<u64> {
     match origin_domain {
         11155111 => Some(103),
-        421614 | 84532 => Some(151),
+        // The two L2s and Eden all run the same MerkleTreeHook build. Eden's was verified
+        // against the live contract rather than assumed: slot 183 holds 4, and `count()`
+        // returns 4.
+        421614 | 84532 | 3735928814 => Some(151),
         _ => None,
     }
 }

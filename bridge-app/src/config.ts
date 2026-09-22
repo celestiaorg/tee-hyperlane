@@ -24,7 +24,7 @@ const envNum = (key: string, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-export type ChainId = "sepolia" | "arbitrum" | "base" | "celestia";
+export type ChainId = "sepolia" | "arbitrum" | "base" | "eden" | "celestia";
 export type TokenId = "TIA" | "USDC";
 
 export interface EvmChain {
@@ -38,6 +38,8 @@ export interface EvmChain {
   mailbox: `0x${string}`;
   /** The ISM that authorises messages arriving here. */
   ism: `0x${string}` | null;
+  /** Gas token, for the network MetaMask may have to be told about. ETH where absent. */
+  nativeCurrency?: { name: string; symbol: string; decimals: number };
 }
 
 export interface CosmosChain {
@@ -70,7 +72,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_SEPOLIA_RPC", "https://ethereum-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.etherscan.io",
     mailbox: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
-    ism: env("VITE_SEPOLIA_ISM", "0x6f31D79D898f86a60832Fd1caB31ceC67Bc71Fb6") as `0x${string}`,
+    ism: env("VITE_SEPOLIA_ISM", "0x83B41448ADfBdde1926575f774489892F88190A8") as `0x${string}`,
   },
   arbitrum: {
     kind: "evm",
@@ -81,7 +83,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_ARBITRUM_RPC", "https://arbitrum-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.arbiscan.io",
     mailbox: "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8",
-    ism: env("VITE_ARBITRUM_ISM", "0x21bdf13D66D3e5F0D4793B64bb4c85034B9EDc88") as `0x${string}`,
+    ism: env("VITE_ARBITRUM_ISM", "0xD50322542cCA994322760f170D3A2df8d7f5817e") as `0x${string}`,
   },
   base: {
     kind: "evm",
@@ -92,7 +94,23 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_BASE_RPC", "https://base-sepolia-rpc.publicnode.com"),
     explorer: "https://sepolia.basescan.org",
     mailbox: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
-    ism: env("VITE_BASE_ISM", "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729") as `0x${string}`,
+    ism: env("VITE_BASE_ISM", "0xcF5929abd3Baa03BB161745319C9E2d2Ce1201C4") as `0x${string}`,
+  },
+  eden: {
+    kind: "evm",
+    id: "eden",
+    name: "Eden",
+    domain: 3735928814,
+    chainIdHex: "0xdeadbfee",
+    rpc: env("VITE_EDEN_RPC", "https://rpc.testnet.eden.gateway.fm/"),
+    explorer: "https://eden-testnet.blockscout.com",
+    // Ours, unlike the other three. Eden had no Hyperlane deployment, so the mailbox and the
+    // merkle tree hook were deployed with the rest of this bridge.
+    mailbox: "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729",
+    ism: env("VITE_EDEN_ISM", "0x84D9b9223609CEd908f247DD88f9Ae306a768E2e") as `0x${string}`,
+    // Eden pays gas in TIA at 18 decimals, not in ETH. The synthetic TIA this bridge mints
+    // here is a separate ERC20 at 6 decimals, matching the collateral on Celestia.
+    nativeCurrency: { name: "TIA", symbol: "TIA", decimals: 18 },
   },
   celestia: {
     kind: "cosmos",
@@ -126,7 +144,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     ),
     ismId: env(
       "VITE_CELESTIA_ISM_ID",
-      "0x726f757465725f69736d0000000000000000000000000001000000000000000c",
+      "0x726f757465725f69736d00000000000000000000000000010000000000000011",
     ),
   },
 };
@@ -138,9 +156,10 @@ export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
       "VITE_CELESTIA_TIA_ROUTER",
       "0x726f757465725f61707000000000000000000000000000010000000000000000",
     ),
-    sepolia: env("VITE_SEPOLIA_TIA_ROUTER", "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE"),
-    arbitrum: "0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE",
-    base: "0xf4197C55C944987E9b10e09C0A47915211769B78",
+    sepolia: env("VITE_SEPOLIA_TIA_ROUTER", "0x9822eE81C82138F88D759faef1AC168aDfEe1467"),
+    arbitrum: env("VITE_ARBITRUM_TIA_ROUTER", "0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB"),
+    base: env("VITE_BASE_TIA_ROUTER", "0xF50470146B36c638b981e437AB37DfEd9a02FAb3"),
+    eden: env("VITE_EDEN_TIA_ROUTER", "0xD2babc9BE1055551b7AB98c440222862a1646158"),
   },
   // A deployment that has not created these leaves them unset, and the route reports itself
   // as not deployed rather than offering a Bridge button that cannot work. The addresses are
@@ -148,8 +167,9 @@ export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
   USDC: {
     celestia: env("VITE_CELESTIA_USDC_ROUTER", "0x726f757465725f61707000000000000000000000000000020000000000000001"),
     sepolia: env("VITE_SEPOLIA_USDC_ROUTER", "0xfb611B6f6CE92033960e99C2D65cee4237e64cDD"),
-    arbitrum: env("VITE_ARBITRUM_USDC_ROUTER", "0xb9E5E3eb926EA22B951d2fb7392F9F3D6c704054"),
-    base: env("VITE_BASE_USDC_ROUTER", "0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B"),
+    arbitrum: env("VITE_ARBITRUM_USDC_ROUTER", "0x8C87fd144006C651430450df8b61A15EeB3FF436"),
+    base: env("VITE_BASE_USDC_ROUTER", "0x285b590ee43A1374AA131e7390D0CA687Be43DF9"),
+    eden: env("VITE_EDEN_USDC_ROUTER", "0xc09fbf8F17E96ce746D39f9d11a9dD1813F2d220"),
   },
 };
 
@@ -206,6 +226,16 @@ export const ORIGIN_FINALITY: Record<ChainId, OriginFinality> = {
     reason:
       "Base is an optimistic rollup. Its root only becomes final once a dispute game has " +
       "run its full challenge clock, which on Sepolia takes five days.",
+  },
+  eden: {
+    // Eden's sequencer batches roughly every eleventh block into one Celestia blob, and the
+    // enclave will not read a header the light client has not seen. Measured end to end at
+    // about ninety seconds; the margin covers a slow blob.
+    seconds: 3 * 60,
+    reason:
+      "Eden has no consensus of its own. Its sequencer publishes each header to Celestia, " +
+      "and the enclave waits for that blob and re-runs the blocks behind it before it will " +
+      "attest the root.",
   },
 };
 

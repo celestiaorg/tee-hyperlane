@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CELESTIA_DENOM,
   CHAINS,
+  RELAYER_API,
   ORIGIN_FINALITY,
   SLOW_ORIGIN_SECONDS,
   expectedSeconds,
@@ -36,7 +37,7 @@ import type { Account } from "./wallets";
 
 /// Every route has Celestia on one side. The bridge is a hub, not a mesh: each EVM chain's
 /// ISM trusts Celestia and Celestia's trusts each EVM chain, and no EVM chain trusts another.
-const COUNTERPARTIES: ChainId[] = ["sepolia", "arbitrum", "base"];
+const COUNTERPARTIES: ChainId[] = ["sepolia", "arbitrum", "base", "eden"];
 const TOKENS: TokenId[] = ["TIA", "USDC"];
 
 /// The relayer and the gas oracle serve their own dashboards beside this one. Linking out
@@ -59,6 +60,7 @@ const STEP_LABEL: Record<Step, string> = {
 export default function App() {
   const [evm, setEvm] = useState<Account | null>(null);
   const [cosmos, setCosmos] = useState<Account | null>(null);
+  const [tab, setTab] = useState<"bridge" | "faucet">("bridge");
   const [counterparty, setCounterparty] = useState<ChainId>("sepolia");
   const [outbound, setOutbound] = useState(true);
   const [token, setToken] = useState<TokenId>("TIA");
@@ -74,6 +76,35 @@ export default function App() {
   const [confirmed, setConfirmed] = useState<Confirmation | null>(null);
 
   useEffect(() => saveTransfers(transfers), [transfers]);
+
+  // Drop transfers the current deployment can never deliver.
+  //
+  // Redeploying an ISM starts it at the origin's head, so a message dispatched before that
+  // point is below the trusted state and no batch will ever include it. Each route reports
+  // the origin timestamp its ISM has reached, so "sent before that" is the exact test rather
+  // than a guess about how long something ought to take.
+  useEffect(() => {
+    let live = true;
+    fetch(`${RELAYER_API}/status`)
+      .then((r) => r.json())
+      .then((routes: { origin: number; destination: number; timestamp: number }[]) => {
+        if (!live || !Array.isArray(routes)) return;
+        setTransfers((current) =>
+          current.filter((t) => {
+            if (t.reached === "delivered" || t.deliveredAt) return true;
+            const route = routes.find(
+              (r) =>
+                r.origin === CHAINS[t.from].domain && r.destination === CHAINS[t.to].domain,
+            );
+            return !route || t.sentAt / 1000 >= route.timestamp;
+          }),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   // Pick up wallets this browser already authorised, so a reload does not look logged out.
   // Silent by construction: neither call prompts, and both return nothing if never connected.
@@ -261,6 +292,18 @@ export default function App() {
       <header className="topbar">
         <span className="brand">TEE Bridge</span>
         <nav className="tabs">
+          <button
+            className={tab === "bridge" ? "tab on" : "tab"}
+            onClick={() => setTab("bridge")}
+          >
+            Bridge
+          </button>
+          <button
+            className={tab === "faucet" ? "tab on" : "tab"}
+            onClick={() => setTab("faucet")}
+          >
+            Faucet
+          </button>
           <a className="tab" href={service(RELAYER_PORT)} target="_blank" rel="noreferrer">
             Relayer
           </a>
@@ -287,6 +330,10 @@ export default function App() {
       </header>
 
       <main className="center">
+        {tab === "faucet" ? (
+          <Faucet address={cosmos?.address ?? null} onFunded={loadBalances} />
+        ) : (
+          <>
           <section className="card">
             <div className="card-head">
               <h1>Bridge</h1>
@@ -434,6 +481,8 @@ export default function App() {
               </ul>
             )}
         </section>
+          </>
+        )}
       </main>
       {confirmed && <ConfirmedDialog confirmation={confirmed} onClose={() => setConfirmed(null)} />}
     </div>
@@ -672,6 +721,138 @@ function saveTransfers(transfers: Transfer[]) {
   } catch {
     // A browser that refuses storage still works; the list just does not survive a reload.
   }
+}
+
+
+/// The devnet faucet: a fixed grant of TIA, once per address.
+///
+/// It asks the relayer API rather than signing anything here. The grant comes out of an
+/// account on the deployment host, so the browser's only job is to name a recipient.
+function Faucet({
+  address,
+  onFunded,
+}: {
+  address: string | null;
+  onFunded: () => void;
+}) {
+  const [amount, setAmount] = useState<number | null>(null);
+  const [enabled, setEnabled] = useState(true);
+  const [claimed, setClaimed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    fetch(`${RELAYER_API}/faucet`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!live) return;
+        setEnabled(Boolean(d.enabled));
+        setAmount(Number(d.amountTia));
+      })
+      .catch(() => live && setEnabled(false));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Asked per address rather than remembered in the browser: the claim is recorded on the
+  // host, so clearing site data or opening another browser must not offer a second grant.
+  useEffect(() => {
+    setTxHash(null);
+    setError(null);
+    setClaimed(false);
+    if (!address) return;
+    let live = true;
+    fetch(`${RELAYER_API}/faucet/${address}`)
+      .then((r) => r.json())
+      .then((d) => live && setClaimed(Boolean(d.claimed)))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [address]);
+
+  const claim = useCallback(async () => {
+    if (!address) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`${RELAYER_API}/faucet`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? `the faucet returned ${res.status}`);
+      setClaimed(true);
+      setTxHash(String(body.tx_hash));
+      onFunded();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [address, onFunded]);
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h1>Faucet</h1>
+      </div>
+
+      {!enabled ? (
+        <p className="note">The faucet is not configured on this deployment.</p>
+      ) : (
+        <>
+          <p className="note">
+            {amount ?? 1000} TIA on the test chain, once per address. Enough to try every
+            route a few times over.
+          </p>
+
+          <div className="field">
+            <div className="field-top">
+              <span>Recipient</span>
+            </div>
+            <div className="field-row">
+              <input
+                className="amount"
+                readOnly
+                value={address ?? ""}
+                placeholder="Connect Keplr to claim"
+              />
+            </div>
+          </div>
+
+          {!address ? (
+            <p className="note">Connect Keplr and the faucet will send to that address.</p>
+          ) : claimed && !txHash ? (
+            <p className="note">This address has already claimed.</p>
+          ) : (
+            <button
+              className="primary"
+              disabled={busy || (claimed && !txHash)}
+              onClick={claim}
+            >
+              {busy ? "Sending" : `Claim ${amount ?? 1000} TIA`}
+            </button>
+          )}
+
+          {txHash && (
+            <p className="note">
+              Sent.{" "}
+              <a href={`/tx/${txHash}`} target="_blank" rel="noreferrer">
+                {shorten(txHash, 8)}
+              </a>{" "}
+              It lands in the next block.
+            </p>
+          )}
+          {error && <p className="note error">{error}</p>}
+        </>
+      )}
+    </section>
+  );
 }
 
 export { formatAmount, CELESTIA_DENOM };
