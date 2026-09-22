@@ -327,10 +327,18 @@ So a change to the evolve executor re-deploys one ISM, not eight. A change to sh
 `attest.rs`, the tree verification, the state layout - still moves all three, which is correct:
 they all run it.
 
-**A dependency change also moves all three**, because `Cargo.lock` is in every image's source.
-Enabling revm's standard precompiles added crates to the lock, and all three digests changed
-even though only the evolve build links them. The split bounds *code* changes, not dependency
-changes. Worth knowing before planning a rotation around it.
+This needed more than cargo features to be true. `buildRustPackage` is input-addressed and
+rustc writes the source path into the binary, so while every family shared one filtered source
+tree, any edit anywhere gave all three a new store path and a new digest even when the compiled
+code was identical. `flake.nix` now gives each family its own filter, listing the origin files
+the others must not see.
+
+Measured both ways: before the filters, changing one error string in `evm/exec.rs` moved all
+three digests; after them, it moves only evolve's.
+
+**A dependency change still moves all three**, because `Cargo.lock` is in every image's source,
+as are `attest.rs`, `hyperlane_state.rs` and `state_proofs.rs`. That is correct - all three
+compile them - but it means the split bounds origin-specific changes, not every change.
 
 Each is `nix build .#image-<family>` from the cargo feature of the same name, pinned by
 `deploy/docker-compose.<family>.yml`. Adding a family is an entry in the `families` list in
