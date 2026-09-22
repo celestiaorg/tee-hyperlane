@@ -1,30 +1,22 @@
 //! Evolve-stack chains: an EVM chain whose headers are posted to Celestia and signed by one
 //! sequencer. Eden is the first.
 //!
-//! These have no consensus of their own, so there is no light client to run against them.
-//! A state root here rests on three things together:
+//! These have no consensus of their own, so a state root rests on three things: the light
+//! client proving the blob was in a Celestia block it verified, the pinned sequencer key
+//! having signed the header in it, and the enclave re-executing the blocks behind that root
+//! from the state the ISM already trusts.
 //!
-//!   1. the Celestia light client proving the blob was included in a block it verified,
-//!   2. the pinned sequencer key having signed the header in it, and
-//!   3. **the enclave re-executing the blocks that produced that root**, from the state the
-//!      ISM already trusts, and arriving at the same root.
+//! Only the third makes the root trustworthy; a signature says who claimed it, not whether
+//! executing the chain produces it. The sequencer keeps ordering and censorship, and loses
+//! the ability to invent a state its transactions would not reach.
 //!
-//! The third is what the first two cannot give. A signature says who claimed a root, not
-//! whether the root is what executing the chain produces, and a sequencer that can claim any
-//! root can mint whatever it likes on the far side of the bridge. With re-execution the
-//! sequencer keeps the power it must have - choosing which transactions run, and in what
-//! order - and loses the one it must not: inventing a state those transactions would never
-//! reach. Censorship and reordering remain its to do; theft does not.
+//! Only state-changing blocks are executed. That is safe rather than a shortcut: the chain of
+//! executions has to land on the signed root, so a block left out shows up as a mismatch.
+//! Eden makes ten blocks a second and nearly all are empty.
 //!
-//! Only the blocks that changed the state are executed, and that is not a shortcut. The chain
-//! of executions has to arrive at the root the sequencer signed for the target height, so a
-//! block left out is a block whose effect is missing from the result, and the roots stop
-//! matching. Eden produces ten blocks a second and nearly all of them are empty, so this is
-//! the difference between verifying a handful of blocks and verifying a million.
-//!
-//! The namespace, the sequencer key and the chain id are pinned below rather than taken from
-//! the request, for the same reason the L2 anchors are: a caller who picks the namespace
-//! picks which chain you are bridging, and a caller who picks the key picks who may sign it.
+//! The namespace, sequencer key and chain id are pinned below rather than taken from the
+//! request, for the same reason the L2 anchors are: whoever picks them picks which chain you
+//! are bridging and who may speak for it.
 
 use celestia_types::nmt::Namespace;
 use celestia_types::namespace_data::{NamespaceData, NamespaceDataId};
@@ -76,10 +68,9 @@ pub struct EvolveHeaderProof {
     /// blob is in the block" into "these are all the blobs in the block", which is what lets
     /// the newest header be chosen here instead of by the caller.
     pub data: NamespaceData,
-    /// Every block between the trusted state and the target that changed the state, in
-    /// order. A run of blocks that changed nothing is simply absent: the executions chain by
-    /// state root, so skipping a stretch is the same as asserting the root did not move over
-    /// it, and the final root still has to be the one the sequencer signed.
+    /// Every state-changing block between the trusted state and the target, in order.
+    /// Unchanged stretches are absent: executions chain by state root, and the final root
+    /// still has to be the one the sequencer signed.
     pub chain: Vec<BlockExec>,
     /// Which Eden height to attest out of the ones this block carries.
     ///
@@ -176,7 +167,7 @@ pub fn verify_evolve_root(
     let header = signed_header_at(&proof.data, chain, proof.target_height)
         .ok_or(EvolveError::NoSignedHeader)?;
 
-    // Everything above says who signed what. This says whether it is true.
+    // Everything above establishes who signed what; this establishes whether it holds.
     let executed = replay(proof, trusted_height, trusted_state_root)?;
     if executed.number > header.height {
         return Err(EvolveError::PastTarget {

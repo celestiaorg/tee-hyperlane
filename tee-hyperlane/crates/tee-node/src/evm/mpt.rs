@@ -1,17 +1,10 @@
 //! A merkle-patricia trie read and rewritten through a witness.
 //!
-//! The enclave never has Eden's state, only the nodes on the paths that one block touched,
-//! as `debug_executionWitness` hands them over. That is enough for both halves of what
-//! re-execution needs:
+//! The enclave holds no state, only the nodes `debug_executionWitness` gives for the paths
+//! one block touched. Reads are authenticated because every walk starts at a trusted root,
+//! and the new root is rebuildable because an untouched subtree keeps its existing hash.
 //!
-//!   * reads are authenticated by construction, because every walk starts at a root the
-//!     enclave already trusts and follows hashes it recomputes, and
-//!   * the post-state root can be rebuilt, because a node whose subtree nothing touched
-//!     keeps the hash the witness already carries.
-//!
-//! Written here rather than taken from reth because what is needed is an update over a
-//! witness, and reth's trie is an update over a database. The surface is small enough to
-//! test exhaustively against the real chain, which `tests/eden_exec.rs` does.
+//! Not reth's trie, which updates a database rather than a witness.
 
 use std::collections::HashMap;
 
@@ -35,8 +28,8 @@ pub enum TrieError {
 
 /// Every trie node the witness carries, indexed the way a reference names it.
 ///
-/// One map for the account trie and every storage trie at once, which is how the witness
-/// arrives and is safe because the index is the node's own hash.
+/// One map for the account trie and every storage trie, which is how the witness arrives.
+/// Safe to mix, because the index is the node's own hash.
 #[derive(Default, Clone)]
 pub struct Witness {
     nodes: HashMap<B256, Vec<u8>>,
@@ -208,10 +201,8 @@ impl Witness {
         changes: &[(Vec<u8>, Option<Vec<u8>>)],
     ) -> Result<Option<Node>, TrieError> {
         let mut value = value;
-        // An arm is either the reference the witness already proved, kept as it stands, or a
-        // node this update built. The distinction matters when the branch collapses: a
-        // rebuilt node has no hash in the witness to look it up by, and an earlier version of
-        // this went looking for one.
+        // An arm is either a reference from the witness or a node just built. Keep them
+        // apart: a rebuilt node has no hash to look up if the branch later collapses.
         for nib in 0..16usize {
             let below: Vec<_> = changes
                 .iter()
@@ -498,9 +489,8 @@ fn encode_ref(child: &Ref) -> Vec<u8> {
 
 // ---------------------------------------------------------------- minimal rlp
 //
-// Only what trie nodes need: a list of strings, where an element may itself be a list when a
-// short node is inlined. alloy-rlp decodes into types; here the shape is the thing being
-// discovered, so the bytes are walked directly.
+// Only what trie nodes need: a list of strings, any of which may be an inlined node. Walks
+// bytes rather than using alloy-rlp, because the shape is what is being discovered.
 
 fn rlp_string(bytes: &[u8]) -> Vec<u8> {
     if bytes.len() == 1 && bytes[0] < 0x80 {
@@ -586,12 +576,10 @@ fn be_len(bytes: &[u8]) -> Result<usize, TrieError> {
     Ok(bytes.iter().fold(0usize, |acc, &b| (acc << 8) | b as usize))
 }
 
-/// Build a whole trie from every entry it has, returning its root and all of its nodes.
+/// Build a whole trie from every entry, returning its root and all of its nodes.
 ///
-/// Not used in verification, where the point is never to hold the whole trie. It exists so
-/// that `update` can be held against a trie built from scratch over the same entries, which
-/// is the only check that covers the cases a witness makes hardest: a branch collapsing
-/// because a sibling was deleted, and a leaf splitting because a neighbour was created.
+/// For tests only: `update` is checked against a trie built this way, which is what covers
+/// branches collapsing and leaves splitting.
 pub fn build(entries: &[(B256, Vec<u8>)]) -> (B256, Vec<Vec<u8>>) {
     let mut folded: HashMap<B256, Vec<u8>> = HashMap::new();
     for (k, v) in entries {

@@ -273,11 +273,11 @@ The two outputs must be identical. The live deployment measures:
 ```
 mr_td          f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077
 os_image_hash  bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033
-compose_hash   5e159730b7591ea507f15687ba261272653328f9dc5af3537d9b7d87071faad4
+compose_hash   e549507dee0bf80dcd84c29d03937428d2d8419a8212945b2697440f34497ab9
 mr_kms         92a4bf40c88734b0e56f54b09b1f0fe4b8d3e230047e9298f491968ada8dedf8
 
-identity       0xd448484994f1d10f81bb5bad31c9b29e9079b01fe42ae4cc9841d8e437ad3d2d
-measurements   0x40b2a7bd4c6f191de47741581095605f4e5b366ce970d79d2b4dd1b869584550
+identity       0x6fc758842ebcb3d8398ca8d77374356128779bd4c1d545e722b62b662dda3961
+measurements   0xd0c526566573a72dea28d837a12ccc23d12b576ea53d221625d4d5163ec824b9
 ```
 
 `measurements` is what the EVM ISMs pin: `keccak(mr_td ++ mr_config_id ++ rtmr0..2)`. rtmr3 is
@@ -404,17 +404,17 @@ The other three origin ISMs are created the same way with the origin changed; Ed
 
 | origin | ISM on `teeism-local` |
 |---|---|
-| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b000000000000000d` |
-| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b000000000000000e` |
-| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b000000000000000f` |
-| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b0000000000000010` |
+| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b0000000000000012` |
+| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b0000000000000013` |
+| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b0000000000000014` |
+| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b0000000000000015` |
 
 | destination | `TeeDcapIsm` |
 |---|---|
-| Ethereum Sepolia | `0x83B41448ADfBdde1926575f774489892F88190A8` |
-| Arbitrum Sepolia | `0xD50322542cCA994322760f170D3A2df8d7f5817e` |
-| Base Sepolia | `0xcF5929abd3Baa03BB161745319C9E2d2Ce1201C4` |
-| Eden | `0x84D9b9223609CEd908f247DD88f9Ae306a768E2e` |
+| Ethereum Sepolia | `0x9104cC0F9E6cD19BdA3da2476ED12fBF5B93F69a` |
+| Arbitrum Sepolia | `0xca13BbD53c9D1d9c797aA33309528f15A568d9e5` |
+| Base Sepolia | `0x3419Dc0FFD5Fd0ea9029a751Ea23f5DCDaB61f64` |
+| Eden | `0x4899fCE0E10dd39D39fc8C535e972d38ECB49f16` |
 
 ### One ISM is not enough on the Celestia side
 
@@ -431,7 +431,7 @@ celestia-appd tx warp set-token $TOKEN --ism-id $ROUTING
 celestia-appd tx hyperlane mailbox set $MAILBOX --default-ism $ROUTING
 ```
 
-Live: `0x726f757465725f69736d00000000000000000000000000010000000000000011`. It is both the
+Live: `0x726f757465725f69736d00000000000000000000000000010000000000000016`. It is both the
 token's ISM and the mailbox default.
 
 > Rotating a route is **remove then set**, not set. `set-routing-ism-domain` inserts a domain

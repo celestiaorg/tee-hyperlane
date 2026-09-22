@@ -188,13 +188,12 @@ pub fn expected_current_slot(genesis_time: u64) -> u64 {
 /// Both are untrusted. Storage is re-proven inside the enclave against the state root the
 /// light client produced, and a log that names a message the tree does not contain simply
 /// fails the replay.
-/// How many state roots one bisection may read before giving up. Ten a second and a minute
-/// of lag is a span of a few hundred, which a bisection crosses in a handful of reads per
-/// change; this is slack for a busy stretch, not a budget anyone should reach.
+/// How many state roots one bisection may read before giving up. A normal span needs a
+/// handful per change; this is slack for a busy stretch.
 const STATE_ROOT_LOOKUPS: u32 = 400;
 
-/// How many blocks one attestation will ask the enclave to re-execute. Past this the route is
-/// so far behind that it should catch up over several attestations instead.
+/// How many blocks one attestation asks the enclave to re-execute; past this it catches up
+/// over several attestations instead.
 const MAX_EXEC_BLOCKS: usize = 32;
 
 fn parse_bytes(v: &serde_json::Value) -> Result<alloy_primitives::Bytes> {
@@ -466,11 +465,10 @@ impl ExecutionReader {
 
     /// Every block in `(from, to]` whose state root differs from the one before it.
     ///
-    /// Found by bisection on the state root rather than by reading every header, because
-    /// Eden makes ten blocks a second and almost none of them change anything. A transaction
-    /// always bumps a nonce, so a stretch whose ends share a state root has nothing in it;
-    /// and if that ever failed to hold, the enclave would reject the resulting chain rather
-    /// than accept a gap, because the executions have to arrive at the signed root.
+    /// Bisects on the state root rather than reading every header, since Eden makes ten
+    /// blocks a second and almost none change anything. A transaction always bumps a nonce,
+    /// so ends sharing a state root means nothing happened between them; if that ever failed,
+    /// the enclave rejects the chain rather than accepting a gap.
     pub async fn state_changing_blocks(&self, from: u64, to: u64) -> Result<Vec<u64>> {
         if to <= from {
             return Ok(Vec::new());
@@ -487,8 +485,8 @@ impl ExecutionReader {
         Ok(found)
     }
 
-    /// Narrow one span that is known to have changed. Recursion is by hand because an async
-    /// function cannot call itself without boxing the future.
+    /// Narrow one span known to have changed. Iterative because an async fn cannot recurse
+    /// without boxing the future.
     async fn bisect(
         &self,
         lo: u64,

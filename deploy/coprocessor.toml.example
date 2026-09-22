@@ -10,8 +10,8 @@ proof_dir = "/home/chef/tee-ism-nonzk/devnet/.state/proofs"
 
 [[routes]]
 name = "celestia-to-sepolia"
-tee_node_url = "https://6cc58f925581ff5ec3f76ed78fa31e692c2c4257-8080.dstack-pha-prod9.phala.network"
-ism_id = "0x83B41448ADfBdde1926575f774489892F88190A8"
+tee_node_url = "https://05d7671cda9d4501e6662f7629fd0c7d84f9491b-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x9104cC0F9E6cD19BdA3da2476ED12fBF5B93F69a"
 merkle_tree_address = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
 attest_only = true
 routers = ["0x9822eE81C82138F88D759faef1AC168aDfEe1467", "0xfb611B6f6CE92033960e99C2D65cee4237e64cDD"]
@@ -33,8 +33,8 @@ mailbox = "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
 
 [[routes]]
 name = "celestia-to-arbitrum"
-tee_node_url = "https://6cc58f925581ff5ec3f76ed78fa31e692c2c4257-8080.dstack-pha-prod9.phala.network"
-ism_id = "0xD50322542cCA994322760f170D3A2df8d7f5817e"
+tee_node_url = "https://05d7671cda9d4501e6662f7629fd0c7d84f9491b-8080.dstack-pha-prod9.phala.network"
+ism_id = "0xca13BbD53c9D1d9c797aA33309528f15A568d9e5"
 merkle_tree_address = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
 attest_only = true
 routers = ["0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB", "0x8C87fd144006C651430450df8b61A15EeB3FF436"]
@@ -56,8 +56,8 @@ mailbox = "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8"
 
 [[routes]]
 name = "celestia-to-base"
-tee_node_url = "https://6cc58f925581ff5ec3f76ed78fa31e692c2c4257-8080.dstack-pha-prod9.phala.network"
-ism_id = "0xcF5929abd3Baa03BB161745319C9E2d2Ce1201C4"
+tee_node_url = "https://05d7671cda9d4501e6662f7629fd0c7d84f9491b-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x3419Dc0FFD5Fd0ea9029a751Ea23f5DCDaB61f64"
 merkle_tree_address = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
 attest_only = true
 routers = ["0xF50470146B36c638b981e437AB37DfEd9a02FAb3", "0x285b590ee43A1374AA131e7390D0CA687Be43DF9"]
@@ -79,8 +79,8 @@ mailbox = "0x6966b0E55883d49BFB24539356a2f8A673E02039"
 
 [[routes]]
 name = "celestia-to-eden"
-tee_node_url = "https://6cc58f925581ff5ec3f76ed78fa31e692c2c4257-8080.dstack-pha-prod9.phala.network"
-ism_id = "0x84D9b9223609CEd908f247DD88f9Ae306a768E2e"
+tee_node_url = "https://05d7671cda9d4501e6662f7629fd0c7d84f9491b-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x4899fCE0E10dd39D39fc8C535e972d38ECB49f16"
 merkle_tree_address = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"
 attest_only = true
 routers = ["0xD2babc9BE1055551b7AB98c440222862a1646158", "0xc09fbf8F17E96ce746D39f9d11a9dD1813F2d220"]
@@ -102,8 +102,8 @@ mailbox = "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729"
 
 [[routes]]
 name = "sepolia-to-celestia"
-tee_node_url = "https://08640d25537e738670397ba12576315575b345e1-8080.dstack-pha-prod9.phala.network"
-ism_id = "0x726f757465725f69736d000000000000000000000000002b000000000000000d"
+tee_node_url = "https://db89a92bc35cdbfbb75ac3aab0e0ecef270b6497-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x726f757465725f69736d000000000000000000000000002b0000000000000012"
 merkle_tree_address = "0x0000000000000000000000004917a9746a7b6e0a57159ccb7f5a6744247f2d0d"
 attest_only = true
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
@@ -131,8 +131,8 @@ ism_module = "teeism"
 
 [[routes]]
 name = "arbitrum-to-celestia"
-tee_node_url = "https://08640d25537e738670397ba12576315575b345e1-8080.dstack-pha-prod9.phala.network"
-ism_id = "0x726f757465725f69736d000000000000000000000000002b000000000000000e"
+tee_node_url = "https://db89a92bc35cdbfbb75ac3aab0e0ecef270b6497-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x726f757465725f69736d000000000000000000000000002b0000000000000013"
 merkle_tree_address = "0x000000000000000000000000ad34a66bf6db18e858f6b686557075568c6e031c"
 attest_only = true
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
@@ -168,8 +168,8 @@ ism_module = "teeism"
 
 [[routes]]
 name = "base-to-celestia"
-tee_node_url = "https://08640d25537e738670397ba12576315575b345e1-8080.dstack-pha-prod9.phala.network"
-ism_id = "0x726f757465725f69736d000000000000000000000000002b000000000000000f"
+tee_node_url = "https://db89a92bc35cdbfbb75ac3aab0e0ecef270b6497-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x726f757465725f69736d000000000000000000000000002b0000000000000014"
 merkle_tree_address = "0x00000000000000000000000086fb9f1c124fb20ff130c41a79a432f770f67afd"
 attest_only = true
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
@@ -212,8 +212,8 @@ ism_module = "teeism"
 # header published to Celestia as a blob, against a Celestia light client in the enclave.
 [[routes]]
 name = "eden-to-celestia"
-tee_node_url = "https://8a28d356d8546472fdf9bc4318e1538b5140e83e-8080.dstack-pha-prod9.phala.network"
-ism_id = "0x726f757465725f69736d000000000000000000000000002b0000000000000010"
+tee_node_url = "https://58208553a2cf64c2883abc09a95cfb105ea729d2-8080.dstack-pha-prod9.phala.network"
+ism_id = "0x726f757465725f69736d000000000000000000000000002b0000000000000015"
 merkle_tree_address = "0x000000000000000000000000cfbe7016d123d52a7db4fc7d087ccb5421dbf8db"
 attest_only = true
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
@@ -237,7 +237,7 @@ merkle_tree_base_slot = 151
 [routes.origin.celestia]
 kind = "celestia"
 domain = 1297040200
-rpc = "https://rpc-mocha.pops.one"
+rpc = "https://rpc.celestia-mocha.com"
 grpc = "https://grpc-mocha.pops.one"
 mailbox_id = "0x68797065726c616e650000000000000000000000000000000000000000000000"
 merkle_tree_hook_id = "0x726f757465725f706f73745f6469737061746368000000030000000000000000"

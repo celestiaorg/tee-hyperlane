@@ -1,10 +1,7 @@
 //! Re-executing an EVM block inside the enclave, against a witness rather than a database.
 //!
-//! This is what makes Eden's state root worth something. Without it the root is whatever the
-//! sequencer signed, and a sequencer that signs a fabricated root mints whatever it likes on
-//! the far side of the bridge. With it the sequencer still chooses which transactions run and
-//! in what order, which is the ordering power every sequencer has, but it cannot invent a
-//! state that executing those transactions would not produce.
+//! Without this an Eden state root is only what its sequencer signed. With it the sequencer
+//! still orders transactions but cannot invent a state they would not produce.
 
 pub mod exec;
 pub mod mpt;

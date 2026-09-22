@@ -35,7 +35,12 @@ while [ $# -gt 0 ]; do
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE="${ROOT}/devnet/enclave/docker-compose.yml"
+# The devnet's by default, because that is what a developer running this locally has just
+# deployed. A testnet enclave measures deploy/docker-compose.yml instead, so checking one of
+# those means naming it: COMPOSE=deploy/docker-compose.yml ./deploy/verify-digest.sh <app-id>.
+# Without this the script could only ever pass for the devnet, and step 3 read as a real
+# failure on every live enclave.
+COMPOSE="${COMPOSE:-${ROOT}/devnet/enclave/docker-compose.yml}"
 GATEWAY="${GATEWAY:-dstack-pha-prod9.phala.network}"
 URL="${ENCLAVE_URL:-https://${APP_ID}-8080.${GATEWAY}}"
 WORK="$(mktemp -d)"; trap 'rm -rf "${WORK}"' EXIT
@@ -93,7 +98,7 @@ PY
 echo
 echo "3. the measured compose is this checkout's compose"
 if diff -q "${WORK}/compose_in_quote" "${COMPOSE}" >/dev/null 2>&1; then
-  ok "byte for byte identical to devnet/enclave/docker-compose.yml"
+  ok "byte for byte identical to ${COMPOSE#${ROOT}/}"
 else
   bad "the enclave measured a different compose file"
   diff "${COMPOSE}" "${WORK}/compose_in_quote" | head -20 | sed 's/^/       /'

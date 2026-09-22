@@ -79,7 +79,7 @@ curl -s https://<new-app-id>-8080.dstack-pha-prod9.phala.network/identity | jq -
 Compare against what the ISMs already trust:
 
 ```
-identity  0xd448484994f1d10f81bb5bad31c9b29e9079b01fe42ae4cc9841d8e437ad3d2d
+identity  0x6fc758842ebcb3d8398ca8d77374356128779bd4c1d545e722b62b662dda3961
 ```
 
 **If it matches**, there is nothing else to do. Edit `tee_node_url` for that route in

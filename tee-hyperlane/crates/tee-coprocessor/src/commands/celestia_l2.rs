@@ -20,18 +20,24 @@ use crate::ethereum::ExecutionReader;
 /// directory; the recorded height covers every ordinary tick.
 const MAX_STORE_SEARCH: u64 = 400;
 
-/// How far back to look for a Celestia block that actually carries Eden. At roughly one post
-/// a minute against six second blocks, a handful of blocks is plenty; this is slack for a
-/// sequencer that has paused.
-const MAX_DA_WALK: u64 = 60;
+/// How many refused header requests in a row mean the endpoint is down rather than pruned.
+const UNREACHABLE_AFTER: u32 = 5;
+
+/// How far back to look for a Celestia block carrying Eden. Eden posts about once a minute,
+/// so this is slack for a sequencer that has paused: about two hours at six second blocks.
+const MAX_DA_WALK: u64 = 1200;
+
+/// Celestia heights already known to carry nothing of Eden's, so a paused sequencer costs one
+/// walk rather than one per tick. In memory only: losing it costs one slow tick.
+static EMPTY_DA_HEIGHTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<u64>>> =
+    std::sync::LazyLock::new(Default::default);
 
 /// How many captured proofs to keep. Ten blocks a second and a minute of DA lag, so a few
 /// hundred is minutes of history and a few megabytes.
 const TREE_CACHE_KEEP: usize = 400;
 
-/// How many candidate heights to weigh before giving up for this tick. One Celestia block
-/// can carry hundreds of Eden headers and each candidate costs a bisection, so this bounds
-/// the work; the newest that fits is the one taken, and the next tick tries again anyway.
+/// How many candidate heights to weigh per tick. One Celestia block carries hundreds of Eden
+/// headers and each candidate costs a bisection, so bound the work; the next tick retries.
 const MAX_TARGET_TRIES: usize = 8;
 
 /// How many times to re-check DA while bootstrapping, fifteen seconds apart. Eden posts
@@ -67,10 +73,27 @@ async fn mocha_store_at(
             debug!(height = h, "recorded celestia height no longer reproduces the store");
         }
     }
+    let mut consecutive_failures = 0u32;
     for back in 0..MAX_STORE_SEARCH {
         let h = head.saturating_sub(back);
-        let Ok(block) = reader.light_block(h).await else {
-            continue;
+        let block = match reader.light_block(h).await {
+            Ok(block) => {
+                consecutive_failures = 0;
+                block
+            }
+            Err(e) => {
+                // Four hundred sequential requests to a dead endpoint take ten minutes and
+                // report nothing. A run of failures means the endpoint is down, not that the
+                // blocks are pruned, so say so instead of finishing the walk.
+                consecutive_failures += 1;
+                if consecutive_failures >= UNREACHABLE_AFTER {
+                    anyhow::bail!(
+                        "the celestia endpoint answered none of the last \
+                         {UNREACHABLE_AFTER} header requests: {e}"
+                    );
+                }
+                continue;
+            }
         };
         let store = CelestiaStore {
             trusted: block.clone(),
@@ -99,17 +122,24 @@ fn tree_dir(out: Option<&str>) -> Option<std::path::PathBuf> {
 /// attest is always about a minute old because that is the DA posting lag. So proofs are
 /// taken now and spent later. An MPT proof is a static object; it does not go stale, it only
 /// has to be captured while the node can still produce it.
-fn cache_tree(out: Option<&str>, height: u64, proof: &tee_node::hyperlane_state::EvmTreeProof) {
+fn cache_tree(
+    out: Option<&str>,
+    height: u64,
+    proof: &tee_node::hyperlane_state::EvmTreeProof,
+    pinned: u64,
+) {
     let Some(dir) = tree_dir(out) else { return };
     if let Ok(bytes) = serde_json::to_vec(proof) {
         let _ = std::fs::write(dir.join(format!("{height}.json")), bytes);
     }
-    // Eden makes ten blocks a second, so this would grow without bound. Anything older than
-    // the DA lag by a wide margin is never going to be asked for again.
+    // Ten blocks a second would grow this without bound, so keep the newest few hundred.
+    // `pinned` is the ISM's trusted height, whose proof every attestation reads as the
+    // snapshot; it is the oldest one still in use, so exempt it from eviction.
     if let Ok(entries) = std::fs::read_dir(&dir) {
         let mut heights: Vec<u64> = entries
             .filter_map(|e| e.ok())
             .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json")?.parse().ok())
+            .filter(|h| *h != pinned)
             .collect();
         heights.sort_unstable();
         let keep = heights.len().saturating_sub(TREE_CACHE_KEEP);
@@ -191,7 +221,7 @@ pub async fn attest_eden(
     match eden.merkle_tree_proof_at_latest(hook, base_slot).await {
         Ok((h, proof)) => {
             debug!(height = h, "captured an eden tree proof");
-            cache_tree(out.as_deref(), h, &proof);
+            cache_tree(out.as_deref(), h, &proof, trusted.height);
         }
         Err(e) => warn!(error = %e, "could not capture an eden tree proof this tick"),
     }
@@ -216,11 +246,19 @@ pub async fn attest_eden(
     }
 
     let mut chosen = None;
+    let mut scanned = 0u32;
     for h in (target.saturating_sub(MAX_DA_WALK)..=target).rev() {
+        if EMPTY_DA_HEIGHTS.lock().is_ok_and(|seen| seen.contains(&h)) {
+            continue;
+        }
         let Ok(data) = da.namespace_data(h, &ns).await else {
             continue;
         };
+        scanned += 1;
         if !data.rows().iter().any(|r| !r.shares.is_empty()) {
+            if let Ok(mut seen) = EMPTY_DA_HEIGHTS.lock() {
+                seen.insert(h);
+            }
             continue;
         }
         let mut carried: Vec<_> = tee_node::origins::celestia_l2::signed_headers(
@@ -237,16 +275,21 @@ pub async fn attest_eden(
         chosen = Some((h, data, carried));
         break;
     }
+    if scanned > 0 {
+        debug!(scanned, from = target, "walked celestia for eden posts");
+    }
     let (target, data, candidates) = chosen.ok_or_else(|| {
+        // Deliberately not "nothing to attest", which the loop treats as an idle tick and
+        // logs nothing for. Two hours of silence is an outage worth surfacing.
         anyhow::anyhow!(
-            "nothing to attest; DA has not caught up to any captured proof (have {}..{})",
+            "no celestia block in the last {MAX_DA_WALK} carries an eden header at a height \
+             we hold a proof for (holding {}..{}); eden may have stopped posting to celestia",
             usable.first().copied().unwrap_or_default(),
             usable.last().copied().unwrap_or_default()
         )
     })?;
-    // The furthest height whose re-execution fits in one attestation. Normally the newest,
-    // because Eden's state moves only when someone transacts; a burst of traffic makes the
-    // route step through it rather than refuse to move at all.
+    // The furthest height whose re-execution fits in one attestation, so a burst of traffic
+    // makes the route step through the backlog rather than refuse to move.
     let mut picked = None;
     for candidate in candidates.iter().take(MAX_TARGET_TRIES) {
         match eden
@@ -293,10 +336,9 @@ pub async fn attest_eden(
         anyhow::bail!("nothing to attest; no messages for our routes on domain {destination_domain}");
     }
 
-    // The blocks the enclave re-executes to get from the state it trusts to the one the
-    // sequencer signed for this height. Only the ones that changed anything: the executions
-    // chain by state root, so a stretch that changed nothing is a stretch with nothing to
-    // prove, and leaving out a stretch that did change is caught by the final root.
+    // The blocks the enclave re-executes to reach the signed root from the trusted state.
+    // Only state-changing ones: executions chain by state root, and anything left out is
+    // caught by the final root not matching.
     let mut chain = Vec::with_capacity(changed.len());
     for number in &changed {
         chain.push(
@@ -396,7 +438,9 @@ pub async fn bootstrap_eden(
         .merkle_tree_proof_at_latest(hook, base_slot)
         .await
         .context("capturing a tree proof at eden's latest block")?;
-    cache_tree(out.as_deref(), anchor_height, &proof);
+    // Pinned to itself: this proof is about to become the ISM's trusted height, so it is the
+    // one that must outlive every later capture.
+    cache_tree(out.as_deref(), anchor_height, &proof, anchor_height);
     info!(eden = anchor_height, "captured the anchor tree proof; waiting for DA");
 
     // Then wait for the sequencer to publish that height. Every Eden block gets a signed

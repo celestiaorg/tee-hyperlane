@@ -75,13 +75,11 @@ pub enum ExecError {
     Trie(#[from] TrieError),
 }
 
-/// Run one block on top of `parent` and return its header, having checked that the state
-/// root it commits to is the one executing it actually produces.
+/// Run one block on the given pre-state and return its header, having checked that the state
+/// root it claims is the one execution produces.
 ///
-/// `parent` is the header of the block before it, which fixes both the pre-state and the
-/// numbering. Chaining is by state root rather than by block hash on purpose: the caller may
-/// skip any run of blocks that changed nothing, and a skipped run is exactly a run over which
-/// the root did not move.
+/// Chains by state root rather than block hash, so the caller may skip any run of blocks that
+/// changed nothing.
 pub fn execute_block(
     parent_number: u64,
     parent_state_root: B256,
@@ -102,7 +100,7 @@ pub fn execute_block(
         });
     }
     // A withdrawal credits an account outside the transaction list, so ignoring one would
-    // mean rebuilding a root that is short of it. Rather than half-support the field, refuse.
+    // give a root short of it. Refuse rather than half-support the field.
     if !matches!(header.withdrawals_root, None | Some(EMPTY_ROOT)) {
         return Err(ExecError::Withdrawals {
             number: header.number,
@@ -142,9 +140,7 @@ pub fn execute_block(
     let mut cfg = CfgEnv::default();
     cfg.chain_id = CHAIN_ID;
     cfg.spec = SpecId::PRAGUE;
-    // The header is being checked against its own claims, so a block whose gas use exceeds
-    // its own limit fails on the state root anyway. Leaving the limit enforced keeps the
-    // executor honest about which blocks it will accept at all.
+    // Left enforced: a block over its own gas limit is one this executor will not accept.
     let block = BlockEnv {
         number: U256::from(header.number),
         beneficiary: header.beneficiary,
@@ -199,9 +195,8 @@ pub fn execute_block(
         });
     }
 
-    // Eden does not burn the base fee: ev-reth hands it to the beneficiary along with the
-    // priority fee. Measured, not assumed - the first run of this executor came out exactly
-    // `base_fee * gas_used` short on that one account.
+    // Eden does not burn the base fee; ev-reth pays it to the beneficiary with the priority
+    // fee. Measured: the first run came out exactly `base_fee * gas_used` short there.
     let base_fee = U256::from(header.base_fee_per_gas.unwrap_or_default());
     let root = post_state_root(
         &witness,
@@ -225,8 +220,8 @@ const CHAIN_ID: u64 = 3_735_928_814;
 
 /// Fold every account and storage change back into the trie and take the new root.
 ///
-/// `fee_credit` is the base fee, which on this chain is paid to the block's beneficiary
-/// rather than burned. revm burns it, following Ethereum, so it is added back here.
+/// `fee_credit` is the base fee, which this chain pays to the beneficiary. revm burns it, so
+/// it is added back here.
 fn post_state_root(
     witness: &Witness,
     pre_root: B256,
@@ -260,7 +255,7 @@ fn post_state_root(
         }
 
         let pre = read_account(witness, pre_root, *address)?;
-        // A created account starts from an empty storage trie however much the address held
+        // A created account starts from an empty storage trie whatever the address held
         // before, which is what makes destroy-then-recreate come out right.
         let storage_base = if account.is_created() {
             EMPTY_ROOT
@@ -298,8 +293,8 @@ fn post_state_root(
     }
 
     if !fee_credit.is_zero() {
-        // The beneficiary is normally already here, having taken the priority fee. It is only
-        // read from the pre-state when a block paid no priority fee at all.
+        // Normally already here, having taken the priority fee; read from the pre-state only
+        // when a block paid none.
         let slot = after.iter_mut().find(|(a, _)| *a == beneficiary);
         match slot {
             Some((_, After::Present { balance, .. })) => *balance += fee_credit,

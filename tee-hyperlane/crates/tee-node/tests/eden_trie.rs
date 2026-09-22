@@ -1,11 +1,9 @@
 //! The trie update, held against a trie built from every entry.
 //!
-//! `update` only ever sees the nodes on the paths a block touched, so the cases that break it
-//! are the structural ones: a branch that loses its second-to-last arm and has to fold away,
-//! a leaf that gains a neighbour and has to split, a key inserted where the trie only proved
-//! an absence. Building the same trie from scratch and comparing roots covers all of them at
-//! once, and randomising the keys covers them in combinations nobody would think to write
-//! down.
+//! `update` only sees the nodes on the paths a block touched, so what breaks it is
+//! structural: a branch folding away when it loses its second-to-last arm, a leaf splitting
+//! when it gains a neighbour, a key inserted where only an absence was proved. Building the
+//! same trie from scratch and comparing roots covers all of them.
 
 use alloy_primitives::{keccak256, B256};
 use tee_node::evm::mpt::{build, Witness, EMPTY_ROOT};

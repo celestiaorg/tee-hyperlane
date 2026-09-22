@@ -1,9 +1,5 @@
-//! Re-execution against blocks taken off Eden itself.
-//!
-//! Both fixtures are real: the transaction in each is one of this bridge's own warp
-//! transfers, with the witness `debug_executionWitness` returned for that block. A test that
-//! passes here is the executor agreeing with ev-reth on a state root, which is the only
-//! standard worth holding it to.
+//! Re-execution against real Eden blocks, with the witness `debug_executionWitness` returned
+//! for each. Passing means the executor agrees with ev-reth on a state root.
 
 use alloy_consensus::Header;
 use alloy_primitives::{Bytes, B256};
@@ -26,8 +22,8 @@ fn load(name: &str) -> Fixture {
     let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
 
     let header: Header = serde_json::from_value(v["block"].clone()).expect("header");
-    // The fixture is only usable if the header round-trips, because the enclave is handed
-    // RLP and the coprocessor builds that RLP from exactly this JSON.
+    // The enclave is handed RLP that the coprocessor builds from exactly this JSON, so the
+    // fixture is only usable if the header round-trips.
     let mut encoded = Vec::new();
     header.encode(&mut encoded);
     let hash: B256 = serde_json::from_value(v["block"]["hash"].clone()).unwrap();
@@ -90,15 +86,28 @@ fn rejects_a_tampered_state_root() {
     }
 }
 
+/// The shape of celestia-zkevm's nonce bug (celestiaorg/celestia-zkevm#246), and why it
+/// cannot reach this executor. There the transactions root is rebuilt from the Celestia
+/// blobs, which hold a retried transaction reth drops when executing. Here transactions come
+/// from the block and are bound by its own transactions root; Celestia supplies only the
+/// signed header.
 #[test]
-fn rejects_an_added_transaction() {
-    // The transactions are bound to the header by its own transactions root, so slipping one
-    // in is caught before anything is executed.
+fn rejects_a_transaction_the_block_does_not_contain() {
     let mut f = load(FIXTURES[0]);
-    let extra = f.input.transactions[0].clone();
-    f.input.transactions.push(extra);
+    let retry = f.input.transactions[0].clone();
+    f.input.transactions.push(retry);
     let err = execute_block(f.parent_number, f.parent_state_root, &f.input)
-        .expect_err("an extra transaction must not verify");
+        .expect_err("a transaction outside the block must not verify");
+    assert!(format!("{err}").contains("transactions root"), "{err}");
+}
+
+/// The other direction, so the check is not one-sided.
+#[test]
+fn rejects_a_withheld_transaction() {
+    let mut f = load(FIXTURES[0]);
+    f.input.transactions.clear();
+    let err = execute_block(f.parent_number, f.parent_state_root, &f.input)
+        .expect_err("a block missing its transactions must not verify");
     assert!(format!("{err}").contains("transactions root"), "{err}");
 }
 
