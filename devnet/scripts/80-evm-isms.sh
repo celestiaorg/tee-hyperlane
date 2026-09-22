@@ -14,7 +14,6 @@ CONTRACTS="${REPO_DIR}/tee-hyperlane/contracts"
 MAX_QUOTE_SKEW="${MAX_QUOTE_SKEW:-86400}"
 : "${EVM_PRIVATE_KEY:?set EVM_PRIVATE_KEY}"
 
-has enclave-url || die "no enclave; run 'make init' first"
 has merkle-hook-id || die "no local hyperlane deployment; run 'make init' first"
 
 # ---------------------------------------------------------------- pin the live enclave
@@ -23,6 +22,8 @@ has merkle-hook-id || die "no local hyperlane deployment; run 'make init' first"
 # attestation, so these ISMs pin the Celestia enclave; the Celestia-side ISMs pin whichever
 # enclave attests their origin. One file per family, so adding one is a name, not a rewrite.
 ENCLAVE_FAMILY="${ENCLAVE_FAMILY:-celestia}"
+has "enclave-url-${ENCLAVE_FAMILY}" \
+  || die "no ${ENCLAVE_FAMILY} enclave; run 'make init' first"
 say "reading measurements from the devnet enclave"
 curl -sS -m 30 "$(load "enclave-url-${ENCLAVE_FAMILY}")/identity" -o "${STATE_DIR}/enclave-identity.json"
 MEASUREMENTS="$(python3 - "${STATE_DIR}/enclave-identity.json" <<'PY'

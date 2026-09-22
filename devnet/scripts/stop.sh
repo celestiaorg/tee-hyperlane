@@ -13,13 +13,15 @@ say "stopping the coprocessor"
 pkill -f "tee-hyperlane run --config" 2>/dev/null || true
 pkill -f "vite.*3000" 2>/dev/null || true
 
-if has enclave-app-id; then
-  app_id="$(load enclave-app-id)"
-  say "deleting the phala cvm ${app_id}"
-  # A CVM bills by the hour, so leaving one running is the one mistake here that costs money.
+# One CVM per origin family. All three are deleted, because a CVM bills by the hour and
+# leaving one behind is the single mistake here that costs money.
+for family in celestia ethereum evolve; do
+  has "enclave-app-id-${family}" || continue
+  app_id="$(load "enclave-app-id-${family}")"
+  say "deleting the ${family} phala cvm ${app_id}"
   phala cvms delete --cvm-id "${app_id}" --force 2>&1 | tail -2 \
     || warn "could not delete ${app_id}; it is still billing, so check 'phala cvms ls'"
-fi
+done
 
 say "stopping the chain"
 STATE_DIR="${STATE_DIR}" docker compose -f "${DEVNET_DIR}/celestia/docker-compose.yml" down -v 2>&1 | tail -3 || true

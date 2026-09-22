@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Deploy a Celestia-origin TeeIsm and a synthetic TIA router on an EVM testnet.
 #
-# The Celestia enclave already attests Celestia; a new destination needs no new enclave and
-# no new circuits, only its own ISM with its own genesis state. That is what "two enclaves
-# cover four networks" means in practice.
+# The celestia-family enclave already attests Celestia; a new destination needs no new
+# enclave, only its own ISM with its own genesis state. That is what "three enclaves cover
+# four networks" means in practice.
 set -euo pipefail
 
 CHAIN=${1:?usage: deploy-l2-ism.sh <arbitrum|base>}
