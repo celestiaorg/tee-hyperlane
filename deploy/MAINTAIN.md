@@ -308,6 +308,53 @@ different clothes - a value that looked like configuration was in fact a request
 proving something *about* it proved nothing about the bridge. Hence the merkle tree address,
 the L2 anchor contract and its slot layout all being compiled in rather than accepted.
 
+## One enclave per origin family
+
+The identity an ISM pins is a hash of the enclave image, and the ISM cannot be told to trust a
+different one: it is `immutable` in `TeeDcapIsm.sol` and `x/teeism` has no update message. So
+every origin sharing one image meant every ISM sharing one identity, and a change to Eden's
+executor re-deployed the Ethereum side too.
+
+There are now three images, one per origin family:
+
+| family | attests | pinned by |
+|---|---|---|
+| `celestia` | the Celestia origin | the four `TeeDcapIsm` on the EVM chains |
+| `ethereum` | Sepolia, Arbitrum, Base | three Celestia-side ISMs |
+| `evolve` | Eden | one Celestia-side ISM |
+
+So a change to the evolve executor re-deploys one ISM, not eight. A change to shared code -
+`attest.rs`, the tree verification, the state layout - still moves all three, which is correct:
+they all run it.
+
+Each is `nix build .#image-<family>` from the cargo feature of the same name, pinned by
+`deploy/docker-compose.<family>.yml`. Adding a family is an entry in the `families` list in
+`flake.nix`, a feature in `crates/tee-node/Cargo.toml`, a module under `origins/` and a compose
+file; nothing in the build is per-family except the name.
+
+`devnet/scripts/85-celestia-isms.sh` knows which family each origin belongs to, and
+`80-evm-isms.sh` takes `ENCLAVE_FAMILY` (default `celestia`).
+
+### Re-deployment moves the checkpoint
+
+A new identity means a new ISM, and the new one is anchored at the origin's **current head**.
+Anything dispatched and not yet delivered is below that anchor and never arrives. On Base,
+where a transfer is in flight for five days, that is the normal case rather than the corner
+one. It is accepted here; the testnet is not worth coupling every deployment to the last.
+
+To recover such a message, anchor the replacement at the old checkpoint instead:
+
+```sh
+cast call <old-ism> "state()(bytes)" --rpc-url <rpc>
+tee-hyperlane rotate-state --state <that> --identity-digest <new identity>
+ISM_GENESIS=<the genesis state it prints> ./devnet/scripts/80-evm-isms.sh
+```
+
+`rotate-state` keeps the root, height, timestamp and store commitment and changes only the
+identity, which is the one field the ISM checks against itself. The route then replays the gap
+and delivers what the old one had seen. `ISM_GENESIS_<ORIGIN>` does the same for the
+Celestia-side ISMs.
+
 ## Eden, and what it costs in trust
 
 Eden is an evolve-stack chain: an EVM chain with no consensus of its own, whose single

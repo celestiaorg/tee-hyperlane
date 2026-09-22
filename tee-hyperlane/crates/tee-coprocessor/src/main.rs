@@ -274,6 +274,25 @@ enum Command {
         #[arg(long, default_value = "https://rpc-mocha.pops.one")]
         celestia_rpc: String,
     },
+    /// Carry a live ISM's trusted state onto a new enclave identity.
+    ///
+    /// What a re-deployment should use instead of a bootstrap. The identity is immutable in
+    /// both ISM implementations, so a new enclave means a new ISM; bootstrapping that ISM
+    /// anchors it at the origin's *current* head, and every message dispatched but not yet
+    /// delivered falls below it and is skipped for good. A Base transfer, whose dispute
+    /// window is five days, cannot survive a re-deployment that re-anchors.
+    ///
+    /// Copying the outgoing state carries the root, height, timestamp and light-client store
+    /// commitment across untouched, so the new ISM resumes where the old one stopped. Only
+    /// the identity may differ, which is the one field the ISM checks against itself.
+    RotateState {
+        /// The outgoing ISM's state, hex, as `state()` or the module returns it.
+        #[arg(long)]
+        state: String,
+        /// The new enclave's identity digest.
+        #[arg(long)]
+        identity_digest: String,
+    },
     /// Show each route's trusted state and how far behind the origin head it is.
     Status,
     /// Report where one message stands: dispatched, authorised, or delivered.
@@ -469,6 +488,10 @@ async fn main() -> Result<()> {
         } => {
             tee_coprocessor::ui::serve(dir.into(), api, celestia_rest, celestia_rpc, &listen).await
         }
+        Command::RotateState {
+            state,
+            identity_digest,
+        } => commands::rotate_state(&state, &identity_digest),
         Command::Status => {
             let config = load()?;
             for route in &config.routes {

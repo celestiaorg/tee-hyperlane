@@ -30,7 +30,7 @@ pub enum TrieError {
 ///
 /// One map for the account trie and every storage trie, which is how the witness arrives.
 /// Safe to mix, because the index is the node's own hash.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct Witness {
     nodes: HashMap<B256, Vec<u8>>,
 }

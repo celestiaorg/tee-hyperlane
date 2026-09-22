@@ -33,7 +33,8 @@ this tree with no `.git`, so nothing there is committable.
 - eight routes: Celestia to and from each of Sepolia, Arbitrum, Base and Eden
 - two tokens: TIA (Celestia collateral, synthetic on EVM) and USDC (Sepolia collateral,
   synthetic elsewhere)
-- three enclaves, one image: one Celestia light client, one Ethereum, one mocha for Eden
+- three enclaves, **three images**: `celestia`, `ethereum` and `evolve`, one per origin
+  family, so a change to one origin does not re-deploy the other families' ISMs
 
 ## Where the answers already are
 
@@ -70,6 +71,12 @@ ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier
   tree size.
 - **The `routers` list is a trigger filter**, affecting latency rather than delivery, because
   merkle tree replay forces batch completeness.
+- **Eden's executor is ev-reth's own** (`ev-revm`, pinned to tag `v0.6.0`), not a
+  reimplementation, so its precompiles, fee sink and custom transaction types come from the
+  chain being verified rather than from guesswork.
+- **Re-deployment moves the checkpoint.** A new ISM anchors at the origin's head, so anything
+  in flight is skipped. `tee-hyperlane rotate-state` plus `ISM_GENESIS` anchors at an old
+  checkpoint instead, which is the only way to recover such a message.
 - **Eden's root is re-executed, not believed.** The enclave runs the blocks that changed the
   state, from the root the ISM already trusts, and the chain has to arrive at the root the
   sequencer signed. Only state-changing blocks are sent, which is safe because a missing one

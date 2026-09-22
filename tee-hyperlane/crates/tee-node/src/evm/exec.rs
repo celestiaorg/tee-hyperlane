@@ -7,14 +7,19 @@ use alloy_consensus::{Header, Transaction, TxEnvelope};
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{keccak256, Address, Bytes, B256, U256};
 use alloy_rlp::Decodable;
-use revm::context::result::{EVMError, ExecutionResult};
+use ev_revm::factory::BaseFeeRedirectSettings;
+use ev_revm::{BaseFeeRedirect, EvTxEnv, EvTxEvmFactory};
+use alloy_evm::{Evm, EvmEnv, EvmFactory};
+use revm::context::result::ExecutionResult;
 use revm::context::{BlockEnv, CfgEnv, TxEnv};
 use revm::context_interface::block::BlobExcessGasAndPrice;
+use revm::database::states::bundle_state::BundleRetention;
+use revm::database::{BundleState, State};
 use revm::database_interface::{DBErrorMarker, Database};
 use revm::primitives::hardfork::SpecId;
 use revm::primitives::{StorageKey, StorageValue};
-use revm::state::{AccountInfo, Bytecode, EvmState};
-use revm::{Context, ExecuteEvm, MainBuilder, MainContext};
+use revm::state::{AccountInfo, Bytecode};
+use revm::DatabaseCommit;
 
 use super::mpt::{ordered_trie_root, TrieError, Witness, EMPTY_ROOT};
 
@@ -130,17 +135,22 @@ pub fn execute_block(
         }
     }
 
-    let db = WitnessDb {
-        witness: &witness,
-        root: parent_state_root,
-        codes: &codes,
-        ancestors: &ancestors,
-    };
+    // revm's `State` over the witness, so the per-transaction diffs merge into one bundle
+    // with the pre-state values attached. Doing that by hand meant getting
+    // destroy-then-recreate right by hand too.
+    let mut state = State::builder()
+        .with_database(WitnessDb {
+            witness: &witness,
+            root: parent_state_root,
+            codes: &codes,
+            ancestors: &ancestors,
+        })
+        .with_bundle_update()
+        .build();
 
     let mut cfg = CfgEnv::default();
     cfg.chain_id = CHAIN_ID;
     cfg.spec = SpecId::PRAGUE;
-    // Left enforced: a block over its own gas limit is one this executor will not accept.
     let block = BlockEnv {
         number: U256::from(header.number),
         beneficiary: header.beneficiary,
@@ -155,11 +165,13 @@ pub fn execute_block(
         ..Default::default()
     };
 
-    let mut evm = Context::mainnet()
-        .with_db(db)
-        .with_block(block)
-        .with_cfg(cfg)
-        .build_mainnet();
+    let mut evm = eden_evm_factory(header.beneficiary).create_evm(
+        &mut state,
+        EvmEnv {
+            cfg_env: cfg,
+            block_env: block,
+        },
+    );
 
     let mut gas_used = 0u64;
     for (index, raw) in input.transactions.iter().enumerate() {
@@ -172,20 +184,19 @@ pub fn execute_block(
         let caller = envelope
             .recover_signer()
             .map_err(|_| ExecError::Sender { index })?;
-        let tx = tx_env(&envelope, caller);
-        let outcome = evm
-            .transact_one(tx)
-            .map_err(|e: EVMError<WitnessError>| ExecError::Evm {
-                index,
-                reason: e.to_string(),
-            })?;
-        gas_used += match &outcome {
+        let tx: EvTxEnv = tx_env(&envelope, caller).into();
+        let outcome = evm.transact(tx).map_err(|e| ExecError::Evm {
+            index,
+            reason: e.to_string(),
+        })?;
+        gas_used += match &outcome.result {
             ExecutionResult::Success { gas, .. }
             | ExecutionResult::Revert { gas, .. }
             | ExecutionResult::Halt { gas, .. } => gas.tx_gas_used(),
         };
+        evm.db_mut().commit(outcome.state);
     }
-    let changes = evm.finalize();
+    drop(evm);
 
     if gas_used != header.gas_used {
         return Err(ExecError::GasUsed {
@@ -195,16 +206,9 @@ pub fn execute_block(
         });
     }
 
-    // Eden does not burn the base fee; ev-reth pays it to the beneficiary with the priority
-    // fee. Measured: the first run came out exactly `base_fee * gas_used` short there.
-    let base_fee = U256::from(header.base_fee_per_gas.unwrap_or_default());
-    let root = post_state_root(
-        &witness,
-        parent_state_root,
-        &changes,
-        header.beneficiary,
-        base_fee * U256::from(gas_used),
-    )?;
+    state.merge_transitions(BundleRetention::PlainState);
+    let bundle = state.take_bundle();
+    let root = post_state_root(&witness, parent_state_root, &bundle)?;
     if root != header.state_root {
         return Err(ExecError::StateRoot {
             number: header.number,
@@ -218,142 +222,98 @@ pub fn execute_block(
 /// Eden's EVM chain id, which is also its Hyperlane domain.
 const CHAIN_ID: u64 = 3_735_928_814;
 
-/// Fold every account and storage change back into the trie and take the new root.
+/// Eden's ev-reth configuration, as the enclave must pin it.
 ///
-/// `fee_credit` is the base fee, which this chain pays to the beneficiary. revm burns it, so
-/// it is added back here.
+/// Pinned rather than taken from the request for the same reason the namespace and sequencer
+/// key are: whoever chooses the fee sink chooses where value goes.
+///
+/// The base fee sink is Eden's own, read off the chain: block 266047380 credited its
+/// beneficiary `base_fee * gas_used` on top of the priority fee, which is what a redirect to
+/// that address does and what plain Ethereum does not.
+///
+/// The mint, proposer-control and deploy-permission precompiles are left off because Eden is
+/// not known to run them. If it does, a transaction reaching one produces a root this
+/// executor does not reproduce, and the route stops rather than attests something wrong.
+fn eden_evm_factory(beneficiary: Address) -> EvTxEvmFactory {
+    EvTxEvmFactory::new(
+        Some(BaseFeeRedirectSettings::new(
+            BaseFeeRedirect::new(beneficiary),
+            0,
+        )),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Fold every account and storage change back into the trie and take the new root.
 fn post_state_root(
     witness: &Witness,
     pre_root: B256,
-    changes: &EvmState,
-    beneficiary: Address,
-    fee_credit: U256,
+    bundle: &BundleState,
 ) -> Result<B256, ExecError> {
-    /// What an address looks like after the block, before it is encoded.
-    enum After {
-        Gone,
-        Present {
-            nonce: u64,
-            balance: U256,
-            storage_root: B256,
-            code_hash: B256,
-        },
-    }
+    let mut account_changes: Vec<(B256, Option<Vec<u8>>)> = Vec::new();
 
-    let mut after: Vec<(Address, After)> = Vec::new();
-
-    for (address, account) in changes {
-        if !account.is_touched() {
+    for (address, account) in &bundle.state {
+        let key = keccak256(address.as_slice());
+        let Some(info) = account.info.as_ref() else {
+            account_changes.push((key, None));
             continue;
-        }
+        };
 
-        // Gone, either because it destroyed itself or because EIP-161 sweeps an account that
-        // was touched and left empty.
-        if account.is_selfdestructed() || account.is_empty() {
-            after.push((*address, After::Gone));
-            continue;
-        }
-
-        let pre = read_account(witness, pre_root, *address)?;
-        // A created account starts from an empty storage trie whatever the address held
-        // before, which is what makes destroy-then-recreate come out right.
-        let storage_base = if account.is_created() {
+        // A destroyed account's storage goes with it, so what follows builds on an empty
+        // trie rather than on whatever the address held before.
+        let storage_base = if account.status.was_destroyed() {
             EMPTY_ROOT
         } else {
-            pre.map(|(_, _, root, _)| root).unwrap_or(EMPTY_ROOT)
+            account
+                .original_info
+                .as_ref()
+                .map(|_| read_storage_root(witness, pre_root, *address))
+                .transpose()?
+                .flatten()
+                .unwrap_or(EMPTY_ROOT)
         };
 
         let mut storage_changes: Vec<(B256, Option<Vec<u8>>)> = Vec::new();
         for (slot, value) in &account.storage {
-            let present = value.present_value();
-            if !account.is_created() && present == value.original_value() {
+            if !account.status.was_destroyed() && value.present_value == value.previous_or_original_value
+            {
                 continue;
             }
-            let slot_key = keccak256(B256::from(*slot).as_slice());
             storage_changes.push((
-                slot_key,
-                if present.is_zero() {
+                keccak256(B256::from(*slot).as_slice()),
+                if value.present_value.is_zero() {
                     None
                 } else {
-                    Some(rlp_uint(present))
+                    Some(rlp_uint(value.present_value))
                 },
             ));
         }
         let storage_root = witness.update(storage_base, &storage_changes)?;
 
-        after.push((
-            *address,
-            After::Present {
-                nonce: account.info.nonce,
-                balance: account.info.balance,
+        account_changes.push((
+            key,
+            Some(encode_account(
+                info.nonce,
+                info.balance,
                 storage_root,
-                code_hash: account.info.code_hash,
-            },
+                info.code_hash,
+            )),
         ));
     }
 
-    if !fee_credit.is_zero() {
-        // Normally already here, having taken the priority fee; read from the pre-state only
-        // when a block paid none.
-        let slot = after.iter_mut().find(|(a, _)| *a == beneficiary);
-        match slot {
-            Some((_, After::Present { balance, .. })) => *balance += fee_credit,
-            Some((address, entry @ After::Gone)) => {
-                let (nonce, balance, storage_root, code_hash) =
-                    read_account(witness, pre_root, *address)?.unwrap_or((
-                        0,
-                        U256::ZERO,
-                        EMPTY_ROOT,
-                        alloy_primitives::KECCAK256_EMPTY,
-                    ));
-                *entry = After::Present {
-                    nonce,
-                    balance: balance + fee_credit,
-                    storage_root,
-                    code_hash,
-                };
-            }
-            None => {
-                let (nonce, balance, storage_root, code_hash) =
-                    read_account(witness, pre_root, beneficiary)?.unwrap_or((
-                        0,
-                        U256::ZERO,
-                        EMPTY_ROOT,
-                        alloy_primitives::KECCAK256_EMPTY,
-                    ));
-                after.push((
-                    beneficiary,
-                    After::Present {
-                        nonce,
-                        balance: balance + fee_credit,
-                        storage_root,
-                        code_hash,
-                    },
-                ));
-            }
-        }
-    }
-
-    let account_changes: Vec<(B256, Option<Vec<u8>>)> = after
-        .into_iter()
-        .map(|(address, entry)| {
-            let key = keccak256(address.as_slice());
-            match entry {
-                After::Gone => (key, None),
-                After::Present {
-                    nonce,
-                    balance,
-                    storage_root,
-                    code_hash,
-                } => (
-                    key,
-                    Some(encode_account(nonce, balance, storage_root, code_hash)),
-                ),
-            }
-        })
-        .collect();
-
     Ok(witness.update(pre_root, &account_changes)?)
+}
+
+/// The storage root an address had before the block, or `None` if it had no account.
+fn read_storage_root(
+    witness: &Witness,
+    root: B256,
+    address: Address,
+) -> Result<Option<B256>, ExecError> {
+    Ok(read_account(witness, root, address)?.map(|(_, _, storage_root, _)| storage_root))
 }
 
 /// `(nonce, balance, storage_root, code_hash)` as the account trie stores it.
@@ -434,6 +394,7 @@ fn tx_env(envelope: &TxEnvelope, caller: Address) -> TxEnv {
 // ---------------------------------------------------------------- database
 
 /// revm's view of the pre-state, served entirely out of the witness.
+#[derive(Debug)]
 struct WitnessDb<'a> {
     witness: &'a Witness,
     root: B256,

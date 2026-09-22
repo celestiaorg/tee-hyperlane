@@ -11,7 +11,7 @@
 # enclave can never satisfy a testnet ISM's identity, or the other way round.
 services:
   tee-node:
-    image: ghcr.io/jonas089/tee-node@sha256:f20a1596c07cd0058d09f8e66928cc9bdb4a92c9af6e9628927ca1e6eec4ed82
+    image: ghcr.io/jonas089/tee-node@sha256:bf9d999011bf7c50a27e5a44f8b674bae64cf3df9099b21a623b79d8d3c5738e
     ports:
       - "8080:8080"
     volumes:

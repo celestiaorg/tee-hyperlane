@@ -189,37 +189,22 @@ image digest -> app_compose document -> sha256 = compose_hash
              -> mr_config_id in the TDX quote -> identity pinned by every ISM
 ```
 
-Reuse the published image unless you have changed `crates/tee-node`:
-
-```
-ghcr.io/jonas089/tee-node@sha256:77283ad03dd5f2dfbbbb718e4b08f63397ce829c48a4e3cc7b3635d18fe3e0d8
-```
-
-To build your own, which is reproducible:
+There are three images, one per origin family, so that a change to one origin does not
+re-deploy the ISMs of the others:
 
 ```sh
-nix build .#image          # ~35 min cold
-nix build .#image --rebuild  # proves it is bit-identical, not merely repeatable
+nix build .#image-celestia    # the Celestia origin; the EVM ISMs pin it
+nix build .#image-ethereum    # Sepolia, Arbitrum and Base origins
+nix build .#image-evolve      # Eden: a mocha light client and the ev-reth executor
 ```
 
-Push it, then pin the **manifest** digest in `deploy/docker-compose.yml`.
+Load, tag and push each, then pin its digest in `deploy/docker-compose.<family>.yml`. Those
+three compose files are what the three CVMs are deployed from, and their hashes are the three
+identities.
 
-> Two digests are involved and confusing them wastes an afternoon. `tar -xOf result
-> manifest.json | jq -r '.[0].Config'` gives the *config* digest, content-addressed over the
-> image. The compose file pins the *manifest* digest. Compare like with like using
-> `docker manifest inspect <ref> | jq -r .config.digest`.
-
-The Nix source filter is deliberately narrow: only `tee-hyperlane/{Cargo.toml,Cargo.lock,
-rust-toolchain}`, `crates/hyperlane-types`, `crates/tee-node`, `tee-circuit/Cargo.toml` and
-`tee-circuit/tee-attestation`, minus every `tests/` and `testdata/`. Editing the coprocessor,
-the gas oracle or a test therefore cannot move the digest, which matters because a moved
-digest means a new identity and six new ISMs.
-
-> `devnet/enclave/docker-compose.yml` is deliberately **not** byte-identical to
-> `deploy/docker-compose.yml`. Its hash is measured, so keeping them distinct means a devnet
-> enclave can never satisfy a testnet ISM's identity, or the reverse. Do not "tidy" them into
-> one file.
-
+Adding a family is four small things: the `families` list in `flake.nix`, a cargo feature in
+`crates/tee-node/Cargo.toml`, a module under `crates/tee-node/src/origins/`, and a compose
+file. Nothing else in the build is per-family.
 ---
 
 ## 6. The two Phala CVMs
@@ -404,17 +389,17 @@ The other three origin ISMs are created the same way with the origin changed; Ed
 
 | origin | ISM on `teeism-local` |
 |---|---|
-| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b0000000000000012` |
-| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b0000000000000013` |
-| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b0000000000000014` |
-| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b0000000000000015` |
+| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b000000000000001c` |
+| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b000000000000001d` |
+| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b000000000000001e` |
+| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b0000000000000021` |
 
 | destination | `TeeDcapIsm` |
 |---|---|
-| Ethereum Sepolia | `0x9104cC0F9E6cD19BdA3da2476ED12fBF5B93F69a` |
-| Arbitrum Sepolia | `0xca13BbD53c9D1d9c797aA33309528f15A568d9e5` |
-| Base Sepolia | `0x3419Dc0FFD5Fd0ea9029a751Ea23f5DCDaB61f64` |
-| Eden | `0x4899fCE0E10dd39D39fc8C535e972d38ECB49f16` |
+| Ethereum Sepolia | `0xa881b8bE4D0af85F3462Eb31D87210638a71aAC1` |
+| Arbitrum Sepolia | `0x0eAAf9028a07162307CFB0Ce9808967fb25C659e` |
+| Base Sepolia | `0x7A4c36D68b4fd07E533C2EBc5dfdCb86cc612c5a` |
+| Eden | `0xB869FeF5F756C369b14A2357Be613630a1245709` |
 
 ### One ISM is not enough on the Celestia side
 
@@ -431,7 +416,7 @@ celestia-appd tx warp set-token $TOKEN --ism-id $ROUTING
 celestia-appd tx hyperlane mailbox set $MAILBOX --default-ism $ROUTING
 ```
 
-Live: `0x726f757465725f69736d00000000000000000000000000010000000000000016`. It is both the
+Live: `0x726f757465725f69736d00000000000000000000000000010000000000000020`. It is both the
 token's ISM and the mailbox default.
 
 > Rotating a route is **remove then set**, not set. `set-routing-ism-domain` inserts a domain

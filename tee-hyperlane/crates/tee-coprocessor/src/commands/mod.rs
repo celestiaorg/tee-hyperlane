@@ -485,3 +485,40 @@ pub fn check_scan(snapshot_count: u32, head_count: u32, found: usize) -> Result<
     );
     Ok(())
 }
+
+/// Carry a live ISM's trusted state onto a new enclave identity.
+///
+/// The state layout is fixed at 116 bytes and the identity is the last 32, so this rewrites
+/// those and nothing else. Refusing anything that is not exactly 116 bytes matters: a short
+/// or long state means the caller read the wrong thing, and silently padding it would produce
+/// a genesis that looks plausible and anchors nowhere.
+pub fn rotate_state(state: &str, identity_digest: &str) -> Result<()> {
+    let raw = hex::decode(state.trim().trim_start_matches("0x")).context("state is not hex")?;
+    anyhow::ensure!(
+        raw.len() == 116,
+        "an ISM state is 116 bytes, this is {}",
+        raw.len()
+    );
+    let identity = hex::decode(identity_digest.trim().trim_start_matches("0x"))
+        .context("identity digest is not hex")?;
+    anyhow::ensure!(
+        identity.len() == 32,
+        "an identity digest is 32 bytes, this is {}",
+        identity.len()
+    );
+
+    let previous = tee_attestation::decode_ism_state(&raw)?;
+    let mut next = raw.clone();
+    next[84..].copy_from_slice(&identity);
+
+    println!("origin domain    {}", previous.origin_domain);
+    println!("height           {}", previous.height);
+    println!("timestamp        {}", previous.timestamp);
+    println!("state root       0x{}", hex::encode(previous.state_root));
+    println!("lc store commit  0x{}", hex::encode(previous.lc_store_commit));
+    println!("was identity     0x{}", hex::encode(previous.identity_digest));
+    println!("now identity     0x{}", hex::encode(&identity));
+    println!();
+    println!("genesis state    0x{}", hex::encode(&next));
+    Ok(())
+}

@@ -36,8 +36,11 @@ done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # The devnet's by default, because that is what a developer running this locally has just
-# deployed. A testnet enclave measures deploy/docker-compose.yml instead, so checking one of
-# those means naming it: COMPOSE=deploy/docker-compose.yml ./deploy/verify-digest.sh <app-id>.
+# deployed. A testnet enclave measures one of deploy/docker-compose.<family>.yml, so checking
+# one of those means naming it:
+#
+#   COMPOSE=deploy/docker-compose.evolve.yml ./deploy/verify-digest.sh <app-id>
+#
 # Without this the script could only ever pass for the devnet, and step 3 read as a real
 # failure on every live enclave.
 COMPOSE="${COMPOSE:-${ROOT}/devnet/enclave/docker-compose.yml}"

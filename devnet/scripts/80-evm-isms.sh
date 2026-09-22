@@ -18,8 +18,13 @@ has enclave-url || die "no enclave; run 'make init' first"
 has merkle-hook-id || die "no local hyperlane deployment; run 'make init' first"
 
 # ---------------------------------------------------------------- pin the live enclave
+
+# Which enclave family this ISM will trust. An EVM destination verifies a *Celestia*-origin
+# attestation, so these ISMs pin the Celestia enclave; the Celestia-side ISMs pin whichever
+# enclave attests their origin. One file per family, so adding one is a name, not a rewrite.
+ENCLAVE_FAMILY="${ENCLAVE_FAMILY:-celestia}"
 say "reading measurements from the devnet enclave"
-curl -sS -m 30 "$(load enclave-url)/identity" -o "${STATE_DIR}/enclave-identity.json"
+curl -sS -m 30 "$(load "enclave-url-${ENCLAVE_FAMILY}")/identity" -o "${STATE_DIR}/enclave-identity.json"
 MEASUREMENTS="$(python3 - "${STATE_DIR}/enclave-identity.json" <<'PY'
 import json, subprocess, sys
 q = json.load(open(sys.argv[1]))["quote"]
@@ -30,15 +35,36 @@ pre = "0x" + (b[136:232] + b[328:472]).hex()
 print(subprocess.run(["cast", "keccak", pre], capture_output=True, text=True).stdout.strip())
 PY
 )"
-IDENTITY="$(load identity-digest)"
+IDENTITY="$(load "identity-digest-${ENCLAVE_FAMILY}")"
+[ -n "${IDENTITY}" ] || die "no identity-digest-${ENCLAVE_FAMILY}; deploy that enclave first"
 say "  measurements  ${MEASUREMENTS}"
 say "  identity      ${IDENTITY}"
 
 # ---------------------------------------------------------------- pin the local chain
-say "reading a trusted checkpoint from ${CHAINID}"
-GENESIS="$(cd "${REPO_DIR}/tee-hyperlane" && cargo run --quiet --release -p tee-coprocessor -- \
-  bootstrap-celestia --rpc "${CELESTIA_RPC}" --identity-digest "${IDENTITY}" 2>/dev/null \
-  | sed -n 's/^genesis state *//p' | tr -d ' ')"
+#
+# Normally the ISM is anchored at the chain's current head. A re-deployment therefore starts
+# from the head too, and any message dispatched but not yet delivered is below it and never
+# arrives. That is accepted: it is a testnet, and the alternative couples every deployment to
+# the last one.
+#
+# What is not accepted is having no way back. Set ISM_GENESIS to anchor at a checkpoint you
+# choose instead, which is how a message stranded by an earlier deployment is recovered:
+#
+#   cast call <old-ism> "state()(bytes)" --rpc-url <rpc>
+#   tee-hyperlane rotate-state --state <that> --identity-digest <new identity>
+#   ISM_GENESIS=<the genesis state it prints> ./scripts/80-evm-isms.sh
+#
+# `rotate-state` keeps the root, height, timestamp and store commitment and changes only the
+# identity, so the new ISM resumes where the old one stopped and replays the gap.
+if [ -n "${ISM_GENESIS:-}" ]; then
+  GENESIS="${ISM_GENESIS}"
+  say "anchoring at the checkpoint in ISM_GENESIS, not at ${CHAINID}'s head"
+else
+  say "reading a trusted checkpoint from ${CHAINID}"
+  GENESIS="$(cd "${REPO_DIR}/tee-hyperlane" && cargo run --quiet --release -p tee-coprocessor -- \
+    bootstrap-celestia --rpc "${CELESTIA_RPC}" --identity-digest "${IDENTITY}" 2>/dev/null \
+    | sed -n 's/^genesis state *//p' | tr -d ' ')"
+fi
 [ -n "${GENESIS}" ] || die "could not bootstrap from ${CHAINID}"
 HOOK="$(load merkle-hook-id)"
 say "  origin hook   ${HOOK}"

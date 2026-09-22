@@ -15,18 +15,23 @@ use tee_attestation::{encode_attested_update, hash_attested_update, AttestedUpda
 use crate::hyperlane_state::{
     verify_evm_merkle_tree, verify_message_batch, EvmTreeProof, HyperlaneStateError,
 };
+#[cfg(feature = "celestia")]
 use crate::origins::celestia::{
     self, celestia_root, verify_celestia_updates, CelestiaError, CelestiaStore,
 };
+#[cfg(feature = "ethereum")]
 use crate::origins::ethereum::{
     self, ethereum_root, verify_ethereum_updates, EthereumError, EthereumStore, EthereumUpdates,
 };
+#[cfg(feature = "ethereum")]
 use crate::origins::ethereum_l2::{
     verify_arbitrum_root, verify_base_root, ArbitrumError, ArbitrumRootProof, BaseError,
     BaseRootProof,
 };
 use crate::origins::{AttestedRoot, Origin};
+#[cfg(feature = "evolve")]
 use crate::origins::celestia_l2::{verify_evolve_root, EvolveChain, EvolveHeaderProof};
+#[cfg(feature = "celestia")]
 use crate::state_proofs::{verify_celestia_merkle_tree, CelestiaStateError, Ics23TreeProof};
 use hyperlane_types::MerkleTree;
 
@@ -87,19 +92,23 @@ mod hex_ism_state {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "chain", rename_all = "snake_case")]
 pub enum OriginInput {
+    #[cfg(feature = "ethereum")]
     Ethereum {
         store: EthereumStore,
         updates: EthereumUpdates,
     },
+    #[cfg(feature = "celestia")]
     Celestia {
         store: CelestiaStore,
         updates: Vec<tendermint_light_client_verifier::types::LightBlock>,
     },
     /// Arbitrum and Base ride on Ethereum's light client rather than their own.
+    #[cfg(feature = "ethereum")]
     Arbitrum {
         ethereum: Box<OriginInput>,
         proof: ArbitrumRootProof,
     },
+    #[cfg(feature = "ethereum")]
     Base {
         ethereum: Box<OriginInput>,
         proof: BaseRootProof,
@@ -107,6 +116,7 @@ pub enum OriginInput {
     /// An evolve chain rides on Celestia the way an L2 rides on Ethereum: the sequencer's
     /// signed header is a blob in a Celestia block, so verifying Celestia first is what makes
     /// the header worth reading.
+    #[cfg(feature = "evolve")]
     Eden {
         celestia: Box<OriginInput>,
         proof: EvolveHeaderProof,
@@ -117,6 +127,9 @@ pub enum OriginInput {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TreeInput {
     Evm(EvmTreeProof),
+    /// Only an enclave that verifies Celestia can read a Celestia tree, and only a Celestia
+    /// origin has one.
+    #[cfg(feature = "celestia")]
     Celestia {
         hook_id: [u8; 32],
         hook_bytes: Vec<u8>,
@@ -126,26 +139,34 @@ pub enum TreeInput {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AttestError {
+    #[cfg(feature = "evolve")]
     #[error("an evolve origin must carry a Celestia light client")]
     EvolveNeedsCelestia,
+    #[cfg(feature = "evolve")]
     #[error(transparent)]
     Evolve(#[from] crate::origins::celestia_l2::EvolveError),
     #[error("supplied light-client store does not match the commitment in the ISM state")]
     StoreCommitmentMismatch,
     #[error("origin domain {got} does not match the ISM's {expected}")]
     WrongOrigin { got: u32, expected: u32 },
+    #[cfg(feature = "ethereum")]
     #[error(transparent)]
     Ethereum(#[from] EthereumError),
+    #[cfg(feature = "celestia")]
     #[error(transparent)]
     Celestia(#[from] CelestiaError),
+    #[cfg(feature = "ethereum")]
     #[error(transparent)]
     Arbitrum(#[from] ArbitrumError),
+    #[cfg(feature = "ethereum")]
     #[error(transparent)]
     Base(#[from] BaseError),
     #[error(transparent)]
     HyperlaneState(#[from] HyperlaneStateError),
+    #[cfg(feature = "celestia")]
     #[error(transparent)]
     CelestiaState(#[from] CelestiaStateError),
+    #[cfg(feature = "ethereum")]
     #[error("an L2 origin must be derived from an Ethereum light client")]
     L2NeedsEthereum,
     #[error("tree proven at 0x{proven} but 0x{attested} was attested")]
@@ -256,6 +277,7 @@ fn read_tree(
             )?;
             Ok(verify_evm_merkle_tree(state_root.into(), base_slot, proof)?)
         }
+        #[cfg(feature = "celestia")]
         TreeInput::Celestia {
             hook_id,
             hook_bytes,
@@ -277,11 +299,13 @@ pub fn attested_tree_address(tree: &TreeInput) -> [u8; 32] {
             padded[12..].copy_from_slice(proof.merkle_tree_hook.as_slice());
             padded
         }
+        #[cfg(feature = "celestia")]
         TreeInput::Celestia { hook_id, .. } => *hook_id,
     }
 }
 
 /// Which beacon slot it is now, from the enclave's clock and the store's own genesis.
+#[cfg(feature = "ethereum")]
 fn current_slot(genesis_time: u64) -> Result<u64, AttestError> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -291,9 +315,11 @@ fn current_slot(genesis_time: u64) -> Result<u64, AttestError> {
 }
 
 /// Ethereum's slot time, fixed since genesis.
+#[cfg(feature = "ethereum")]
 const SECONDS_PER_SLOT: u64 = 12;
 
 /// The enclave's own clock, for the one check that needs wall time.
+#[cfg(feature = "celestia")]
 fn enclave_now() -> Result<tendermint::Time, AttestError> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -304,10 +330,15 @@ fn enclave_now() -> Result<tendermint::Time, AttestError> {
 
 fn origin_of(input: &OriginInput) -> Origin {
     match input {
+        #[cfg(feature = "ethereum")]
         OriginInput::Ethereum { .. } => Origin::Ethereum,
+        #[cfg(feature = "celestia")]
         OriginInput::Celestia { .. } => Origin::Celestia,
+        #[cfg(feature = "ethereum")]
         OriginInput::Arbitrum { .. } => Origin::Arbitrum,
+        #[cfg(feature = "ethereum")]
         OriginInput::Base { .. } => Origin::Base,
+        #[cfg(feature = "evolve")]
         OriginInput::Eden { .. } => Origin::Eden,
     }
 }
@@ -323,6 +354,7 @@ fn verify_origin_head(
     trusted: &IsmState,
 ) -> Result<(AttestedRoot, [u8; 32], u64), AttestError> {
     match input {
+        #[cfg(feature = "ethereum")]
         OriginInput::Ethereum { store, updates } => {
             if ethereum::commit_ethereum_store(store) != trusted.lc_store_commit {
                 return Err(AttestError::StoreCommitmentMismatch);
@@ -334,6 +366,7 @@ fn verify_origin_head(
             let root = ethereum_root(store)?;
             Ok((root, ethereum::commit_ethereum_store(store), root.timestamp))
         }
+        #[cfg(feature = "celestia")]
         OriginInput::Celestia { store, updates } => {
             if celestia::commit_celestia_store(store) != trusted.lc_store_commit {
                 return Err(AttestError::StoreCommitmentMismatch);
@@ -347,6 +380,7 @@ fn verify_origin_head(
         // Ethereum's light client is the thing with state worth remembering.
         // The L1 head is what dates this attestation. The L2's confirmed head is older by a
         // fraud-proof window, which is a property of the rollup and not evidence of staleness.
+        #[cfg(feature = "ethereum")]
         OriginInput::Arbitrum { ethereum, proof } => {
             let (l1, commit, _) = verify_ethereum_head(ethereum, trusted)?;
             Ok((
@@ -355,6 +389,7 @@ fn verify_origin_head(
                 l1.timestamp,
             ))
         }
+        #[cfg(feature = "ethereum")]
         OriginInput::Base { ethereum, proof } => {
             let (l1, commit, _) = verify_ethereum_head(ethereum, trusted)?;
             Ok((
@@ -365,6 +400,7 @@ fn verify_origin_head(
         }
         // Same shape as an L2, with Celestia in place of Ethereum. The Celestia head is what
         // dates the attestation; the evolve header's own timestamp dates the state.
+        #[cfg(feature = "evolve")]
         OriginInput::Eden { celestia, proof } => {
             let (_, commit, celestia_time) = verify_celestia_head(celestia, trusted)?;
             let header = match celestia.as_ref() {
@@ -388,6 +424,7 @@ fn verify_origin_head(
 
 /// An evolve chain is only as good as the Celestia block its header sits in, so the inner
 /// origin has to be Celestia and nothing else.
+#[cfg(feature = "evolve")]
 fn verify_celestia_head(
     input: &mut OriginInput,
     trusted: &IsmState,
@@ -398,6 +435,7 @@ fn verify_celestia_head(
     }
 }
 
+#[cfg(feature = "ethereum")]
 fn verify_ethereum_head(
     input: &mut OriginInput,
     trusted: &IsmState,

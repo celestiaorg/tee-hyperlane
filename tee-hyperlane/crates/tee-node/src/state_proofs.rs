@@ -119,21 +119,28 @@ mod hex_quantity {
 // Celestia: two-level ics23
 // ============================================================================
 
+#[cfg(feature = "celestia")]
 use ics23::commitment_proof::Proof;
+#[cfg(feature = "celestia")]
 use ics23::{
     calculate_existence_root, iavl_spec, tendermint_spec, CommitmentProof, HostFunctionsManager,
 };
+#[cfg(feature = "celestia")]
 use prost::Message;
 
+#[cfg(feature = "celestia")]
 use hyperlane_types::{MerkleTree, TREE_DEPTH};
 
 /// hyperlane-cosmos keeps merkle tree hooks under this prefix in the `hyperlane` store:
 /// post-dispatch submodule id 2, collection 4.
+#[cfg(feature = "celestia")]
 pub const MERKLE_TREE_HOOKS_PREFIX: [u8; 2] = [2, 4];
 /// The cosmos SDK module store hyperlane-cosmos writes into.
+#[cfg(feature = "celestia")]
 pub const HYPERLANE_STORE: &str = "hyperlane";
 
 /// One level of a cosmos ABCI store proof, as `proofOps` delivers it.
+#[cfg(feature = "celestia")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoreProofOp {
     /// `ics23:iavl` for the module store, `ics23:simple` for the store list.
@@ -142,6 +149,7 @@ pub struct StoreProofOp {
     pub data: Vec<u8>,
 }
 
+#[cfg(feature = "celestia")]
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum CelestiaStateError {
     #[error("expected two proof ops (iavl then simple), got {0}")]
@@ -176,6 +184,7 @@ pub enum CelestiaStateError {
 ///
 /// `collections.Map` keys are the prefix followed by the big-endian uint64 internal id,
 /// which is the low 8 bytes of the hook's 32-byte HexAddress.
+#[cfg(feature = "celestia")]
 pub fn get_merkle_tree_hook_key(hook_id: [u8; 32]) -> Vec<u8> {
     let mut key = MERKLE_TREE_HOOKS_PREFIX.to_vec();
     key.extend_from_slice(&hook_id[24..]);
@@ -183,6 +192,7 @@ pub fn get_merkle_tree_hook_key(hook_id: [u8; 32]) -> Vec<u8> {
 }
 
 /// Verify a value against a light-client-verified app hash, through both tree levels.
+#[cfg(feature = "celestia")]
 pub fn verify_store_value(
     app_hash: [u8; 32],
     store: &str,
@@ -243,8 +253,10 @@ pub fn verify_store_value(
 
 /// Prove the origin merkle tree hook out of Celestia state and return its tree.
 /// A cosmos store proof for one merkle tree hook.
+#[cfg(feature = "celestia")]
 pub type Ics23TreeProof = Vec<StoreProofOp>;
 
+#[cfg(feature = "celestia")]
 pub fn verify_celestia_merkle_tree(
     app_hash: [u8; 32],
     hook_id: [u8; 32],
@@ -257,7 +269,9 @@ pub fn verify_celestia_merkle_tree(
 }
 
 /// hyperlane-cosmos `MerkleTreeHook`; only the tree matters to us.
+#[cfg(feature = "celestia")]
 #[derive(Clone, PartialEq, Message)]
+#[cfg(feature = "celestia")]
 struct MerkleTreeHookProto {
     #[prost(string, tag = "1")]
     id: String,
@@ -270,6 +284,7 @@ struct MerkleTreeHookProto {
 }
 
 /// hyperlane-cosmos `Tree`: the same incremental tree the Solidity hook keeps.
+#[cfg(feature = "celestia")]
 #[derive(Clone, PartialEq, Message)]
 struct TreeProto {
     #[prost(bytes = "vec", repeated, tag = "1")]
@@ -278,6 +293,7 @@ struct TreeProto {
     count: u32,
 }
 
+#[cfg(feature = "celestia")]
 pub fn decode_merkle_tree_hook(bytes: &[u8]) -> Result<MerkleTree, CelestiaStateError> {
     let hook = MerkleTreeHookProto::decode(bytes).map_err(|_| CelestiaStateError::MalformedHook)?;
     let tree = hook.tree.ok_or(CelestiaStateError::HookHasNoTree)?;
@@ -297,6 +313,7 @@ pub fn decode_merkle_tree_hook(bytes: &[u8]) -> Result<MerkleTree, CelestiaState
     })
 }
 
+#[cfg(feature = "celestia")]
 fn decode_existence(
     data: &[u8],
     index: usize,
@@ -309,6 +326,7 @@ fn decode_existence(
     }
 }
 
+#[cfg(feature = "celestia")]
 fn wrap(e: ics23::ExistenceProof) -> CommitmentProof {
     CommitmentProof {
         proof: Some(Proof::Exist(e)),

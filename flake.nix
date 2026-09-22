@@ -78,8 +78,12 @@
             in pkgs.lib.any onKeptPath keep && !(excluded rel);
         };
 
-        teeNode = rustPlatform.buildRustPackage {
-          pname = "tee-node";
+        # One build per origin family. The identity an ISM pins is a hash of the image, so a
+        # single binary serving every origin means a single identity for every ISM, and a
+        # change to one origin re-deploys the ISMs of all of them. Three builds, three
+        # identities, three blast radii.
+        teeNodeFor = feature: rustPlatform.buildRustPackage {
+          pname = "tee-node-${feature}";
           version = "0.1.0";
           inherit src;
           sourceRoot = "source/tee-hyperlane";
@@ -89,8 +93,62 @@
             # helios publishes only nightly tags, so it arrives by git rev rather than from
             # crates.io. Pinned by content hash here, by rev in Cargo.lock.
             outputHashes = {
+              # Every crate fetched from git, keyed as importCargoLock wants. Crates
+              # from one repository share that repository's hash: helios for the
+              # Ethereum light client, and ev-reth with the slice of reth it pins,
+              # which is Eden's execution.
+              "ev-precompiles-0.1.0" =
+                "sha256-93kUAy0tiopa16BK6fTshgpXnhIRSg2JsU+Zq9qyoxA=";
+              "ev-primitives-0.1.0" =
+                "sha256-93kUAy0tiopa16BK6fTshgpXnhIRSg2JsU+Zq9qyoxA=";
+              "ev-revm-0.1.0" =
+                "sha256-93kUAy0tiopa16BK6fTshgpXnhIRSg2JsU+Zq9qyoxA=";
               "helios-consensus-core-0.11.1" =
                 "sha256-iV+FnmteHnSZFZ8wJi0PUwDeU9gnLh8gPN+0X//2mSQ=";
+              "reth-chainspec-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-consensus-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-consensus-common-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-db-api-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-db-models-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-ethereum-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-ethereum-consensus-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-ethereum-forks-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-ethereum-primitives-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-evm-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-evm-ethereum-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-execution-errors-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-execution-types-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-network-peers-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-prune-types-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-revm-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-stages-types-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-static-file-types-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-storage-api-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-storage-errors-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-tokio-util-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
+              "reth-trie-common-2.5.0" =
+                "sha256-WBZA9nJ9067DcmxXK5zS0TPfY9T22NXhuRGBLEGAyXQ=";
             };
           };
 
@@ -126,30 +184,40 @@
             IDENTITY
           '';
 
-          cargoBuildFlags = [ "-p" "tee-node" "--bin" "tee-node" ];
+          cargoBuildFlags = [
+            "-p" "tee-node" "--bin" "tee-node"
+            "--no-default-features" "--features" feature
+          ];
           doCheck = false;
 
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.openssl ];
         };
-      in
-      {
-        packages = {
-          inherit teeNode;
-          default = teeNode;
-
-          # Timestamps fixed at epoch 0 and layers content-addressed, so two builds of the
-          # same source produce the same digest.
-          image = pkgs.dockerTools.buildLayeredImage {
-            name = "ghcr.io/jonas089/tee-node";
-            tag = "reproducible";
-            created = "1970-01-01T00:00:00Z";
-            contents = [ pkgs.cacert ];
-            config = {
-              Entrypoint = [ "${teeNode}/bin/tee-node" ];
-              ExposedPorts."8080/tcp" = { };
-            };
+        # Timestamps fixed at epoch 0 and layers content-addressed, so two builds of the same
+        # source produce the same digest.
+        imageFor = feature: pkgs.dockerTools.buildLayeredImage {
+          name = "ghcr.io/jonas089/tee-node";
+          tag = "reproducible-${feature}";
+          created = "1970-01-01T00:00:00Z";
+          contents = [ pkgs.cacert ];
+          config = {
+            Entrypoint = [ "${teeNodeFor feature}/bin/tee-node" ];
+            ExposedPorts."8080/tcp" = { };
           };
         };
+      in
+      {
+        packages =
+          # One origin family per entry, and adding one is this list plus a cargo feature, an
+          # `origins/` module and a compose file. Nothing here is per-family except the name,
+          # so a Solana or SVM origin joins without touching the build.
+          let
+            families = [ "celestia" "ethereum" "evolve" ];
+            outputs = pkgs.lib.listToAttrs (pkgs.lib.concatMap (f: [
+              { name = "tee-node-${f}"; value = teeNodeFor f; }
+              { name = "image-${f}"; value = imageFor f; }
+            ]) families);
+          in
+          outputs // { default = teeNodeFor (builtins.head families); };
       });
 }

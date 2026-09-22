@@ -261,12 +261,21 @@ pub async fn attest_eden(
             }
             continue;
         }
+        // An attestation is dated by the Celestia block the enclave verified, and the state
+        // it carries is dated by the Eden header inside it. Eden's clock runs a couple of
+        // seconds ahead of mocha's, so the newest headers in a blob can be stamped later than
+        // the block that carries them, and `x/teeism` rejects that as postdated. The older
+        // headers in the same blob are not, so take one of those.
+        let block_time = match reader.light_block(h).await {
+            Ok(b) => b.signed_header.header.time.unix_timestamp() as u64,
+            Err(_) => continue,
+        };
         let mut carried: Vec<_> = tee_node::origins::celestia_l2::signed_headers(
             &data,
             &tee_node::origins::celestia_l2::EvolveChain::EDEN,
         )
         .into_iter()
-        .filter(|hd| usable.contains(&hd.height))
+        .filter(|hd| usable.contains(&hd.height) && hd.time_ns / 1_000_000_000 <= block_time)
         .collect();
         if carried.is_empty() {
             continue;

@@ -10,9 +10,13 @@
 //! state root, those L2 roots are reachable by MPT proof from it - no second light client,
 //! no second enclave.
 
+#[cfg(feature = "celestia")]
 pub mod celestia;
+#[cfg(feature = "evolve")]
 pub mod celestia_l2;
+#[cfg(feature = "ethereum")]
 pub mod ethereum;
+#[cfg(feature = "ethereum")]
 pub mod ethereum_l2;
 
 use alloy_primitives::B256;

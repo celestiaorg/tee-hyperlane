@@ -4,6 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# One image per origin family, so a change to one stops re-deploying the others.
+#
+# The identity an ISM pins is the hash of the image, so every origin sharing one binary means
+# every ISM sharing one identity: changing Eden's executor re-deployed the Ethereum side too.
+# Split, only the ISMs that trust the changed enclave move.
+#
+# `default` builds all three, which is what the tests and the devnet use. The three images
+# each enable one.
+[features]
+default = ["celestia", "ethereum", "evolve"]
+celestia = ["dep:tendermint", "dep:tendermint-light-client-verifier", "dep:celestia-types", "dep:ed25519-dalek", "dep:ics23", "dep:prost"]
+ethereum = ["dep:helios-consensus-core", "dep:ssz_types", "dep:ethereum_ssz", "dep:tree_hash"]
+# An evolve chain rides on Celestia, so its light client comes too.
+evolve = ["celestia", "dep:revm", "dep:ev-revm", "dep:alloy-evm", "dep:alloy-consensus", "dep:alloy-eips"]
+
 [dependencies]
 hyperlane-types.workspace = true
 tee-attestation.workspace = true
@@ -11,9 +26,11 @@ tee-attestation.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-trie.workspace = true
-revm.workspace = true
-alloy-consensus.workspace = true
-alloy-eips.workspace = true
+revm = { workspace = true, optional = true }
+ev-revm = { workspace = true, optional = true }
+alloy-evm = { workspace = true, optional = true }
+alloy-consensus = { workspace = true, optional = true }
+alloy-eips = { workspace = true, optional = true }
 anyhow.workspace = true
 hex.workspace = true
 serde.workspace = true
@@ -21,17 +38,17 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-ics23.workspace = true
-celestia-types.workspace = true
-ed25519-dalek.workspace = true
-prost.workspace = true
-helios-consensus-core.workspace = true
-tendermint.workspace = true
-tendermint-light-client-verifier.workspace = true
+ics23 = { workspace = true, optional = true }
+celestia-types = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+helios-consensus-core = { workspace = true, optional = true }
+tendermint = { workspace = true, optional = true }
+tendermint-light-client-verifier = { workspace = true, optional = true }
 # Must match helios-consensus-core exactly, or its derived traits are not ours.
-ssz_types = "0.11"
-ethereum_ssz = "0.9"
-tree_hash = "0.10"
+ssz_types = { version = "0.11", optional = true }
+ethereum_ssz = { version = "0.9", optional = true }
+tree_hash = { version = "0.10", optional = true }
 axum.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
