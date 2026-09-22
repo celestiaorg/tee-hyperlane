@@ -77,6 +77,35 @@ export default function App() {
 
   useEffect(() => saveTransfers(transfers), [transfers]);
 
+  // Drop transfers the current deployment can never deliver.
+  //
+  // Redeploying an ISM starts it at the origin's head, so a message dispatched before that
+  // point is below the trusted state and no batch will ever include it. Each route reports
+  // the origin timestamp its ISM has reached, so "sent before that" is the exact test rather
+  // than a guess about how long something ought to take.
+  useEffect(() => {
+    let live = true;
+    fetch(`${RELAYER_API}/status`)
+      .then((r) => r.json())
+      .then((routes: { origin: number; destination: number; timestamp: number }[]) => {
+        if (!live || !Array.isArray(routes)) return;
+        setTransfers((current) =>
+          current.filter((t) => {
+            if (t.reached === "delivered" || t.deliveredAt) return true;
+            const route = routes.find(
+              (r) =>
+                r.origin === CHAINS[t.from].domain && r.destination === CHAINS[t.to].domain,
+            );
+            return !route || t.sentAt / 1000 >= route.timestamp;
+          }),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+
   // Pick up wallets this browser already authorised, so a reload does not look logged out.
   // Silent by construction: neither call prompts, and both return nothing if never connected.
   useEffect(() => {
