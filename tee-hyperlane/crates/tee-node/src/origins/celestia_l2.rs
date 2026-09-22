@@ -3,20 +3,15 @@
 //!
 //! These have no consensus of their own, so a state root rests on three things: the light
 //! client proving the blob was in a Celestia block it verified, the pinned sequencer key
-//! having signed the header in it, and the enclave re-executing the blocks behind that root
-//! from the state the ISM already trusts.
+//! having signed the header in it, and the enclave re-executing the blocks behind that root.
+//! Only the third makes it trustworthy; a signature says who claimed a root, not whether
+//! executing the chain produces it.
 //!
-//! Only the third makes the root trustworthy; a signature says who claimed it, not whether
-//! executing the chain produces it. The sequencer keeps ordering and censorship, and loses
-//! the ability to invent a state its transactions would not reach.
+//! Only state-changing blocks are executed. The chain has to land on the signed root, so a
+//! block left out shows up as a mismatch.
 //!
-//! Only state-changing blocks are executed. That is safe rather than a shortcut: the chain of
-//! executions has to land on the signed root, so a block left out shows up as a mismatch.
-//! Eden makes ten blocks a second and nearly all are empty.
-//!
-//! The namespace, sequencer key and chain id are pinned below rather than taken from the
-//! request, for the same reason the L2 anchors are: whoever picks them picks which chain you
-//! are bridging and who may speak for it.
+//! The namespace, sequencer key and chain id are pinned below: whoever picks them picks which
+//! chain you are bridging and who may speak for it.
 
 use celestia_types::nmt::Namespace;
 use celestia_types::namespace_data::{NamespaceData, NamespaceDataId};

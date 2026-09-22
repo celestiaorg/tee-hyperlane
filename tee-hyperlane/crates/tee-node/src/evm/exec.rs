@@ -135,9 +135,8 @@ pub fn execute_block(
         }
     }
 
-    // revm's `State` over the witness, so the per-transaction diffs merge into one bundle
-    // with the pre-state values attached. Doing that by hand meant getting
-    // destroy-then-recreate right by hand too.
+    // revm's `State` merges the per-transaction diffs into one bundle with pre-state values
+    // attached, which is what gets destroy-then-recreate right.
     let mut state = State::builder()
         .with_database(WitnessDb {
             witness: &witness,
@@ -150,7 +149,9 @@ pub fn execute_block(
 
     let mut cfg = CfgEnv::default();
     cfg.chain_id = CHAIN_ID;
-    cfg.spec = SpecId::PRAGUE;
+    // Osaka, not Prague: P-256 verification is an Osaka precompile, and a DCAP verification
+    // needs it. Under Prague that call returns nothing and the verifier reverts.
+    cfg.spec = SpecId::OSAKA;
     let block = BlockEnv {
         number: U256::from(header.number),
         beneficiary: header.beneficiary,
@@ -161,7 +162,7 @@ pub fn execute_block(
         prevrandao: Some(header.mix_hash),
         blob_excess_gas_and_price: header
             .excess_blob_gas
-            .map(|g| BlobExcessGasAndPrice::new_with_spec(g, SpecId::PRAGUE)),
+            .map(|g| BlobExcessGasAndPrice::new_with_spec(g, SpecId::OSAKA)),
         ..Default::default()
     };
 
@@ -222,18 +223,12 @@ pub fn execute_block(
 /// Eden's EVM chain id, which is also its Hyperlane domain.
 const CHAIN_ID: u64 = 3_735_928_814;
 
-/// Eden's ev-reth configuration, as the enclave must pin it.
+/// Eden's ev-reth configuration, pinned here rather than taken from the request: whoever
+/// chooses the fee sink chooses where value goes.
 ///
-/// Pinned rather than taken from the request for the same reason the namespace and sequencer
-/// key are: whoever chooses the fee sink chooses where value goes.
-///
-/// The base fee sink is Eden's own, read off the chain: block 266047380 credited its
-/// beneficiary `base_fee * gas_used` on top of the priority fee, which is what a redirect to
-/// that address does and what plain Ethereum does not.
-///
-/// The mint, proposer-control and deploy-permission precompiles are left off because Eden is
-/// not known to run them. If it does, a transaction reaching one produces a root this
-/// executor does not reproduce, and the route stops rather than attests something wrong.
+/// The sink is the block's beneficiary, read off the chain. Eden's extra precompiles are left
+/// off because it is not known to run them; if it does, the root will not reproduce and the
+/// route stops rather than attesting something wrong.
 fn eden_evm_factory(beneficiary: Address) -> EvTxEvmFactory {
     EvTxEvmFactory::new(
         Some(BaseFeeRedirectSettings::new(

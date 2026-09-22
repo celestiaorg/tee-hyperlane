@@ -246,6 +246,12 @@ body {
 
 .primary:disabled { opacity: 0.45; cursor: default; }
 
+.amount[readonly] {
+  font-size: 0.95rem;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
 .note { color: var(--muted); font-size: 0.82rem; margin: 0.75rem 0 0; }
 .error { color: var(--error); font-size: 0.85rem; margin: 0.75rem 0 0; }
 .muted { color: var(--muted); font-size: 0.82rem; }

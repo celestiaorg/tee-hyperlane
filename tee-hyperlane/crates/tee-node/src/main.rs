@@ -54,6 +54,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/attest", post(attest))
         .route("/identity", get(identity))
         .route("/health", get(|| async { "ok" }))
+        // After the routes, not before: a layer only wraps what was added before it, so this
+        // sitting on top of an empty router silently did nothing. axum's 2 MB default is too
+        // small for an Eden request, which carries a Celestia block's shares plus a witness
+        // per re-executed block. The body is verified, not trusted, so the limit only bounds
+        // memory.
+        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024))
         .with_state(dstack);
 
     let addr = std::env::var("LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".to_string());

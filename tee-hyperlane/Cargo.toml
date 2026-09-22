@@ -38,7 +38,7 @@ alloy-trie = { version = "0.9", features = ["serde", "ethereum"] }
 # no state needs is an update over a witness.
 ev-revm = { git = "https://github.com/evstack/ev-reth", tag = "v0.6.0" }
 alloy-evm = { version = "0.38.0", default-features = false }
-revm = { version = "42", default-features = false, features = ["std"] }
+revm = { version = "42", features = ["std", "secp256k1", "blst", "c-kzg", "portable"] }
 alloy-consensus = { version = "1.0", default-features = false, features = ["std", "k256", "serde"] }
 alloy-eips = { version = "1.0", default-features = false, features = ["std", "serde"] }
 tracing = "0.1"

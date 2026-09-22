@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::sync::Semaphore;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::chains::{read_ism_state, Destination};
 use crate::commands;
@@ -149,6 +149,9 @@ pub async fn run_route(
                 // "Nothing dispatched" is the common case, not a fault. Counting it would
                 // walk a perfectly healthy route out to the half-hour ceiling.
                 if is_quiet(&e) {
+                    // Logged rather than dropped: "idle" and "stuck for a reason I am not
+                    // telling you" look identical from outside.
+                    debug!(route = %route.name, error = %e, "idle");
                     failures = 0;
                 } else {
                     failures = failures.saturating_add(1);

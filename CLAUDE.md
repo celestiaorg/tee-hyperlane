@@ -74,6 +74,11 @@ ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier
 - **Eden's executor is ev-reth's own** (`ev-revm`, pinned to tag `v0.6.0`), not a
   reimplementation, so its precompiles, fee sink and custom transaction types come from the
   chain being verified rather than from guesswork.
+- **Eden runs Osaka, not Prague.** Simple transfers execute the same under both, so the first
+  fixtures passed on Prague and proved nothing; a DCAP verification does not, because P-256
+  verification is an Osaka precompile. Under Prague it reverts with empty data.
+- **The per-family split bounds code changes, not dependency changes**: `Cargo.lock` is in
+  every image's source, so adding a crate moves all three identities.
 - **Re-deployment moves the checkpoint.** A new ISM anchors at the origin's head, so anything
   in flight is skipped. `tee-hyperlane rotate-state` plus `ISM_GENESIS` anchors at an old
   checkpoint instead, which is the only way to recover such a message.

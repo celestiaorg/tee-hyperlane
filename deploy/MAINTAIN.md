@@ -327,6 +327,11 @@ So a change to the evolve executor re-deploys one ISM, not eight. A change to sh
 `attest.rs`, the tree verification, the state layout - still moves all three, which is correct:
 they all run it.
 
+**A dependency change also moves all three**, because `Cargo.lock` is in every image's source.
+Enabling revm's standard precompiles added crates to the lock, and all three digests changed
+even though only the evolve build links them. The split bounds *code* changes, not dependency
+changes. Worth knowing before planning a rotation around it.
+
 Each is `nix build .#image-<family>` from the cargo feature of the same name, pinned by
 `deploy/docker-compose.<family>.yml`. Adding a family is an entry in the `families` list in
 `flake.nix`, a feature in `crates/tee-node/Cargo.toml`, a module under `origins/` and a compose

@@ -36,10 +36,6 @@ static EMPTY_DA_HEIGHTS: std::sync::LazyLock<std::sync::Mutex<std::collections::
 /// hundred is minutes of history and a few megabytes.
 const TREE_CACHE_KEEP: usize = 400;
 
-/// How many candidate heights to weigh per tick. One Celestia block carries hundreds of Eden
-/// headers and each candidate costs a bisection, so bound the work; the next tick retries.
-const MAX_TARGET_TRIES: usize = 8;
-
 /// How many times to re-check DA while bootstrapping, fifteen seconds apart. Eden posts
 /// about once a minute, so this is a few minutes of patience.
 const BOOTSTRAP_DA_TRIES: usize = 20;
@@ -132,9 +128,8 @@ fn cache_tree(
     if let Ok(bytes) = serde_json::to_vec(proof) {
         let _ = std::fs::write(dir.join(format!("{height}.json")), bytes);
     }
-    // Ten blocks a second would grow this without bound, so keep the newest few hundred.
-    // `pinned` is the ISM's trusted height, whose proof every attestation reads as the
-    // snapshot; it is the oldest one still in use, so exempt it from eviction.
+    // Keep the newest few hundred. `pinned` is the ISM's trusted height, whose proof is the
+    // snapshot every attestation reads, so it is exempt: it is the oldest one still in use.
     if let Ok(entries) = std::fs::read_dir(&dir) {
         let mut heights: Vec<u64> = entries
             .filter_map(|e| e.ok())
@@ -261,11 +256,9 @@ pub async fn attest_eden(
             }
             continue;
         }
-        // An attestation is dated by the Celestia block the enclave verified, and the state
-        // it carries is dated by the Eden header inside it. Eden's clock runs a couple of
-        // seconds ahead of mocha's, so the newest headers in a blob can be stamped later than
-        // the block that carries them, and `x/teeism` rejects that as postdated. The older
-        // headers in the same blob are not, so take one of those.
+        // Eden's clock runs a little ahead of mocha's, so a blob's newest headers can be
+        // stamped after the block carrying them, which `x/teeism` rejects as postdated. The
+        // older headers in the same blob are not.
         let block_time = match reader.light_block(h).await {
             Ok(b) => b.signed_header.header.time.unix_timestamp() as u64,
             Err(_) => continue,
@@ -299,28 +292,27 @@ pub async fn attest_eden(
     })?;
     // The furthest height whose re-execution fits in one attestation, so a burst of traffic
     // makes the route step through the backlog rather than refuse to move.
-    let mut picked = None;
-    for candidate in candidates.iter().take(MAX_TARGET_TRIES) {
-        match eden
-            .state_changing_blocks(trusted.height, candidate.height)
-            .await
-        {
-            Ok(changed) if !changed.is_empty() => {
-                picked = Some((*candidate, changed));
-                break;
-            }
-            Ok(_) => continue,
-            Err(e) => debug!(height = candidate.height, error = %e, "cannot reach this height"),
-        }
+    // The newest height we hold a proof for. Its span is whatever it is: a quiet Eden means a
+    // long span, and that is the case re-execution exists for.
+    let header = *candidates.first().expect("checked non-empty");
+    let changed = eden
+        .state_changing_blocks(trusted.height, header.height)
+        .await
+        .context("finding eden's state changes")?;
+    anyhow::ensure!(
+        !changed.is_empty(),
+        "nothing to attest; eden's state has not changed since {}",
+        trusted.height
+    );
+    let mut chain = Vec::with_capacity(changed.len());
+    for number in &changed {
+        chain.push(
+            eden.block_for_execution(*number)
+                .await
+                .with_context(|| format!("preparing eden block {number}"))?,
+        );
     }
-    let (header, changed) = picked.ok_or_else(|| {
-        anyhow::anyhow!(
-            "nothing to attest; nothing between the trusted height {} and {} changed eden's \
-             state, or the span is too long to re-execute in one step",
-            trusted.height,
-            candidates.first().map(|c| c.height).unwrap_or_default()
-        )
-    })?;
+
     super::record_attestable_head(out.as_deref(), header.height);
     info!(celestia = target, eden = header.height, "attesting eden");
 
@@ -345,17 +337,6 @@ pub async fn attest_eden(
         anyhow::bail!("nothing to attest; no messages for our routes on domain {destination_domain}");
     }
 
-    // The blocks the enclave re-executes to reach the signed root from the trusted state.
-    // Only state-changing ones: executions chain by state root, and anything left out is
-    // caught by the final root not matching.
-    let mut chain = Vec::with_capacity(changed.len());
-    for number in &changed {
-        chain.push(
-            eden.block_for_execution(*number)
-                .await
-                .with_context(|| format!("preparing eden block {number} for re-execution"))?,
-        );
-    }
     info!(
         blocks = chain.len(),
         from = trusted.height,

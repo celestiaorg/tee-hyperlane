@@ -782,10 +782,19 @@ function Faucet({
             route a few times over.
           </p>
 
-          <label className="field">
-            <span>Recipient</span>
-            <input readOnly value={address ?? ""} placeholder="Connect Keplr to claim" />
-          </label>
+          <div className="field">
+            <div className="field-top">
+              <span>Recipient</span>
+            </div>
+            <div className="field-row">
+              <input
+                className="amount"
+                readOnly
+                value={address ?? ""}
+                placeholder="Connect Keplr to claim"
+              />
+            </div>
+          </div>
 
           {!address ? (
             <p className="note">Connect Keplr and the faucet will send to that address.</p>
@@ -793,7 +802,7 @@ function Faucet({
             <p className="note">This address has already claimed.</p>
           ) : (
             <button
-              className="send"
+              className="primary"
               disabled={busy || (claimed && !txHash)}
               onClick={claim}
             >

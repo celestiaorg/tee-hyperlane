@@ -55,7 +55,8 @@ fn load(name: &str) -> Fixture {
     }
 }
 
-const FIXTURES: [&str; 3] = [
+const FIXTURES: [&str; 4] = [
+    "eden_block_266642148.json",
     "eden_block_266047380.json",
     "eden_block_266001325.json",
     "eden_block_265995327.json",

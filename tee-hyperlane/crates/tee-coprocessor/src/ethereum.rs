@@ -188,14 +188,6 @@ pub fn expected_current_slot(genesis_time: u64) -> u64 {
 /// Both are untrusted. Storage is re-proven inside the enclave against the state root the
 /// light client produced, and a log that names a message the tree does not contain simply
 /// fails the replay.
-/// How many state roots one bisection may read before giving up. A normal span needs a
-/// handful per change; this is slack for a busy stretch.
-const STATE_ROOT_LOOKUPS: u32 = 400;
-
-/// How many blocks one attestation asks the enclave to re-execute; past this it catches up
-/// over several attestations instead.
-const MAX_EXEC_BLOCKS: usize = 32;
-
 fn parse_bytes(v: &serde_json::Value) -> Result<alloy_primitives::Bytes> {
     let text = v.as_str().context("expected a hex string")?;
     Ok(hex::decode(text.trim_start_matches("0x"))?.into())
@@ -286,12 +278,10 @@ impl ExecutionReader {
 
     /// `eth_getLogs` over a span no endpoint will serve in one call.
     ///
-    /// Providers cap the range and each states its own limit in prose, so the window is
-    /// discovered rather than configured: start wide, halve on any failure, and once a window
-    /// succeeds keep it for the rest of the sweep. A route resuming after an outage, or an L2
-    /// route whose confirmed head jumps thousands of blocks, has to cross the whole span or it
-    /// silently drops the messages in the part it skipped - so a range that will not narrow
-    /// far enough is an error, never a short result.
+    /// Every provider caps the range differently and says so only in prose, so the window is
+    /// discovered: start wide, halve on failure, keep what works. The whole span has to be
+    /// crossed or messages are silently dropped, so a range that will not narrow is an error
+    /// rather than a short result.
     async fn get_logs(
         &self,
         address: alloy_primitives::Address,
@@ -377,11 +367,9 @@ impl ExecutionReader {
 
     /// Prove the tree at whatever block is current, and work out which block that was.
     ///
-    /// Some evolve nodes serve `eth_getProof` only for the `latest` tag. Eden makes ten
-    /// blocks a second, so even head-minus-zero is outside the window by the time a request
-    /// arrives, and a numbered block is never answerable. The proof itself does not say which
-    /// block it came from, so the height is recovered by checking it against the state roots
-    /// of the last few blocks: an account proof only verifies under the root it was taken at.
+    /// Eden's node serves `eth_getProof` for `latest` only, and a proof does not say which
+    /// block it came from. An account proof verifies only under the root it was taken at, so
+    /// the height is recovered by testing it against recent state roots.
     pub async fn merkle_tree_proof_at_latest(
         &self,
         hook: alloy_primitives::Address,
@@ -465,10 +453,9 @@ impl ExecutionReader {
 
     /// Every block in `(from, to]` whose state root differs from the one before it.
     ///
-    /// Bisects on the state root rather than reading every header, since Eden makes ten
-    /// blocks a second and almost none change anything. A transaction always bumps a nonce,
-    /// so ends sharing a state root means nothing happened between them; if that ever failed,
-    /// the enclave rejects the chain rather than accepting a gap.
+    /// Bisects rather than reading every header: Eden makes ten blocks a second and almost
+    /// none change anything. A transaction always bumps a nonce, so ends sharing a root means
+    /// nothing happened between them.
     pub async fn state_changing_blocks(&self, from: u64, to: u64) -> Result<Vec<u64>> {
         if to <= from {
             return Ok(Vec::new());
@@ -479,14 +466,12 @@ impl ExecutionReader {
             return Ok(Vec::new());
         }
         let mut found = Vec::new();
-        let mut budget = STATE_ROOT_LOOKUPS;
-        self.bisect(from, lo, to, hi, &mut found, &mut budget).await?;
+        self.bisect(from, lo, to, hi, &mut found).await?;
         found.sort_unstable();
         Ok(found)
     }
 
-    /// Narrow one span known to have changed. Iterative because an async fn cannot recurse
-    /// without boxing the future.
+    /// Narrow one span known to have changed. Iterative because an async fn cannot recurse.
     async fn bisect(
         &self,
         lo: u64,
@@ -494,21 +479,13 @@ impl ExecutionReader {
         hi: u64,
         hi_root: alloy_primitives::B256,
         found: &mut Vec<u64>,
-        budget: &mut u32,
     ) -> Result<()> {
         let mut stack = vec![(lo, lo_root, hi, hi_root)];
         while let Some((lo, lo_root, hi, hi_root)) = stack.pop() {
             if hi == lo + 1 {
                 found.push(hi);
-                anyhow::ensure!(
-                    found.len() <= MAX_EXEC_BLOCKS,
-                    "more than {MAX_EXEC_BLOCKS} blocks changed state in one span; \
-                     the route is too far behind to catch up in a single attestation"
-                );
                 continue;
             }
-            anyhow::ensure!(*budget > 0, "gave up looking for Eden's state changes");
-            *budget -= 1;
             let mid = lo + (hi - lo) / 2;
             let mid_root = self.state_root(mid).await?;
             if mid_root != lo_root {
