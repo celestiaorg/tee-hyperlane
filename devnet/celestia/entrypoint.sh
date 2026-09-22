@@ -13,6 +13,10 @@ VALIDATOR_STAKE="${VALIDATOR_STAKE:-5000000000utia}"
 # Funded at genesis so the relayer and the UI have gas without a faucet round trip.
 RELAYER_COINS="${RELAYER_COINS:-1000000000000utia}"
 USER_COINS="${USER_COINS:-1000000000000utia}"
+# The faucet gives 1000 TIA a head, so this is a thousand grants. Deliberately a bounded
+# budget on its own account: the faucet is the one endpoint a stranger can spend from, and
+# what it can give away should be all it can reach.
+FAUCET_COINS="${FAUCET_COINS:-1000000000000utia}"
 BLOCK_TIME="${BLOCK_TIME:-1s}"
 
 appd() { celestia-appd "$@" --home "${HOME_DIR}"; }
@@ -41,17 +45,23 @@ if [ ! -f "${HOME_DIR}/config/genesis.json" ]; then
     keyrecover user      0 > "${HOME_DIR}/devnet/user.json"
     keyrecover relayer   1 > "${HOME_DIR}/devnet/relayer.json"
     keyrecover validator 2 > "${HOME_DIR}/devnet/validator.json"
+    # 3 is reserved: the paymaster setup derives the oracle's `bridge` key there by hand,
+    # and two names on one index is a "duplicated address created" failure at whichever
+    # runs second.
+    keyrecover faucet    4 > "${HOME_DIR}/devnet/faucet.json"
   else
     echo "==> no DEVNET_MNEMONIC, minting throwaway genesis keys"
     keyadd validator > "${HOME_DIR}/devnet/validator.json"
     keyadd relayer   > "${HOME_DIR}/devnet/relayer.json"
     keyadd user      > "${HOME_DIR}/devnet/user.json"
+    keyadd faucet    > "${HOME_DIR}/devnet/faucet.json"
   fi
 
   addr() { appd keys show "$1" -a --keyring-backend test; }
   appd genesis add-genesis-account "$(addr validator)" "${VALIDATOR_COINS}"
   appd genesis add-genesis-account "$(addr relayer)"   "${RELAYER_COINS}"
   appd genesis add-genesis-account "$(addr user)"      "${USER_COINS}"
+  appd genesis add-genesis-account "$(addr faucet)"    "${FAUCET_COINS}"
 
   # The gentx is executed during InitGenesis and is metered like any other
   # transaction, so a fee-less one aborts the chain before it produces a block.

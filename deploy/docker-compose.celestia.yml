@@ -1,4 +1,7 @@
-# The measured configuration. This file's hash becomes `compose-hash` in RTMR3, and the
+# The measured configuration for the celestia enclave.
+#
+# Serves every Celestia-origin route. The four TeeDcapIsm on the EVM chains pin it.
+# One image per origin family, so a change to one does not re-deploy the ISMs of the others. This file's hash becomes `compose-hash` in RTMR3, and the
 # circuit pins that value - so this file, including the image digest below, is what an ISM
 # ultimately commits to.
 #
@@ -9,7 +12,7 @@
 # which is why one identity policy and one pair of vkeys covers both.
 services:
   tee-node:
-    image: ghcr.io/jonas089/tee-node@sha256:77283ad03dd5f2dfbbbb718e4b08f63397ce829c48a4e3cc7b3635d18fe3e0d8
+    image: ghcr.io/jonas089/tee-node@sha256:ef252067691594959b43032ad902371027271660384457e2b288d1ea7d7f5020
     ports:
       - "8080:8080"
     volumes:

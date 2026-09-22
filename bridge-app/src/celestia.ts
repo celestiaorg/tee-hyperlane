@@ -112,7 +112,7 @@ export async function sendFromCelestia(opts: {
       // relayer refunds nothing, so quoting high only costs the sender.
       maxFee: {
         denom: opts.chain.denom,
-        amount: (opts.quotedFee * FEE_CEILING_MULTIPLE).toString(),
+        amount: feeCeiling(opts.quotedFee).toString(),
       },
     } satisfies RemoteTransfer,
   };
@@ -154,5 +154,19 @@ export async function messageIdFromCelestiaTx(
 /// the page showed and the block the transfer lands in. A fixed number is the wrong shape -
 /// 2 TIA looked generous against a 1.27 TIA Sepolia quote until gas rose.
 const FEE_CEILING_MULTIPLE = 4n;
+
+/// The smallest ceiling worth sending, whatever the quote says.
+///
+/// A multiple of zero is zero, and the warp module rejects a transfer whose max fee is zero
+/// with "maxFee is required". Eden quotes zero honestly: gas there costs 0.01 gwei and the
+/// rounding into utia takes the rest, so a destination that is genuinely almost free was the
+/// one destination the page could not send to. The module still charges only the quote, so a
+/// floor costs the sender nothing.
+const MIN_FEE_CEILING = 1_000_000n;
+
+function feeCeiling(quoted: bigint): bigint {
+  const ceiling = quoted * FEE_CEILING_MULTIPLE;
+  return ceiling > MIN_FEE_CEILING ? ceiling : MIN_FEE_CEILING;
+}
 
 export { DECIMALS };

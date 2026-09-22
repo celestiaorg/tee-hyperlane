@@ -114,7 +114,7 @@ fn a_request_without_the_current_protocol_is_refused() {
         "a request with no protocol field must not parse"
     );
     assert_eq!(
-        PROTOCOL_VERSION, 3,
+        PROTOCOL_VERSION, 4,
         "bump this when the request shape changes"
     );
 }

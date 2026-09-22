@@ -246,6 +246,12 @@ body {
 
 .primary:disabled { opacity: 0.45; cursor: default; }
 
+.amount[readonly] {
+  font-size: 0.95rem;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
 .note { color: var(--muted); font-size: 0.82rem; margin: 0.75rem 0 0; }
 .error { color: var(--error); font-size: 0.85rem; margin: 0.75rem 0 0; }
 .muted { color: var(--muted); font-size: 0.82rem; }
@@ -497,3 +503,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
   .tick-mark { animation: none; stroke-dashoffset: 0; }
   .queue-track span { opacity: 0.6; }
 }
+
+/* The nav holds both links and in-page tabs, so the buttons need the reset the links do not. */
+button.tab { border: 0; font: inherit; cursor: pointer; }
+.note.error { color: var(--bad, #c0392b); }

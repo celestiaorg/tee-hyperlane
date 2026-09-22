@@ -5,6 +5,8 @@
 
 pub mod attest;
 pub mod dstack;
+#[cfg(feature = "evolve")]
+pub mod evm;
 pub mod hyperlane_state;
 pub mod origins;
 pub mod state_proofs;

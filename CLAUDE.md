@@ -25,13 +25,16 @@ merge or push to `main` without asking.
 Server "ark", Zurich, `chef@178.199.12.26`, checkout at `~/tee-ism-nonzk`. It is an rsync of
 this tree with no `.git`, so nothing there is committable.
 
-- systemd: `teeism-relayer`, `teeism-api`, `teeism-gas-oracle`, `bridge-ui`
+- systemd: `teeism-relayer`, `teeism-api`, `teeism-gas-oracle`. `bridge-ui` exists but is
+  disabled: the gateway container serves the built `bridge-app/dist` instead.
 - a local celestia-app devnet, not mocha, with pruning disabled
+- a mocha light node (`mocha-light`), which only the Eden origin needs
 - nginx gateway on `:3000` exposing `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`
-- six routes: `celestia-to-sepolia`, `celestia-to-arbitrum`, `celestia-to-base`,
-  `sepolia-to-celestia`, `arbitrum-to-celestia`, `base-to-celestia`
+- eight routes: Celestia to and from each of Sepolia, Arbitrum, Base and Eden
 - two tokens: TIA (Celestia collateral, synthetic on EVM) and USDC (Sepolia collateral,
   synthetic elsewhere)
+- three enclaves, **three images**: `celestia`, `ethereum` and `evolve`, one per origin
+  family, so a change to one origin does not re-deploy the other families' ISMs
 
 ## Where the answers already are
 
@@ -68,6 +71,25 @@ ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier
   tree size.
 - **The `routers` list is a trigger filter**, affecting latency rather than delivery, because
   merkle tree replay forces batch completeness.
+- **Eden's executor is ev-reth's own** (`ev-revm`, pinned to tag `v0.6.0`), not a
+  reimplementation, so its precompiles, fee sink and custom transaction types come from the
+  chain being verified rather than from guesswork.
+- **Eden runs Osaka, not Prague.** Simple transfers execute the same under both, so the first
+  fixtures passed on Prague and proved nothing; a DCAP verification does not, because P-256
+  verification is an Osaka precompile. Under Prague it reverts with empty data.
+- **The per-family split bounds code changes, not dependency changes**: `Cargo.lock` is in
+  every image's source, so adding a crate moves all three identities.
+- **Re-deployment moves the checkpoint.** A new ISM anchors at the origin's head, so anything
+  in flight is skipped. `tee-hyperlane rotate-state` plus `ISM_GENESIS` anchors at an old
+  checkpoint instead, which is the only way to recover such a message.
+- **Eden's root is re-executed, not believed.** The enclave runs the blocks that changed the
+  state, from the root the ISM already trusts, and the chain has to arrive at the root the
+  sequencer signed. Only state-changing blocks are sent, which is safe because a missing one
+  shows up as a root mismatch. Eden does **not** burn the base fee: it pays it to the block
+  beneficiary, and the executor credits that back. See `crates/tee-node/src/evm/` and the
+  Eden section of `deploy/MAINTAIN.md`.
+- **Rotating the enclave identity re-points routers, never redeploys them.** Redeploying a
+  collateral router abandons its escrow; that stranded real USDC on Sepolia once.
 
 ## Hard constraints
 

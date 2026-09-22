@@ -62,43 +62,38 @@ this file.
 ## Deployments
 
 Enclaves - Phala Cloud `prod9`, image `ghcr.io/jonas089/tee-node`, OS `dstack-0.5.9`,
-`tdx.small`. $0.0608/hr each.
+`tdx.small`. One image per origin family, because an ISM pins the identity of the enclave
+that attests *its* origin: split this way, changing Eden's executor leaves the Ethereum side
+alone.
 
-| node | app id | serves |
-|---|---|---|
-| `tee-nonzk-cel` | `e2bd52eb17e3ca77c99f572e307b3ecb9e2e667a` | the three Celestia-origin routes |
-| `tee-nonzk-eth` | `14d61a110ffad00678229e4ee8f6981a1a7244b8` | Sepolia, Arbitrum and Base origins |
-
-Reach them at `https://<app-id>-8080.dstack-pha-prod9.phala.network`.
-
-The pinned identity constrains the **OS image, the container image and the KMS** - never the
-app id or instance id. That is deliberate: instances get replaced and providers may change,
-and an identity tied to one instance would have to be re-pinned every time. Both nodes above
-were deployed independently and produce byte-identical measurements, which is what lets one
-ISM accept either.
+| enclave | app id | attests | identity |
+|---|---|---|---|
+| `tee-celestia` | `b07ce9e1b9be5e6928eb6da168019e6f52e5598e` | Celestia origin | `0xea7707e788eab5680104a4015332a6805e40bf5fd8023ec1cb45b2f2811a1b8c` |
+| `tee-ethereum` | `c1733c54f4e33821f7351203a82168ea0f14474d` | Sepolia, Arbitrum, Base origins | `0x0ba95355a602e2a08f834f8472dac6ad688194f2c37f4871624b932271fcb91e` |
+| `tee-evolve` | `847cca2badd664addb7e825867f81f8767eb8da9` | Eden origin | `0x75b52b129218918b1f5f4e0563e47bdfe3a70d1fa5066d1864927a3e1fc456c5` |
 
 ```
-image          ghcr.io/jonas089/tee-node@sha256:77283ad03dd5f2dfbbbb718e4b08f63397ce829c48a4e3cc7b3635d18fe3e0d8
-mr_td          f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c93826980...
+mr_td          f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077
 os_image_hash  bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033
-compose_hash   f6ad454d9125b4512c72309e55b4e4fe7bab3b527327dd1c12199ad06cd80f5f
 mr_kms         92a4bf40c88734b0e56f54b09b1f0fe4b8d3e230047e9298f491968ada8dedf8
-
-identity       0xd803bb1e4068d907f8a1343df8cc4aecbcec29a287ba1d1f029588f84a641905
-measurements   0xbccc1d1a0259eb0fc7476eb9812eb37d6a516ecd74f2de9595f24fbd4c37b8cd
 ```
 
-`measurements` is what the EVM ISMs pin: `keccak(mr_td ++ mr_config_id ++ rtmr0..2)`. rtmr3 is
-excluded because it carries the app id and the instance id, so pinning it would tie an ISM to
-one CVM rather than to the code it runs. `identity` is the same commitment in the form
-`x/teeism` stores, which compares the five fields individually so a rejection names the one
-that diverged.
+`mr_td`, the OS image and the KMS are shared; the three differ in `compose_hash`, which covers
+each image digest. The EVM ISMs pin the Celestia enclave's measurements
+`(read it off the ISM with `enclaveMeasurements()`)`, which is
+`keccak(mr_td ++ mr_config_id ++ rtmr0..2)`. rtmr3 is excluded because it carries the app id
+and the instance id, so pinning it would tie an ISM to one CVM rather than to the code it
+runs.
+
+Which image a family runs is `nix build .#image-<family>` and
+`deploy/docker-compose.<family>.yml`. Adding a family - Solana, say - is an entry in the
+`families` list in `flake.nix`, a cargo feature, an `origins/` module and a compose file.
 
 There are no vkeys. Nothing is proved.
 
 ### Chain
 
-The Celestia side is our own chain, not mocha. It runs continuously on the deployment host.
+Our own chain, not mocha. It runs continuously on the deployment host.
 
 ```
 chain id   teeism-local
@@ -108,110 +103,85 @@ merkle     0x726f757465725f706f73745f6469737061746368000000030000000000000000
 igp        0x726f757465725f706f73745f6469737061746368000000040000000000000002
 ```
 
-Genesis accounts derive from a fixed mnemonic, so the funded address survives a rebuild of
-the chain. Keplr reaches it through the gateway, because the RPC port is not exposed.
-
 ### ISMs
 
-Six, because an ISM pins exactly one origin domain.
+Eight, because an ISM pins exactly one origin domain.
 
-Celestia-origin, one per EVM destination. Solidity, verified on Sourcify with `exact_match`
-on both creation and runtime bytecode:
+Celestia-origin, one per destination. `TeeDcapIsm`, verifying through our own Automata DCAP
+deployment on each chain:
 
 | chain | ISM |
 |---|---|
-| Ethereum Sepolia | `0xa360fCc411D20a200CE122B21769Fb48ca40DA0B` |
-| Arbitrum Sepolia | `0xD68553577b121b47C30b3a53284DaAbD2A64F16E` |
-| Base Sepolia | `0xA3754E3358EF03D62A59da08B501cFb70357F4A2` |
+| Ethereum Sepolia | `0xA4c237Ca7Fa8e5831490AE1904EC8B2AB647B4b5` |
+| Arbitrum Sepolia | `0x2705e8CaE7302f2515F3a5294bb03e59D47498dC` |
+| Base Sepolia | `0x285E29dbac544C2075A6A0C1D5b3f9669bab6ECB` |
+| Eden | `0x0e5bd5F1B32Ac35Ce078dba29343B3BfDc0cBdE1` |
 
 EVM-origin, all on `teeism-local`, one per origin:
 
 | origin | ISM |
 |---|---|
-| Sepolia (11155111) | `0x726f757465725f69736d000000000000000000000000002b0000000000000005` |
-| Arbitrum (421614) | `0x726f757465725f69736d000000000000000000000000002b0000000000000006` |
-| Base (84532) | `0x726f757465725f69736d000000000000000000000000002b0000000000000003` |
+| Sepolia (11155111) | `0x726f757465725f69736d000000000000000000000000002b000000000000002c` |
+| Arbitrum (421614) | `0x726f757465725f69736d000000000000000000000000002b000000000000002d` |
+| Base (84532) | `0x726f757465725f69736d000000000000000000000000002b000000000000002e` |
+| Eden (3735928814) | `0x726f757465725f69736d000000000000000000000000002b000000000000002f` |
 
-Three origins deliver into one Celestia token, so a routing ISM fans them out by origin
-domain. Without it two of the three would be checked against an ISM pinned to the wrong
-origin and refused:
+Four origins deliver into one Celestia token, so a routing ISM fans them out by origin domain.
+It is the token's ISM and the mailbox default:
 
 ```
-routing ism  0x726f757465725f69736d00000000000000000000000000010000000000000004
+routing ism  0x726f757465725f69736d00000000000000000000000000010000000000000030
 ```
 
-It is the token's ISM and the mailbox default.
+### Eden
 
-The EVM side verifies through our own Automata DCAP deployment, not Automata's, so the
-collateral is ours to keep current. Addresses are in [deploy/DEPLOY.md](deploy/DEPLOY.md) and
-the monthly job is in [deploy/MAINTAIN.md](deploy/MAINTAIN.md).
+An evolve-stack chain: an EVM chain with no consensus of its own, whose sequencer signs each
+header and publishes it to Celestia. Unlike the other three it had no Hyperlane deployment, so
+the mailbox and hook are ours.
+
+```
+chain id        3735928814      ~10 blocks/s, 18 decimals
+mailbox         0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729
+merkle hook     0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db   (branch at slot 151)
+DA              mocha-5, namespace 0000000000000000000000000000000000005d2e074163aa3b4d9818
+sequencer       4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d630b68d51
+```
+
+The enclave re-executes Eden's blocks and rebuilds the state root for itself, so a signature
+is how a root is *found* rather than why it is believed. The sequencer still decides which
+transactions run and in what order; it cannot invent a state they would not reach.
+[deploy/MAINTAIN.md](deploy/MAINTAIN.md) has what that does and does not buy.
 
 ### Tokens
 
 Two assets, opposite shapes. TIA is Celestia-native, so its collateral sits on Celestia and
-the EVM sides are synthetics. USDC is Circle's real Sepolia token, so the collateral sits on
-Sepolia and every other chain holds a synthetic, Celestia included. There is no minting of
-either asset anywhere: a synthetic only exists while the same amount is locked on its home
-chain.
-
-The EVM routers predate this deployment and were reused. Only their ISM, their hook and their
-enrolments changed.
+every EVM side is a synthetic. USDC is Circle's real Sepolia token, so the collateral sits on
+Sepolia and everywhere else holds a synthetic.
 
 | | home chain, collateral | synthetic elsewhere |
 |---|---|---|
-| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE`<br>Arbitrum `0xFeA14C1444A7a8beAb7122fdE5A168212D7185bE`<br>Base `0xf4197C55C944987E9b10e09C0A47915211769B78` |
-| USDC | Sepolia `0xfb611B6f6CE92033960e99C2D65cee4237e64cDD`, wrapping Circle's `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | Celestia `0x726f757465725f61707000000000000000000000000000020000000000000001`<br>Arbitrum `0xb9E5E3eb926EA22B951d2fb7392F9F3D6c704054`<br>Base `0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B` |
+| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x9822eE81C82138F88D759faef1AC168aDfEe1467`<br>Arbitrum `0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB`<br>Base `0xF50470146B36c638b981e437AB37DfEd9a02FAb3`<br>Eden `0xD2babc9BE1055551b7AB98c440222862a1646158` |
+| USDC | Sepolia `0xfb611B6f6CE92033960e99C2D65cee4237e64cDD`, wrapping Circle's `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | Celestia `0x726f757465725f61707000000000000000000000000000020000000000000001`<br>Arbitrum `0x8C87fd144006C651430450df8b61A15EeB3FF436`<br>Base `0x285b590ee43A1374AA131e7390D0CA687Be43DF9`<br>Eden `0xc09fbf8F17E96ce746D39f9d11a9dD1813F2d220` |
 
-On Celestia a synthetic is a bank denom named `hyperlane/<token id>`. Sending from Sepolia
-needs an ERC20 `approve` to the collateral router first; sending a synthetic needs none,
-because it is burned rather than transferred.
-
-Every route runs through Celestia. No EVM chain's ISM trusts another EVM chain, so an
-EVM-to-EVM pair is two hops, not one.
-
-### Gas
-
-Fees are charged in both directions. The relayer pays gas on the destination and is
-reimbursed from the paymaster; on Celestia fees accrue in `utia` to the IGP above, and on the
-EVM chains to the relayer key `0x318d22faa1e0f29eac7Ef644A8FaC676F6688d1e`.
-
-| chain | paymaster | oracle |
-|---|---|---|
-| teeism-local | `0x726f757465725f706f73745f6469737061746368000000040000000000000002` | in-module |
-| Sepolia | `0x48b1BF6CC2e45Ca52947E95Bb216C2eBdCB19c49` | `0x225B8488242c90085B7A8Ea33Ce8e39Ae9f79722` |
-| Arbitrum Sepolia | `0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B` | `0xfA8036Cb092079B095ed60750d7b39c3C220F288` |
-| Base Sepolia | `0x5591613C85E9bC95104980d4485c958ee80f6F76` | `0x7A7042C8784700618be87Aac7F9336620e216Bb9` |
-
-`crates/gas-oracle` keeps all of them current hourly. Each EVM paymaster also needs this
-deployment's Celestia domain registered against its oracle, which is a manual step and is not
-something the oracle service does; without it `transferRemote` reverts with `IGP: no gas
-oracle for domain 1297040299`.
+Every route runs through Celestia. No EVM chain's ISM trusts another, so an EVM-to-EVM pair is
+two hops.
 
 ### Services
 
-One host runs everything that is not an enclave, including the chain.
+One host runs everything that is not an enclave, including the chain and a mocha light node.
 
 ```
 :3000  bridge UI, and the only public way to reach the chain
-       /rpc  /rest  /api  /evm/{sepolia,arbitrum,base}  /tx/<hash>
 :3001  relayer dashboard and API
 :3002  gas oracle dashboard and API
-```
 
-Only 3000 and 80 are reachable from outside that host, and 80 is taken, which is why the
-chain's own ports are proxied rather than exposed. Units and configuration templates are in [deploy/server/](deploy/server/);
-[deploy/DEPLOY.md](deploy/DEPLOY.md) is how to stand the whole thing up, including the parts
-`make init` does not cover.
-
-```
 teeism-celestia     docker   the chain
+mocha-light         docker   celestia-node, for Eden's blob proofs
 teeism-gateway      docker   UI, chain proxy, transaction view
-teeism-relayer      systemd  six routes
+teeism-relayer      systemd  eight routes
 teeism-api          systemd  attestation lookup
 teeism-gas-oracle   systemd  paymaster upkeep
 ```
-
-Full detail, including the deployment footguns, in [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 ## Run the tests
 

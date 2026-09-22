@@ -10,8 +10,13 @@
 //! state root, those L2 roots are reachable by MPT proof from it - no second light client,
 //! no second enclave.
 
+#[cfg(feature = "celestia")]
 pub mod celestia;
+#[cfg(feature = "evolve")]
+pub mod celestia_l2;
+#[cfg(feature = "ethereum")]
 pub mod ethereum;
+#[cfg(feature = "ethereum")]
 pub mod ethereum_l2;
 
 use alloy_primitives::B256;
@@ -22,6 +27,8 @@ pub enum Origin {
     Celestia,
     Arbitrum,
     Base,
+    /// Evolve-stack chains, which ride on Celestia rather than on Ethereum.
+    Eden,
 }
 
 impl Origin {
@@ -32,12 +39,19 @@ impl Origin {
             Origin::Celestia => 1297040200,
             Origin::Arbitrum => 421614,
             Origin::Base => 84532,
+            Origin::Eden => 3735928814,
         }
     }
 
     /// Whether this origin rides on another origin's light client rather than its own.
     pub fn is_derived_from_ethereum(&self) -> bool {
         matches!(self, Origin::Arbitrum | Origin::Base)
+    }
+
+    /// Evolve chains ride on Celestia the way an L2 rides on Ethereum: no light client of
+    /// their own, a root read out of a chain the enclave already verified.
+    pub fn is_derived_from_celestia(&self) -> bool {
+        matches!(self, Origin::Eden)
     }
 }
 

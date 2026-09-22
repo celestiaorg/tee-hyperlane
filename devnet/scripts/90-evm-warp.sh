@@ -40,7 +40,8 @@ DOMAIN="$(load celestia-domain)"
 # chain : chain-id : hyperlane mailbox
 CHAINS="arbitrum:421614:0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8
 base:84532:0x6966b0E55883d49BFB24539356a2f8A673E02039
-sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766
+eden:3735928814:0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729"
 
 # label : celestia token state key : state key suffix : name : symbol : decimals
 TOKENS="tia:celestia-token-id:router:Celestia TIA:TIA:6
@@ -55,13 +56,34 @@ kind_for() {
   esac
 }
 
-# Reuse a router only if it is real code pointing at the current ISM. Checking the code size
-# and not just the saved address matters: a previous run recorded an address that a simulated
-# deployment had predicted but never broadcast, and every later step trusted it.
+# Reuse a router if it is real code, repointing it at the current ISM when it has drifted.
+#
+# Checking the code size and not just the saved address matters: a previous run recorded an
+# address that a simulated deployment had predicted but never broadcast, and every later step
+# trusted it.
+#
+# Repointing rather than redeploying matters more. A router's ISM is not fixed at initialize
+# time as this once assumed - `MailboxClient` lets the owner change it - and redeploying a
+# **collateral** router abandons the escrow inside it. An identity rotation did exactly that
+# to Sepolia's USDC router once, stranding real USDC in a contract nothing referenced any
+# more. A synthetic is less dramatic but still orphans the supply it minted.
 reusable() {
-  local cand="$1" rpc="$2" ism="$3" code cur
+  local cand="$1" rpc="$2" ism="$3" code cur owner
   code="$(cast code "${cand}" --rpc-url "${rpc}" 2>/dev/null || true)"
   [ -n "${code}" ] && [ "${code}" != "0x" ] || return 1
+  cur="$(cast call "${cand}" "interchainSecurityModule()(address)" --rpc-url "${rpc}" 2>/dev/null || true)"
+  if [ "$(printf '%s' "${cur}" | tr 'A-Z' 'a-z')" = "$(printf '%s' "${ism}" | tr 'A-Z' 'a-z')" ]; then
+    return 0
+  fi
+  # Drifted. Ours to repoint?
+  owner="$(cast call "${cand}" "owner()(address)" --rpc-url "${rpc}" 2>/dev/null || true)"
+  local me
+  me="$(cast wallet address --private-key "${EVM_PRIVATE_KEY}" 2>/dev/null || true)"
+  [ -n "${owner}" ] && [ "$(printf '%s' "${owner}" | tr 'A-Z' 'a-z')" = "$(printf '%s' "${me}" | tr 'A-Z' 'a-z')" ] || return 1
+  say "repointing ${cand} at ${ism}"
+  cast send "${cand}" "setInterchainSecurityModule(address)" "${ism}" \
+    --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null 2>&1 || return 1
+  sleep 4
   cur="$(cast call "${cand}" "interchainSecurityModule()(address)" --rpc-url "${rpc}" 2>/dev/null || true)"
   [ "$(printf '%s' "${cur}" | tr 'A-Z' 'a-z')" = "$(printf '%s' "${ism}" | tr 'A-Z' 'a-z')" ]
 }
@@ -123,15 +145,25 @@ while IFS=: read -r name chainid mailbox; do
         || die "no code at ${router} on ${name}; the broadcast did not land"
       save "${key}" "${router}"
       save "warp-${label}-${name}" "${router}"
+      sleep 4
     fi
 
     # EVM -> Celestia. Idempotent on its own: enrolling the same domain twice overwrites.
     got="$(cast call "${router}" "routers(uint32)(bytes32)" "${DOMAIN}" --rpc-url "${rpc}" 2>/dev/null || true)"
     if [ "${got}" != "${token}" ]; then
       say "enrolling the celestia ${label} token on ${name}"
-      cast send "${router}" "enrollRemoteRouter(uint32,bytes32)" "${DOMAIN}" "${token}" \
-        --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null \
-        || die "enrollRemoteRouter failed for ${label} on ${name}"
+      # Paced, not fired back to back. Two sends in the same second race the node's nonce
+      # tracking and the second comes back "replacement transaction underpriced", which reads
+      # like a rejected enrolment rather than a collision.
+      for attempt in 1 2 3; do
+        if cast send "${router}" "enrollRemoteRouter(uint32,bytes32)" "${DOMAIN}" "${token}" \
+             --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null 2>&1; then
+          break
+        fi
+        [ "${attempt}" = 3 ] && die "enrollRemoteRouter failed for ${label} on ${name}"
+        sleep $((attempt * 6))
+      done
+      sleep 4
       got="$(cast call "${router}" "routers(uint32)(bytes32)" "${DOMAIN}" --rpc-url "${rpc}" 2>/dev/null || true)"
     fi
     [ "${got}" = "${token}" ] || die "${name} ${label} router points at '${got}', expected ${token}"
@@ -175,6 +207,7 @@ while IFS=: read -r label token_key suffix tname tsymbol tdec; do
   enroll_from_celestia "${token}" "${SEPOLIA_DOMAIN}"          sepolia  "${label}" "sepolia-${suffix}"
   enroll_from_celestia "${token}" "${BASE_SEPOLIA_DOMAIN}"     base     "${label}" "base-${suffix}"
   enroll_from_celestia "${token}" "${ARBITRUM_SEPOLIA_DOMAIN}" arbitrum "${label}" "arbitrum-${suffix}"
+  enroll_from_celestia "${token}" "${EDEN_DOMAIN}" eden "${label}" "eden-${suffix}"
 done <<< "${TOKENS}"
 
 say "evm warp side ready"

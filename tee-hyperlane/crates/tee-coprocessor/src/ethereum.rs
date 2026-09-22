@@ -188,6 +188,18 @@ pub fn expected_current_slot(genesis_time: u64) -> u64 {
 /// Both are untrusted. Storage is re-proven inside the enclave against the state root the
 /// light client produced, and a log that names a message the tree does not contain simply
 /// fails the replay.
+fn parse_bytes(v: &serde_json::Value) -> Result<alloy_primitives::Bytes> {
+    let text = v.as_str().context("expected a hex string")?;
+    Ok(hex::decode(text.trim_start_matches("0x"))?.into())
+}
+
+fn parse_bytes_array(v: &serde_json::Value) -> Result<Vec<alloy_primitives::Bytes>> {
+    match v.as_array() {
+        None => Ok(Vec::new()),
+        Some(items) => items.iter().map(parse_bytes).collect(),
+    }
+}
+
 pub struct ExecutionReader {
     rpc: String,
     /// Where `eth_getLogs` goes, which is not always where everything else goes.
@@ -204,6 +216,10 @@ pub struct ExecutionReader {
 /// Log-window bounds. The wide end is what a generous endpoint serves in one call; the narrow
 /// end is Alchemy's free tier, below which no provider we have seen goes.
 const MAX_LOG_WINDOW: u64 = 10_000;
+
+/// How far back to look when placing a `latest` proof at a block. Ten blocks a second, and
+/// two round trips to the node, so this is seconds of slack rather than minutes.
+const PROOF_HEIGHT_SEARCH: u64 = 60;
 const MIN_LOG_WINDOW: u64 = 10;
 
 /// Hyperlane's `Dispatch(address,uint32,bytes32,bytes)`.
@@ -262,12 +278,10 @@ impl ExecutionReader {
 
     /// `eth_getLogs` over a span no endpoint will serve in one call.
     ///
-    /// Providers cap the range and each states its own limit in prose, so the window is
-    /// discovered rather than configured: start wide, halve on any failure, and once a window
-    /// succeeds keep it for the rest of the sweep. A route resuming after an outage, or an L2
-    /// route whose confirmed head jumps thousands of blocks, has to cross the whole span or it
-    /// silently drops the messages in the part it skipped - so a range that will not narrow
-    /// far enough is an error, never a short result.
+    /// Every provider caps the range differently and says so only in prose, so the window is
+    /// discovered: start wide, halve on failure, keep what works. The whole span has to be
+    /// crossed or messages are silently dropped, so a range that will not narrow is an error
+    /// rather than a short result.
     async fn get_logs(
         &self,
         address: alloy_primitives::Address,
@@ -349,6 +363,180 @@ impl ExecutionReader {
                 }))
                 .collect::<Vec<_>>(),
         }))?)
+    }
+
+    /// Prove the tree at whatever block is current, and work out which block that was.
+    ///
+    /// Eden's node serves `eth_getProof` for `latest` only, and a proof does not say which
+    /// block it came from. An account proof verifies only under the root it was taken at, so
+    /// the height is recovered by testing it against recent state roots.
+    pub async fn merkle_tree_proof_at_latest(
+        &self,
+        hook: alloy_primitives::Address,
+        base_slot: u64,
+    ) -> Result<(u64, tee_node::hyperlane_state::EvmTreeProof)> {
+        let slots = hyperlane_types::MerkleTreeSlots::new(base_slot);
+        let keys: Vec<String> = slots
+            .storage_keys()
+            .iter()
+            .map(|k| format!("0x{}", hex::encode(k)))
+            .collect();
+
+        let result = self
+            .call("eth_getProof", serde_json::json!([hook, keys, "latest"]))
+            .await
+            .context("eth_getProof at latest")?;
+
+        let proof: tee_node::hyperlane_state::EvmTreeProof =
+            serde_json::from_value(serde_json::json!({
+                "merkle_tree_hook": hook,
+                "account": {
+                    "nonce": result["nonce"],
+                    "balance": result["balance"],
+                    "storage_root": result["storageHash"],
+                    "code_hash": result["codeHash"],
+                },
+                "account_proof": result["accountProof"],
+                "storage_proof": result["storageProof"]
+                    .as_array()
+                    .context("storageProof")?
+                    .iter()
+                    .map(|s| serde_json::json!({
+                        "slot": s["key"], "value": s["value"], "proof": s["proof"]
+                    }))
+                    .collect::<Vec<_>>(),
+            }))?;
+
+        let head = self.block_number().await?;
+        // Backwards from a little ahead: the node may have advanced between the two calls.
+        for h in (head.saturating_sub(PROOF_HEIGHT_SEARCH)..=head + 2).rev() {
+            let Ok(root) = self.state_root(h).await else {
+                continue;
+            };
+            if tee_node::state_proofs::verify_account_proof(
+                root,
+                hook,
+                &proof.account,
+                &proof.account_proof,
+            )
+            .is_ok()
+            {
+                return Ok((h, proof));
+            }
+        }
+        anyhow::bail!(
+            "could not place the latest proof within {PROOF_HEIGHT_SEARCH} blocks of {head}"
+        )
+    }
+
+    pub async fn block_number(&self) -> Result<u64> {
+        let v = self.call("eth_blockNumber", serde_json::json!([])).await?;
+        Ok(u64::from_str_radix(
+            v.as_str().context("blockNumber")?.trim_start_matches("0x"),
+            16,
+        )?)
+    }
+
+    pub async fn state_root(&self, block: u64) -> Result<alloy_primitives::B256> {
+        let v = self
+            .call(
+                "eth_getBlockByNumber",
+                serde_json::json!([format!("0x{block:x}"), false]),
+            )
+            .await?;
+        Ok(v["stateRoot"]
+            .as_str()
+            .context("stateRoot")?
+            .parse()
+            .context("stateRoot parse")?)
+    }
+
+    /// Every block in `(from, to]` whose state root differs from the one before it.
+    ///
+    /// Bisects rather than reading every header: Eden makes ten blocks a second and almost
+    /// none change anything. A transaction always bumps a nonce, so ends sharing a root means
+    /// nothing happened between them.
+    pub async fn state_changing_blocks(&self, from: u64, to: u64) -> Result<Vec<u64>> {
+        if to <= from {
+            return Ok(Vec::new());
+        }
+        let lo = self.state_root(from).await?;
+        let hi = self.state_root(to).await?;
+        if lo == hi {
+            return Ok(Vec::new());
+        }
+        let mut found = Vec::new();
+        self.bisect(from, lo, to, hi, &mut found).await?;
+        found.sort_unstable();
+        Ok(found)
+    }
+
+    /// Narrow one span known to have changed. Iterative because an async fn cannot recurse.
+    async fn bisect(
+        &self,
+        lo: u64,
+        lo_root: alloy_primitives::B256,
+        hi: u64,
+        hi_root: alloy_primitives::B256,
+        found: &mut Vec<u64>,
+    ) -> Result<()> {
+        let mut stack = vec![(lo, lo_root, hi, hi_root)];
+        while let Some((lo, lo_root, hi, hi_root)) = stack.pop() {
+            if hi == lo + 1 {
+                found.push(hi);
+                continue;
+            }
+            let mid = lo + (hi - lo) / 2;
+            let mid_root = self.state_root(mid).await?;
+            if mid_root != lo_root {
+                stack.push((lo, lo_root, mid, mid_root));
+            }
+            if hi_root != mid_root {
+                stack.push((mid, mid_root, hi, hi_root));
+            }
+        }
+        Ok(())
+    }
+
+    /// One block and its witness, in the shape the enclave re-executes.
+    pub async fn block_for_execution(&self, number: u64) -> Result<tee_node::evm::BlockExec> {
+        use alloy_rlp::Encodable;
+
+        let block = self
+            .call(
+                "eth_getBlockByNumber",
+                serde_json::json!([format!("0x{number:x}"), true]),
+            )
+            .await?;
+        let header: alloy_consensus::Header = serde_json::from_value(block.clone())
+            .with_context(|| format!("block {number} header"))?;
+        let mut header_rlp = Vec::new();
+        header.encode(&mut header_rlp);
+
+        let mut transactions = Vec::new();
+        for tx in block["transactions"].as_array().context("transactions")? {
+            let hash = tx["hash"].as_str().context("transaction hash")?;
+            let raw = self
+                .call("eth_getRawTransactionByHash", serde_json::json!([hash]))
+                .await?;
+            transactions.push(parse_bytes(&raw).context("raw transaction")?);
+        }
+
+        let witness = self
+            .call(
+                "debug_executionWitness",
+                serde_json::json!([format!("0x{number:x}")]),
+            )
+            .await
+            .with_context(|| format!("execution witness for block {number}"))?;
+
+        Ok(tee_node::evm::BlockExec {
+            header: header_rlp.into(),
+            transactions,
+            state: parse_bytes_array(&witness["state"])?,
+            codes: parse_bytes_array(&witness["codes"])?,
+            ancestors: parse_bytes_array(&witness["headers"])?,
+        })
     }
 
     /// Messages inserted into the tree between two blocks, in insert order.

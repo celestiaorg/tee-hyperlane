@@ -13,10 +13,12 @@ use crate::config::Config;
 use crate::tasks::{cpu_prover_permit, run_route, ProofStore};
 
 mod celestia;
+mod celestia_l2;
 pub(crate) mod ethereum;
 mod ethereum_l2;
 
 pub use celestia::{attest_celestia, bootstrap_celestia};
+pub use celestia_l2::{attest_eden, bootstrap_eden};
 pub use ethereum::{attest_ethereum, bootstrap_ethereum};
 pub use ethereum_l2::{attest_l2, bootstrap_l2, L2Kind};
 
@@ -69,6 +71,34 @@ pub(crate) fn record_checkpoint(out: Option<&str>, checkpoint: &str) {
     if let Err(e) = std::fs::write(dir.join("checkpoint"), checkpoint) {
         debug!(error = %e, "could not record the checkpoint");
     }
+}
+
+/// Which Celestia block this route's light-client store was last at.
+///
+/// An evolve ISM records the *evolve chain's* height in its state, so nothing on chain says
+/// which Celestia header the store belongs to. Without this the route would have to walk
+/// Celestia backwards every tick looking for the one that reproduces the commitment.
+pub(crate) fn record_da_height(out: Option<&str>, height: u64) {
+    let Some(dir) = out
+        .and_then(|o| std::path::Path::new(o).parent())
+        .and_then(|p| p.parent())
+    else {
+        return;
+    };
+    if let Err(e) = std::fs::write(dir.join("da-height"), height.to_string()) {
+        debug!(error = %e, "could not record the DA height");
+    }
+}
+
+pub(crate) fn recorded_da_height(out: Option<&str>) -> Option<u64> {
+    let dir = out
+        .and_then(|o| std::path::Path::new(o).parent())
+        .and_then(|p| p.parent())?;
+    std::fs::read_to_string(dir.join("da-height"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// What `record_checkpoint` last wrote for this route, if anything.
@@ -453,5 +483,42 @@ pub fn check_scan(snapshot_count: u32, head_count: u32, found: usize) -> Result<
          retains logs for longer than this chain's confirmation delay",
         expected.saturating_sub(found)
     );
+    Ok(())
+}
+
+/// Carry a live ISM's trusted state onto a new enclave identity.
+///
+/// The state layout is fixed at 116 bytes and the identity is the last 32, so this rewrites
+/// those and nothing else. Refusing anything that is not exactly 116 bytes matters: a short
+/// or long state means the caller read the wrong thing, and silently padding it would produce
+/// a genesis that looks plausible and anchors nowhere.
+pub fn rotate_state(state: &str, identity_digest: &str) -> Result<()> {
+    let raw = hex::decode(state.trim().trim_start_matches("0x")).context("state is not hex")?;
+    anyhow::ensure!(
+        raw.len() == 116,
+        "an ISM state is 116 bytes, this is {}",
+        raw.len()
+    );
+    let identity = hex::decode(identity_digest.trim().trim_start_matches("0x"))
+        .context("identity digest is not hex")?;
+    anyhow::ensure!(
+        identity.len() == 32,
+        "an identity digest is 32 bytes, this is {}",
+        identity.len()
+    );
+
+    let previous = tee_attestation::decode_ism_state(&raw)?;
+    let mut next = raw.clone();
+    next[84..].copy_from_slice(&identity);
+
+    println!("origin domain    {}", previous.origin_domain);
+    println!("height           {}", previous.height);
+    println!("timestamp        {}", previous.timestamp);
+    println!("state root       0x{}", hex::encode(previous.state_root));
+    println!("lc store commit  0x{}", hex::encode(previous.lc_store_commit));
+    println!("was identity     0x{}", hex::encode(previous.identity_digest));
+    println!("now identity     0x{}", hex::encode(&identity));
+    println!();
+    println!("genesis state    0x{}", hex::encode(&next));
     Ok(())
 }

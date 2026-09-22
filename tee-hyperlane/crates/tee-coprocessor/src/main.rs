@@ -57,6 +57,32 @@ enum Command {
         #[arg(long)]
         identity_digest: String,
     },
+    /// Anchor an Eden ISM to a Celestia block that carries an Eden header.
+    BootstrapEden {
+        /// Celestia consensus RPC, for the light block.
+        #[arg(long, default_value = "https://rpc-mocha.pops.one")]
+        rpc: String,
+        /// celestia-node DA endpoint, for the namespace data.
+        #[arg(long, default_value = "http://localhost:26658")]
+        da_rpc: String,
+        /// Eden's own RPC, for the tree proof the anchor height needs.
+        #[arg(long, default_value = "https://ev-reth-eden-testnet.binarybuilders.services:8545/")]
+        eden_rpc: String,
+        #[arg(long, default_value = "0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db")]
+        merkle_tree_hook: String,
+        #[arg(long, default_value_t = 151)]
+        base_slot: u64,
+        /// How far behind the DA head to start looking. Ignored when --height is given.
+        #[arg(long, default_value_t = 4)]
+        lag: u64,
+        #[arg(long)]
+        height: Option<u64>,
+        #[arg(long)]
+        identity_digest: String,
+        /// Where the route keeps its proofs, so the Celestia height can be recorded.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Attest one Ethereum -> Celestia step.
     ///
     /// Re-derives the light-client store from the same checkpoint the ISM was created with,
@@ -248,6 +274,25 @@ enum Command {
         #[arg(long, default_value = "https://rpc-mocha.pops.one")]
         celestia_rpc: String,
     },
+    /// Carry a live ISM's trusted state onto a new enclave identity.
+    ///
+    /// What a re-deployment should use instead of a bootstrap. The identity is immutable in
+    /// both ISM implementations, so a new enclave means a new ISM; bootstrapping that ISM
+    /// anchors it at the origin's *current* head, and every message dispatched but not yet
+    /// delivered falls below it and is skipped for good. A Base transfer, whose dispute
+    /// window is five days, cannot survive a re-deployment that re-anchors.
+    ///
+    /// Copying the outgoing state carries the root, height, timestamp and light-client store
+    /// commitment across untouched, so the new ISM resumes where the old one stopped. Only
+    /// the identity may differ, which is the one field the ISM checks against itself.
+    RotateState {
+        /// The outgoing ISM's state, hex, as `state()` or the module returns it.
+        #[arg(long)]
+        state: String,
+        /// The new enclave's identity digest.
+        #[arg(long)]
+        identity_digest: String,
+    },
     /// Show each route's trusted state and how far behind the origin head it is.
     Status,
     /// Report where one message stands: dispatched, authorised, or delivered.
@@ -289,6 +334,23 @@ async fn main() -> Result<()> {
             height,
             identity_digest,
         } => commands::bootstrap_celestia(&rpc, lag, height, &identity_digest).await,
+        Command::BootstrapEden {
+            rpc,
+            da_rpc,
+            eden_rpc,
+            merkle_tree_hook,
+            base_slot,
+            lag,
+            height,
+            identity_digest,
+            out,
+        } => {
+            commands::bootstrap_eden(
+                &rpc, &da_rpc, &eden_rpc, &merkle_tree_hook, base_slot, lag, height,
+                &identity_digest, out,
+            )
+            .await
+        }
         Command::AttestEthereum {
             destination_domain,
             beacon,
@@ -426,6 +488,10 @@ async fn main() -> Result<()> {
         } => {
             tee_coprocessor::ui::serve(dir.into(), api, celestia_rest, celestia_rpc, &listen).await
         }
+        Command::RotateState {
+            state,
+            identity_digest,
+        } => commands::rotate_state(&state, &identity_digest),
         Command::Status => {
             let config = load()?;
             for route in &config.routes {

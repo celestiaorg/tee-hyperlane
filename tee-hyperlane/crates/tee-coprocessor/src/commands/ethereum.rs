@@ -187,8 +187,15 @@ pub async fn attest_ethereum(
         .into_iter()
         .chain(checkpoint)
         .collect();
-    let (store, _checkpoint) =
+    let (store, checkpoint_used) =
         rebuild_ethereum_store(&beacon_reader, &config, &trusted, &hints).await?;
+
+    // Remember the checkpoint that reproduced the store, before knowing whether this tick has
+    // anything to attest. The record below only runs once the enclave has attested, so a route
+    // with no traffic never reached it and repeated the whole finalized-checkpoint walk every
+    // tick - a thousand beacon requests to rediscover an answer it already had, which is what
+    // made an idle route fail intermittently against a rate-limited endpoint.
+    super::record_checkpoint(out.as_deref(), &checkpoint_used);
 
     let finality = beacon_reader.finality_update().await?;
 

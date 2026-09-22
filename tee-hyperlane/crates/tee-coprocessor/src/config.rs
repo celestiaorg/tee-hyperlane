@@ -151,6 +151,29 @@ pub enum ChainConfig {
         #[serde(default = "default_l2_base_slot")]
         merkle_tree_base_slot: u64,
     },
+    /// An evolve-stack chain: an EVM chain with no consensus of its own, whose sequencer
+    /// signs each header and publishes it as a Celestia blob.
+    CelestiaL2 {
+        domain: u32,
+        /// The evolve chain's own EVM RPC. Must serve archive state at the trusted height,
+        /// which for a chain making ten blocks a second is not very far back in wall clock.
+        l2_rpc: String,
+        #[serde(default)]
+        logs_rpc: Option<String>,
+        /// The Celestia chain whose light client secures this one.
+        celestia: Box<ChainConfig>,
+        /// A celestia-node DA endpoint. The consensus RPC cannot serve row roots or blobs,
+        /// so this is a second endpoint rather than a nicety. Untrusted: the enclave checks
+        /// the row roots against the `data_hash` its own light client verified.
+        da_rpc: String,
+        /// Which evolve chain. Only `eden` today, and the namespace and sequencer key for it
+        /// are pinned in the enclave rather than named here.
+        rollup: String,
+        mailbox: String,
+        merkle_tree_hook: String,
+        #[serde(default = "default_l2_base_slot")]
+        merkle_tree_base_slot: u64,
+    },
 }
 
 impl ChainConfig {
@@ -158,7 +181,8 @@ impl ChainConfig {
         match self {
             ChainConfig::Ethereum { domain, .. }
             | ChainConfig::Celestia { domain, .. }
-            | ChainConfig::EthereumL2 { domain, .. } => *domain,
+            | ChainConfig::EthereumL2 { domain, .. }
+            | ChainConfig::CelestiaL2 { domain, .. } => *domain,
         }
     }
 }
