@@ -63,29 +63,52 @@
           in seg "target" || seg "tests" || seg "testdata" || seg "node_modules"
             || pkgs.lib.hasSuffix "/enclave-identity.toml" rel;
 
-        src = pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter = path: _type:
-            let
-              rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
-              # Either an ancestor of something wanted, so recursion can reach it, or a
-              # descendant of it. Compared on whole path segments, so `tee-node-extra` does
-              # not slip in behind `tee-node`.
-              onKeptPath = k:
-                rel == k
-                || pkgs.lib.hasPrefix "${k}/" rel
-                || pkgs.lib.hasPrefix "${rel}/" k;
-            in pkgs.lib.any onKeptPath keep && !(excluded rel);
+        # Which origin files belong to which family, so a build never sees code it does not
+        # compile.
+        #
+        # Feature gates alone are not enough for this. buildRustPackage is input-addressed and
+        # rustc writes the source path into the binary, so any edit anywhere in the shared tree
+        # gives every family a new store path and therefore a new image digest, even when the
+        # compiled code is identical. Measured, not assumed: changing one error string in
+        # `evm/exec.rs` moved all three digests before this filter existed.
+        #
+        # What stays shared - attest.rs, hyperlane_state.rs, state_proofs.rs, lib.rs, main.rs -
+        # genuinely is shared, so a change there still moves all three, as it should. So does a
+        # change to Cargo.lock, which every build reads.
+        familyOnly = {
+          celestia = [ "origins/ethereum.rs" "origins/ethereum_l2.rs" "origins/celestia_l2.rs" "evm" ];
+          ethereum = [ "origins/celestia.rs" "origins/celestia_l2.rs" "evm" ];
+          evolve = [ "origins/ethereum.rs" "origins/ethereum_l2.rs" ];
         };
 
-        # One build per origin family. The identity an ISM pins is a hash of the image, so a
-        # single binary serving every origin means a single identity for every ISM, and a
-        # change to one origin re-deploys the ISMs of all of them. Three builds, three
-        # identities, three blast radii.
+        srcFor = feature:
+          let
+            node = "tee-hyperlane/crates/tee-node/src";
+            drop = familyOnly.${feature};
+            foreign = rel:
+              pkgs.lib.any
+                (f: rel == "${node}/${f}" || pkgs.lib.hasPrefix "${node}/${f}/" rel)
+                drop;
+          in
+          pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter = path: _type:
+              let
+                rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
+                # Either an ancestor of something wanted, so recursion can reach it, or a
+                # descendant of it. Compared on whole path segments, so `tee-node-extra` does
+                # not slip in behind `tee-node`.
+                onKeptPath = k:
+                  rel == k
+                  || pkgs.lib.hasPrefix "${k}/" rel
+                  || pkgs.lib.hasPrefix "${rel}/" k;
+              in pkgs.lib.any onKeptPath keep && !(excluded rel) && !(foreign rel);
+          };
+
         teeNodeFor = feature: rustPlatform.buildRustPackage {
           pname = "tee-node-${feature}";
           version = "0.1.0";
-          inherit src;
+          src = srcFor feature;
           sourceRoot = "source/tee-hyperlane";
 
           cargoLock = {

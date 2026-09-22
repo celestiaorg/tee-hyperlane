@@ -12,7 +12,7 @@
 # which is why one identity policy and one pair of vkeys covers both.
 services:
   tee-node:
-    image: ghcr.io/jonas089/tee-node@sha256:7b5cec8f74936f5be275b947c058ec39323a480e56ec5eb38144c01986219eee
+    image: ghcr.io/jonas089/tee-node@sha256:aec2a786878b65706e3aba9a3ecccf6fa0afec66d488e9cd1cc0fbcb9bd667b2
     ports:
       - "8080:8080"
     volumes:

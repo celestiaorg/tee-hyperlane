@@ -77,8 +77,9 @@ ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier
 - **Eden runs Osaka, not Prague.** Simple transfers execute the same under both, so the first
   fixtures passed on Prague and proved nothing; a DCAP verification does not, because P-256
   verification is an Osaka precompile. Under Prague it reverts with empty data.
-- **The per-family split bounds code changes, not dependency changes**: `Cargo.lock` is in
-  every image's source, so adding a crate moves all three identities.
+- **The per-family split bounds origin-specific changes only.** `flake.nix` gives each family
+  its own source filter, so editing `evm/` moves the evolve digest alone. `Cargo.lock` and the
+  shared modules are in every image's source, so touching those still moves all three.
 - **Re-deployment moves the checkpoint.** A new ISM anchors at the origin's head, so anything
   in flight is skipped. `tee-hyperlane rotate-state` plus `ISM_GENESIS` anchors at an old
   checkpoint instead, which is the only way to recover such a message.
