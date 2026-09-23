@@ -821,6 +821,17 @@ An empty `VITE_*_ROUTER` is how a route reports itself as not deployed, so the U
 control rather than offering one that cannot work. Leave one blank only if that asset
 genuinely has no router on that chain.
 
+> **Build the bundle on the host it is served from.** Vite bakes every `VITE_*` value into the
+> JavaScript at build time, so `dist/` is not portable: it is this `.env.local` compiled in.
+> Build it on a laptop that has its own `.env.local` - which `make start` writes, pointing at a
+> local devnet - and you get a bundle hardcoded to `http://localhost:26657`. Copy that to the
+> server and every visitor gets `Failed to fetch`, while the server itself looks perfectly
+> healthy, because nothing server-side is wrong. Check before shipping one:
+>
+> ```sh
+> grep -c 'localhost:26657' dist/assets/index-*.js   # must be 0
+> ```
+
 Adding a chain to the UI is more than these values: `src/config.ts` has to gain a `CHAINS`
 entry, `App.tsx` a name in `COUNTERPARTIES`, and `site.conf` an `/evm/<chain>/` proxy. Eden
 also needed a `nativeCurrency`, because it pays gas in TIA rather than ETH and the default
