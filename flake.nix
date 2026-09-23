@@ -35,7 +35,8 @@
         # identity a function of every file in them. The derivation is input-addressed, so a
         # one-character edit to the coprocessor, the gas oracle or a test moved the image
         # digest - and a moved image digest means a new compose hash, a new RTMR3, a new
-        # enclave identity, new vkeys, and six new ISMs with every warp router repointed.
+        # enclave identity, and a new ISM for every route that family attests, with every
+        # warp router repointed.
         # That is a large bill for changing a comment in code the enclave never runs.
         keep = [
           "tee-hyperlane/Cargo.toml"

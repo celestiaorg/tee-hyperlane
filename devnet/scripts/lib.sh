@@ -195,6 +195,14 @@ load() {
 
 has() { [ -f "${OUT_DIR}/$1" ]; }
 
+# pad32 <0x-address> - left-pad a 20-byte EVM address to the 32 bytes a Hyperlane message
+# carries. Lowercased, because the padded form is compared as bytes and a checksummed address
+# and its lowercase spelling are the same address but different strings.
+pad32() {
+  printf '0x000000000000000000000000%s' \
+    "$(printf '%s' "$1" | sed 's/^0x//' | tr 'A-F' 'a-f')"
+}
+
 # wait_for_chain - block until the node is answering and producing blocks.
 wait_for_chain() {
   local i height

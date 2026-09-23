@@ -35,15 +35,20 @@ while [ $# -gt 0 ]; do
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# The devnet's by default, because that is what a developer running this locally has just
-# deployed. A testnet enclave measures one of deploy/docker-compose.<family>.yml, so checking
-# one of those means naming it:
+# Every enclave measures one of deploy/docker-compose.<family>.yml, so the family has to be
+# named. There is no default: guessing one would make step 3 report a mismatch that is really
+# just the wrong file, which is indistinguishable from a real failure.
 #
-#   COMPOSE=deploy/docker-compose.evolve.yml ./deploy/verify-digest.sh <app-id>
-#
-# Without this the script could only ever pass for the devnet, and step 3 read as a real
-# failure on every live enclave.
-COMPOSE="${COMPOSE:-${ROOT}/devnet/enclave/docker-compose.yml}"
+#   FAMILY=evolve ./deploy/verify-digest.sh <app-id>
+#   COMPOSE=/some/other/compose.yml ./deploy/verify-digest.sh <app-id>
+if [ -z "${COMPOSE:-}" ]; then
+  [ -n "${FAMILY:-}" ] || {
+    echo "set FAMILY=celestia|ethereum|evolve (or COMPOSE=<path>) so this knows which compose to check against" >&2
+    exit 2
+  }
+  COMPOSE="${ROOT}/deploy/docker-compose.${FAMILY}.yml"
+  [ -f "${COMPOSE}" ] || { echo "no compose for family ${FAMILY} at ${COMPOSE}" >&2; exit 2; }
+fi
 GATEWAY="${GATEWAY:-dstack-pha-prod9.phala.network}"
 URL="${ENCLAVE_URL:-https://${APP_ID}-8080.${GATEWAY}}"
 WORK="$(mktemp -d)"; trap 'rm -rf "${WORK}"' EXIT

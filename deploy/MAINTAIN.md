@@ -72,14 +72,18 @@ What must **not** change is its identity: the OS image, the container image and 
 app id and instance id are deliberately not pinned, which is what makes this a swap.
 
 ```sh
-phala deploy --node-id 18 --image dstack-0.5.9 --no-dev-os -c deploy/docker-compose.yml
+phala deploy --node-id 18 --image dstack-0.5.9 --no-dev-os \
+  -c deploy/docker-compose.<family>.yml
 curl -s https://<new-app-id>-8080.dstack-pha-prod9.phala.network/identity | jq -r .
 ```
 
-Compare against what the ISMs already trust:
+Redeploy from the compose of the family you are replacing, and compare against what that
+family's ISMs already trust:
 
 ```
-identity  0x6fc758842ebcb3d8398ca8d77374356128779bd4c1d545e722b62b662dda3961
+celestia  0x26ba429fdd51a3131520393c09a033423c2ec715a03094288f6d25ee55fdb66f
+ethereum  0xfe294574ecdc4f20d23226ed475ba711e08c23edbbc83365781cda29a5101bc3
+evolve    0x259d450e50a8374a42b6a0e514cb0e23cb3ae1a40f962ca31db214b98ebac91e
 ```
 
 **If it matches**, there is nothing else to do. Edit `tee_node_url` for that route in
@@ -124,10 +128,21 @@ new identity:
 if (_readBytes32(_genesisState, 84) != _identityDigest) revert IdentityChanged();
 ```
 
-So the full cost of an enclave code change is: build and push, re-pin the digest in
-`deploy/docker-compose.yml`, redeploy both CVMs, deploy **six new ISMs across four chains**,
-re-point the Celestia routing ISM and the EVM warp routers, and update `coprocessor.toml`. The
-old ISMs keep serving anything already in flight.
+So the full cost of an enclave code change is: build and push, re-pin the digest in that
+family's `deploy/docker-compose.<family>.yml`, redeploy that CVM, deploy new ISMs for every
+route the family attests, re-point the Celestia routing ISM and the EVM warp routers, and
+update `coprocessor.toml`. The old ISMs keep serving anything already in flight.
+
+How many ISMs depends on the family, which is what the split bought:
+
+| family changed | ISMs to redeploy |
+|---|---|
+| celestia | **4** - the `TeeDcapIsm` on Sepolia, Arbitrum, Base and Eden |
+| ethereum | **3** - the Celestia-side ISMs for the Sepolia, Arbitrum and Base origins |
+| evolve | **1** - the Celestia-side ISM for the Eden origin |
+
+Touching `Cargo.lock` or a module every family compiles moves all three digests, correctly,
+and then it is all eight.
 
 Budget for it. Do not do it casually.
 
@@ -152,9 +167,9 @@ A consensus-relevant change to `x/teeism` is a chain upgrade, not a container re
 ## Verifying what is actually running
 
 ```sh
-deploy/verify-digest.sh <app-id>                            # the compose chain
-deploy/verify-digest.sh <app-id> --ism <addr> --rpc <url>   # also what the chain accepts
-deploy/verify-digest.sh <app-id> --rebuild                  # also the image, ~35 min
+FAMILY=celestia deploy/verify-digest.sh <app-id>                          # the compose chain
+FAMILY=celestia deploy/verify-digest.sh <app-id> --ism <a> --rpc <url>    # also what the chain accepts
+FAMILY=celestia deploy/verify-digest.sh <app-id> --rebuild                # also the image, ~35 min
 ```
 
 It reproduces `compose_hash` from the `app_compose` the enclave hands over, checks that the
@@ -164,7 +179,7 @@ unsigned `info` block, and diffs the embedded compose against the file in this c
 To confirm the image build is reproducible rather than merely repeatable on one machine:
 
 ```sh
-nix build .#image --rebuild   # exit 0 means bit-identical
+nix build .#image-celestia --rebuild   # exit 0 means bit-identical
 ```
 
 > **`os_image_hash` must be `bd369a8c…`.** That is the production dstack OS. `de9c74f0…` means
@@ -263,7 +278,8 @@ worth a root cause, not routine upkeep.
 | a relayer, oracle or UI change | rebuild and restart |
 | collateral expiry | the monthly job |
 | an enclave swap, same measurements | edit one URL, restart |
-| **a new enclave image or OS** | **six new ISMs across four chains** |
+| **a new enclave image** | **new ISMs for that family: 4 celestia, 3 ethereum, 1 evolve** |
+| **a new dstack OS or Phala KMS** | **all three identities move: eight new ISMs** |
 | Intel advancing the TCB eval number | a new versioned DAO per chain, repoint the router |
 
 ---

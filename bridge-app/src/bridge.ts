@@ -185,9 +185,29 @@ export async function sendFromEvm(opts: {
     throw new Error(`no router deployed at ${router} on ${opts.chain.name}`);
   }
 
+  // Price the transaction ourselves rather than letting the wallet do it. On Arbitrum Sepolia
+  // MetaMask quotes a maxFeePerGas of about 0.061 gwei whatever the chain is actually charging,
+  // so once the base fee drifts above that every send is rejected with "max fee per gas less
+  // than block base fee" and no amount of retrying helps. Doubling the base fee is not an
+  // overpayment: EIP-1559 charges the base fee plus the tip and refunds the difference.
+  const block = await rpc(opts.chain, "eth_getBlockByNumber", ["pending", false]);
+  const baseFee = BigInt(block.baseFeePerGas);
+  // Eden's base fee is single digit wei, where a tenth of it rounds to a zero tip. Valid under
+  // EIP-1559, but not worth finding out which of four chains rejects it.
+  const tip = baseFee / 10n || 1n;
+
   return window.ethereum!.request({
     method: "eth_sendTransaction",
-    params: [{ from: opts.sender, to: router, data, value: toHex(fee) }],
+    params: [
+      {
+        from: opts.sender,
+        to: router,
+        data,
+        value: toHex(fee),
+        maxFeePerGas: toHex(baseFee * 2n + tip),
+        maxPriorityFeePerGas: toHex(tip),
+      },
+    ],
   });
 }
 

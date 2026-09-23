@@ -14,7 +14,6 @@ CONTRACTS="${REPO_DIR}/tee-hyperlane/contracts"
 MAX_QUOTE_SKEW="${MAX_QUOTE_SKEW:-86400}"
 : "${EVM_PRIVATE_KEY:?set EVM_PRIVATE_KEY}"
 
-has enclave-url || die "no enclave; run 'make init' first"
 has merkle-hook-id || die "no local hyperlane deployment; run 'make init' first"
 
 # ---------------------------------------------------------------- pin the live enclave
@@ -23,6 +22,8 @@ has merkle-hook-id || die "no local hyperlane deployment; run 'make init' first"
 # attestation, so these ISMs pin the Celestia enclave; the Celestia-side ISMs pin whichever
 # enclave attests their origin. One file per family, so adding one is a name, not a rewrite.
 ENCLAVE_FAMILY="${ENCLAVE_FAMILY:-celestia}"
+has "enclave-url-${ENCLAVE_FAMILY}" \
+  || die "no ${ENCLAVE_FAMILY} enclave; run 'make init' first"
 say "reading measurements from the devnet enclave"
 curl -sS -m 30 "$(load "enclave-url-${ENCLAVE_FAMILY}")/identity" -o "${STATE_DIR}/enclave-identity.json"
 MEASUREMENTS="$(python3 - "${STATE_DIR}/enclave-identity.json" <<'PY'
@@ -73,10 +74,15 @@ say "  origin hook   ${HOOK}"
 # chain : chain-id : hyperlane mailbox
 # Eden's mailbox is ours: unlike the other three it has no canonical Hyperlane deployment,
 # so `DeployHyperlaneCore` put one there.
-CHAINS="arbitrum:421614:0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8
+# Override CHAINS to bring up a subset, which is what a partial or staged deployment needs:
+#
+#   CHAINS="sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766" ./scripts/80-evm-isms.sh
+#
+# Each row is chain : chain-id : hyperlane mailbox.
+CHAINS="${CHAINS:-arbitrum:421614:0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8
 base:84532:0x6966b0E55883d49BFB24539356a2f8A673E02039
 sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766
-eden:3735928814:0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729"
+eden:3735928814:0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729}"
 
 # A here-string, not a pipe: `cmd | while` runs the loop in a subshell, so `die` only exits
 # the subshell and `save` writes state the parent never sees. That is how this silently

@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Deploy the devnet enclave on Phala Cloud and wait for it to answer.
+# Deploy one enclave per origin family and wait for each to answer.
 #
-# The enclave is the one piece that cannot be local: a TDX quote has to come from real Intel
+# The enclaves are the one piece that cannot be local: a TDX quote has to come from real Intel
 # hardware, and this machine is not it. Everything else in this devnet runs on the laptop.
+#
+# Three families, three images, three CVMs. They measure the same compose files the testnet
+# measures, because the identity an ISM pins is a property of the code, not of which CVM runs
+# it - app id and instance id are deliberately outside the measurement. Deploying from a
+# separate devnet compose would only produce a fourth image nothing can rebuild.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 need phala
 need curl
 
-CVM_NAME="${CVM_NAME:-teeism-devnet}"
+FAMILIES="${FAMILIES:-celestia ethereum evolve}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-tdx.small}"
 # Node 18 is prod9. Auto-selection sometimes lands on prod5, whose teepod reports
 # tproxy_base_domain: None - the CVM runs, the gateway never registers it, and every request
@@ -16,33 +21,50 @@ INSTANCE_TYPE="${INSTANCE_TYPE:-tdx.small}"
 NODE_ID="${PHALA_NODE_ID:-18}"
 OS_IMAGE="${PHALA_OS_IMAGE:-dstack-0.5.9}"
 
-if has enclave-url; then
-  url="$(load enclave-url)"
-  if curl -sf -m 15 "${url}/health" >/dev/null 2>&1; then
-    say "enclave already up at ${url}"
-    exit 0
+authenticated=0
+
+deploy_family() {
+  local family="$1"
+  local compose="${REPO_DIR}/deploy/docker-compose.${family}.yml"
+  local name="teeism-${family}"
+  local url
+
+  [ -f "${compose}" ] || die "no compose for ${family} at ${compose}"
+
+  if has "enclave-url-${family}"; then
+    url="$(load "enclave-url-${family}")"
+    if curl -sf -m 15 "${url}/health" >/dev/null 2>&1; then
+      say "${family} enclave already up at ${url}"
+      return 0
+    fi
+    warn "recorded ${family} enclave ${url} is not answering; deploying a new one"
   fi
-  warn "recorded enclave ${url} is not answering; deploying a new one"
-fi
 
-phala status >/dev/null 2>&1 || die "not authenticated to Phala Cloud. Run 'phala auth login <api-key>' with a key from cloud.phala.network > Settings > API Keys"
+  # Checked once, and only when something actually needs deploying, so a devnet whose three
+  # enclaves are all healthy does not require Phala credentials at all.
+  if [ "${authenticated}" -eq 0 ]; then
+    phala status >/dev/null 2>&1 || die "not authenticated to Phala Cloud. Run 'phala auth login <api-key>' with a key from cloud.phala.network > Settings > API Keys"
+    authenticated=1
+  fi
 
-say "deploying ${CVM_NAME} (${INSTANCE_TYPE}, node ${NODE_ID}, ${OS_IMAGE})"
-# --no-dev-os matters: if the CLI finds an SSH public key on this machine it otherwise
-# provisions a dev image that permits shell access into the CVM, which would make the
-# enclave's measurements meaningless.
-out="$(phala deploy \
-  --name "${CVM_NAME}" \
-  --compose "${DEVNET_DIR}/enclave/docker-compose.yml" \
-  --instance-type "${INSTANCE_TYPE}" \
-  --node-id "${NODE_ID}" \
-  --image "${OS_IMAGE}" \
-  --no-dev-os \
-  --wait --json 2>&1)" || { printf '%s\n' "${out}" >&2; die "phala deploy failed"; }
+  say "deploying ${name} (${INSTANCE_TYPE}, node ${NODE_ID}, ${OS_IMAGE})"
+  # --no-dev-os matters: if the CLI finds an SSH public key on this machine it otherwise
+  # provisions a dev image that permits shell access into the CVM, which would make the
+  # enclave's measurements meaningless.
+  local out
+  out="$(phala deploy \
+    --name "${name}" \
+    --compose "${compose}" \
+    --instance-type "${INSTANCE_TYPE}" \
+    --node-id "${NODE_ID}" \
+    --image "${OS_IMAGE}" \
+    --no-dev-os \
+    --wait --json 2>&1)" || { printf '%s\n' "${out}" >&2; die "phala deploy failed for ${family}"; }
 
-# The CLI prints progress before its JSON and wraps the payload differently per command, so
-# the id is pulled from the first JSON object in the output rather than from a fixed path.
-app_id="$(printf '%s' "${out}" | python3 -c "
+  # The CLI prints progress before its JSON and wraps the payload differently per command, so
+  # the id is pulled from the first JSON object in the output rather than from a fixed path.
+  local app_id
+  app_id="$(printf '%s' "${out}" | python3 -c "
 import json, re, sys
 raw = sys.stdin.read()
 for m in re.finditer(r'[{\[]', raw):
@@ -61,23 +83,42 @@ for m in re.finditer(r'[{\[]', raw):
         elif isinstance(node, list):
             stack.extend(node)
 " 2>/dev/null | head -1)"
-if [ -z "${app_id}" ]; then
-  # The deploy may still have created a CVM, so say where to look rather than leaving one
-  # billing quietly.
-  printf '%s\n' "${out}" >&2
-  die "could not read the app id from the deploy response; check 'phala cvms ls' for a stray ${CVM_NAME}"
-fi
-
-url="https://${app_id}-8080.dstack-pha-prod9.phala.network"
-save enclave-app-id "${app_id}"
-save enclave-url    "${url}"
-
-say "waiting for ${url}"
-for i in $(seq 1 60); do
-  if curl -sf -m 10 "${url}/health" >/dev/null 2>&1; then
-    say "enclave is answering"
-    exit 0
+  if [ -z "${app_id}" ]; then
+    # The deploy may still have created a CVM, so say where to look rather than leaving one
+    # billing quietly.
+    printf '%s\n' "${out}" >&2
+    die "could not read the app id for ${family}; check 'phala cvms ls' for a stray ${name}"
   fi
-  sleep 10
+
+  url="https://${app_id}-8080.dstack-pha-prod9.phala.network"
+  save "enclave-app-id-${family}" "${app_id}"
+  save "enclave-url-${family}"    "${url}"
+
+  say "waiting for ${url}"
+  local i
+  for i in $(seq 1 60); do
+    if curl -sf -m 10 "${url}/health" >/dev/null 2>&1; then
+      say "${family} enclave is answering"
+      return 0
+    fi
+    sleep 10
+  done
+  die "${family} enclave did not come up; check 'phala cvms get --cvm-id ${app_id}'"
+}
+
+for family in ${FAMILIES}; do
+  deploy_family "${family}"
 done
-die "enclave did not come up; check 'phala cvms get --cvm-id ${app_id}'"
+
+# Each ISM pins the identity of the family that attests its origin, so record all three now
+# rather than re-reading them in every script that needs one.
+for family in ${FAMILIES}; do
+  url="$(load "enclave-url-${family}")"
+  (cd "${REPO_DIR}/tee-circuit" && cargo run --quiet -p circuit-tool -- identity \
+    --url "${url}" --json "${OUT_DIR}/identity-${family}.json") >/dev/null \
+    || die "could not read ${family} identity from ${url}"
+  digest="$("${BIN_DIR}/teeism-identity" -identity "${OUT_DIR}/identity-${family}.json")"
+  [ -n "${digest}" ] || die "no identity digest for ${family}"
+  save "identity-digest-${family}" "${digest}"
+  say "${family} identity ${digest}"
+done

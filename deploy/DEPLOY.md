@@ -1,6 +1,6 @@
 # DEPLOY
 
-Standing up a complete TEE ISM bridge from nothing: a Celestia chain, two enclaves, six
+Standing up a complete TEE ISM bridge from nothing: a Celestia chain, three enclaves, eight
 routes across four networks, a UI, and the services that keep it running.
 
 Read [MAINTAIN.md](MAINTAIN.md) for keeping it alive and [INTERACT.md](INTERACT.md) for using
@@ -32,7 +32,7 @@ nix                   only if you rebuild the enclave image
 |---|---|---|
 | EVM key | deploys and relays on all three EVM chains | Sepolia, Arbitrum Sepolia and Base Sepolia ETH |
 | Celestia mnemonic | genesis accounts, the relayer, the oracle | nothing; the chain is yours |
-| Phala account | two CVMs at $0.0608/hr each, $2.92/day | a funded Phala balance |
+| Phala account | three CVMs at $0.0608/hr each, $4.38/day | a funded Phala balance |
 
 **Ports.** One forwarded port is enough. `ark` exposes 3000, 3001 and 3002 and nothing else;
 26657, 1317 and 9090 are deliberately unreachable, which is why the chain is served through
@@ -48,7 +48,7 @@ more you write from scratch, and everything else a script writes for you.
 
 ```sh
 cp devnet/.env.example             devnet/.env                      # every secret, one file
-cp deploy/coprocessor.toml.example devnet/.state/coprocessor.toml   # the six routes
+cp deploy/coprocessor.toml.example devnet/.state/coprocessor.toml   # the eight routes
 cp deploy/gas-oracle.toml.example  devnet/.state/gas-oracle.toml    # paymaster upkeep
 chmod 600 devnet/.env
 ```
@@ -59,10 +59,10 @@ is needed before anything else runs.
 | you fill in | at | holds |
 |---|---|---|
 | `devnet/.env` | step 2 | every secret and metered key. One value is required, three are optional |
-| `devnet/.state/coprocessor.toml` | step 12 | the six routes. Every ISM and router address |
+| `devnet/.state/coprocessor.toml` | step 12 | the eight routes. Every ISM and router address |
 | `devnet/.state/gas-oracle.toml` | step 11 | `igp_id` and `evm_key_file` |
 | `bridge-app/.env.local` | step 14 | every address the UI shows |
-| `deploy/docker-compose.yml` | step 5, only if you rebuild the enclave | the image digest. **Measured** |
+| `deploy/docker-compose.<family>.yml` | step 5, only if you rebuild an enclave | that family's image digest. **Measured** |
 
 | written for you | by | holds |
 |---|---|---|
@@ -102,6 +102,13 @@ $EDITOR devnet/.env
 Only `EVM_PRIVATE_KEY` is required. Leave `CELESTIA_MNEMONIC` empty on a first deploy and step
 4 generates one and writes it back into the same file. `ALCHEMY_API_KEY` and `ALCHEMY_BASE_KEY`
 are wanted by two routes each; the file says which and why.
+
+> **`EVM_PRIVATE_KEY` must be this deployment's alone.** It pays for deploys *and* signs every
+> relayer submission, so two deployments sharing one key put two relayers in a nonce race on
+> every EVM chain they have in common. Both then see `nonce too low` and `replacement
+> transaction underpriced` at random, on routes that are otherwise healthy. Generate a fresh
+> one with `cast wallet new` and fund it; do not copy the key from a host that is still
+> running.
 
 `devnet/.env` survives `make stop`, which is the point of keeping it out of `.state/`.
 
@@ -205,21 +212,26 @@ identities.
 Adding a family is four small things: the `families` list in `flake.nix`, a cargo feature in
 `crates/tee-node/Cargo.toml`, a module under `crates/tee-node/src/origins/`, and a compose
 file. Nothing else in the build is per-family.
+
 ---
 
-## 6. The two Phala CVMs
+## 6. The three Phala CVMs
 
 ```sh
-phala deploy --name tee-nonzk-cel --compose deploy/docker-compose.yml \
-  --instance-type tdx.small --node-id 18 --image dstack-0.5.9 --no-dev-os --wait --json
-phala deploy --name tee-nonzk-eth --compose deploy/docker-compose.yml \
-  --instance-type tdx.small --node-id 18 --image dstack-0.5.9 --no-dev-os --wait --json
+for f in celestia ethereum evolve; do
+  phala deploy --name teeism-$f --compose deploy/docker-compose.$f.yml \
+    --instance-type tdx.small --node-id 18 --image dstack-0.5.9 --no-dev-os --wait --json
+done
 ```
 
-Both run the same compose file, so both measure identically and one ISM identity accepts
-either. The names only say which routes point at which; either could serve either origin.
-`app-id` and `instance-id` differ and are deliberately not pinned, which is what makes an
-enclave swap a swap rather than a migration.
+Or `devnet/scripts/30-enclave-up.sh`, which does the same thing and records the urls and
+identities where the later steps read them.
+
+One CVM per origin family, each measuring its own compose file, so each has its own identity.
+That is the whole point of the split: an ISM pins the identity of the enclave that attests
+*its* origin, so changing Eden's code moves the evolve identity and leaves the other two
+untouched. `app-id` and `instance-id` differ between instances and are deliberately not
+pinned, which is what makes replacing a CVM a swap rather than a migration.
 
 Three ways this goes wrong, all of them silent:
 
@@ -233,37 +245,44 @@ Three ways this goes wrong, all of them silent:
 
 > **Deploy fresh, never `phala cvms upgrade`.** The measured app-compose document carries a
 > `name` field. A fresh deploy leaves it empty; an upgrade rewrites it to `app_<app_id>`,
-> which is per-instance, so upgrading gives the two enclaves different compose hashes and no
-> single identity can cover both. It cannot be undone in place, because the field derives from
-> the app id.
+> which is per-instance, so an upgraded enclave measures a compose hash no ISM pins. It cannot
+> be undone in place, because the field derives from the app id.
 
-Record the URLs:
+Record the urls and identities, one file per family:
 
 ```sh
 cd ~/tee-ism-nonzk/devnet
-printf '%s' "https://<cel-app-id>-8080.dstack-pha-prod9.phala.network" > .state/out/enclave-url
-printf '%s' "<cel-app-id>" > .state/out/enclave-app-id
+for f in celestia ethereum evolve; do
+  printf '%s' "https://<$f-app-id>-8080.dstack-pha-prod9.phala.network" > .state/out/enclave-url-$f
+  printf '%s' "<$f-app-id>" > .state/out/enclave-app-id-$f
+done
 ```
 
-Check both measure the same before going further:
+Then check what each one measures:
 
 ```sh
-for a in <cel-app-id> <eth-app-id>; do
+for a in <celestia-app-id> <ethereum-app-id> <evolve-app-id>; do
   curl -s https://$a-8080.dstack-pha-prod9.phala.network/identity | jq -S .
 done
 ```
 
-The two outputs must be identical. The live deployment measures:
+`mr_td`, `os_image_hash` and `mr_kms` are the same for all three, because they share an OS, a
+KMS and a base image. `compose_hash` is where they diverge, and that is what carries the
+per-family image digest into the identity. The live deployment measures:
 
 ```
 mr_td          f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077
 os_image_hash  bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033
-compose_hash   e549507dee0bf80dcd84c29d03937428d2d8419a8212945b2697440f34497ab9
 mr_kms         92a4bf40c88734b0e56f54b09b1f0fe4b8d3e230047e9298f491968ada8dedf8
 
-identity       0x6fc758842ebcb3d8398ca8d77374356128779bd4c1d545e722b62b662dda3961
-measurements   0xd0c526566573a72dea28d837a12ccc23d12b576ea53d221625d4d5163ec824b9
+                celestia                                                           ethereum                                                           evolve
+compose_hash    c502ed6b59d5b9fbcf2898e986a8fdb2387043c5f3ed54d31c3f0f7b7101d6f7   928dc64af2dbef87fedbf30cf4e291c76ca194fdd17028eace723d744b108137   e73f304585d61c3bd21643eb37a17b78667377facfd5f5a352b320bca0cc7704
+identity        0x26ba429fdd51a3131520393c09a033423c2ec715a03094288f6d25ee55fdb66f 0xfe294574ecdc4f20d23226ed475ba711e08c23edbbc83365781cda29a5101bc3 0x259d450e50a8374a42b6a0e514cb0e23cb3ae1a40f962ca31db214b98ebac91e
+measurements    0x8ec698fab68fd8d049fd04c302ac33908dc019ece98c65a2ee4a814a81c08542 0x4d87b27e1795b4f0f90be32d912fa11ff3b16f53f31ca8f4096e4502c283daf3 0x3d66f22ffbffcaa2007a61f867e7d929184bf074ba62829804bde8f4faa32575
 ```
+
+The celestia family attests the Celestia origin, so the four EVM-side ISMs pin it. The
+ethereum family attests Sepolia, Arbitrum and Base; the evolve family attests Eden.
 
 `measurements` is what the EVM ISMs pin: `keccak(mr_td ++ mr_config_id ++ rtmr0..2)`. rtmr3 is
 excluded because it carries the app id and instance id. `identity` is the same commitment in
@@ -375,17 +394,34 @@ An ISM pins **exactly one origin domain** and one enclave identity. Eight routes
 need eight ISMs, four on each side.
 
 ```sh
-ENCLAVE_URL="https://<eth-app-id>-8080.dstack-pha-prod9.phala.network" ./scripts/40-create-ism.sh
 ./scripts/80-evm-isms.sh
+./scripts/85-celestia-isms.sh
 ```
 
-`40-create-ism.sh` reads the enclave's identity, derives the digest with `teeism-identity`,
-reads a live checkpoint from the origin, and creates the Celestia-side ISM, recording
-`ism-celestia-sepolia`, `identity-digest` and `genesis-state`. `80-evm-isms.sh` deploys
-`TeeDcapIsm` on each EVM chain from `pccs-<chain>.json` plus the same identity.
+`80-evm-isms.sh` deploys `TeeDcapIsm` on each EVM chain from `pccs-<chain>.json` plus the
+identity of the family named by `ENCLAVE_FAMILY` (default `celestia`, which is right for
+every Celestia-origin route).
 
-The other three origin ISMs are created the same way with the origin changed; Eden's uses
-`bootstrap-eden` for its checkpoint (step 11c). Live values:
+> **Bringing up a subset.** `80-evm-isms.sh` and `90-evm-warp.sh` take `CHAINS`, and
+> `85-celestia-isms.sh` takes `ORIGINS`. Set all three or none: an origin with an ISM from 85
+> but no enrolled router from 90 gives you a route that attests cleanly and then fails every
+> delivery with `no enrolled router found for origin <domain>`, forever, with nothing in the
+> deploy output to say why.
+>
+> ```sh
+> S="sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+> CHAINS="$S"  ./scripts/80-evm-isms.sh
+> ORIGINS="sepolia:11155111:ethereum:0x0000000000000000000000004917a9746a7b6e0a57159ccb7f5a6744247f2d0d" \
+>   ./scripts/85-celestia-isms.sh
+> CHAINS="$S"  ./scripts/90-evm-warp.sh
+> ```
+
+`85-celestia-isms.sh` creates all four Celestia-side ISMs and the routing ISM that fans them
+out, then points the mailbox and the warp tokens at it. It knows which family each origin
+belongs to, so Sepolia, Arbitrum and Base pin the ethereum identity while Eden pins the
+evolve one. Each reads a live checkpoint from its origin; Eden's uses `bootstrap-eden`
+(step 11c). Set `ISM_GENESIS_<ORIGIN>` to anchor one at an older checkpoint instead, which is
+the only way to carry in-flight messages across a redeployment. Live values:
 
 | origin | ISM on `teeism-local` |
 |---|---|
@@ -500,6 +536,11 @@ IGP.
 > On Celestia no aggregation is needed, because `required_hook` is already the merkle tree
 > hook, so `default_hook` can be the IGP and both run.
 
+> `20-celestia-hyperlane.sh` wires it the other way round, `--default-hook` the merkle tree
+> hook and `--required-hook` the noop hook, because a devnet has no IGP yet. Either order runs
+> the merkle tree hook, which is the part attestation depends on. Only redo it as described
+> here once the IGP exists.
+
 Register this deployment's Celestia domain on each EVM IGP with `setDestinationGasConfigs`.
 This is manual and the oracle service does not do it; without it `transferRemote` reverts with
 `IGP: no gas oracle for domain 1297040299`.
@@ -596,6 +637,7 @@ roots behind it, so a celestia-node light node for mocha runs beside the chain:
 
 ```sh
 IMG=ghcr.io/celestiaorg/celestia-node:v0.34.2-mocha
+D=$PWD/.state/mocha-light && mkdir -p "$D"      # from devnet/
 docker run --rm -v $D:/home/celestia -u "$(id -u):$(id -g)" $IMG celestia light init --p2p.network mocha
 # `init` writes a config `start` then rejects. Both need fixing by hand:
 #   add   [Share.LightAvailability] / SampleAmount = 16
@@ -652,6 +694,11 @@ then `InitHyperlaneCore`, an ISM, and the two synthetic routers.
 Write `.state/coprocessor.toml` from [coprocessor.toml.example](coprocessor.toml.example),
 replacing every ISM and router address with this deployment's.
 
+> **Only if you run the relayer under systemd, as step 13 does.** `make start` calls
+> `60-start.sh`, which *generates* this same file from `.state/out/` on every run and
+> overwrites whatever is there. On a devnet, let it; hand-editing is for the deployed host,
+> where nothing regenerates it.
+
 Per route, the fields that matter:
 
 | field | meaning |
@@ -682,7 +729,14 @@ arbitrum  logs                  https://arbitrum-sepolia-rpc.publicnode.com
 arbitrum  l2 archive            https://api.zan.top/arb-sepolia
 base      destination + logs    https://sepolia.base.org
 base      l2 archive            a metered key; see below
+eden      destination + logs    https://rpc.testnet.eden.gateway.fm/
+eden      l2 archive            https://ev-reth-eden-testnet.binarybuilders.services:8545/
+eden      da                    http://localhost:26658, the mocha light node from 11c
 ```
+
+> Eden's `l2_rpc` is the one endpoint here that is not interchangeable. It has to serve
+> `debug_executionWitness`, which is what the enclave re-executes against, and no public Eden
+> endpoint does. `logs_rpc` can stay on the public one.
 
 > **Base origin is the one route that needs a paid archive.** It calls `eth_getProof` roughly
 > 220k blocks back, the five day dispute window. Every free endpoint tried refuses with
@@ -766,6 +820,17 @@ UI_DIST=~/tee-ism-nonzk/bridge-app/dist docker compose up -d
 An empty `VITE_*_ROUTER` is how a route reports itself as not deployed, so the UI hides the
 control rather than offering one that cannot work. Leave one blank only if that asset
 genuinely has no router on that chain.
+
+> **Build the bundle on the host it is served from.** Vite bakes every `VITE_*` value into the
+> JavaScript at build time, so `dist/` is not portable: it is this `.env.local` compiled in.
+> Build it on a laptop that has its own `.env.local` - which `make start` writes, pointing at a
+> local devnet - and you get a bundle hardcoded to `http://localhost:26657`. Copy that to the
+> server and every visitor gets `Failed to fetch`, while the server itself looks perfectly
+> healthy, because nothing server-side is wrong. Check before shipping one:
+>
+> ```sh
+> grep -c 'localhost:26657' dist/assets/index-*.js   # must be 0
+> ```
 
 Adding a chain to the UI is more than these values: `src/config.ts` has to gain a `CHAINS`
 entry, `App.tsx` a name in `COUNTERPARTIES`, and `site.conf` an `/evm/<chain>/` proxy. Eden
@@ -867,5 +932,5 @@ reverse waits on origin finality, and the two L2 origins wait on their dispute w
 Finally, verify that what is deployed is what is in this checkout:
 
 ```sh
-deploy/verify-digest.sh <app-id> --ism <addr> --rpc <url>
+FAMILY=celestia deploy/verify-digest.sh <app-id> --ism <addr> --rpc <url>
 ```

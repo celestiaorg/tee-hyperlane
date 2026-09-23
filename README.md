@@ -2,7 +2,7 @@
 
 Hyperlane bridging between Celestia and (EVM) Chains, where messages are
 authorised by a **light client running inside a TDX enclave**, not by a validator multisig.
-Two enclaves cover four networks.
+Three enclaves, one per origin family, cover four networks.
 
 The destination verifies the enclave's TDX quote directly. There is no zero-knowledge proof
 anywhere in this path.
@@ -56,7 +56,7 @@ Three guides, all in [deploy/](deploy/):
 - **[deploy/INTERACT.md](deploy/INTERACT.md)** - Keplr and MetaMask, the CLI, what each route
   should take, what it costs, and how to check the chain rather than the UI.
 
-Run `deploy/verify-digest.sh <app-id>` to check any value below yourself, without trusting
+Run `FAMILY=<family> deploy/verify-digest.sh <app-id>` to check any value below yourself, without trusting
 this file.
 
 ## Deployments
@@ -216,21 +216,23 @@ in this deployment uses them.
 Bootstrapping has one ordering constraint: the enclave identity can only be pinned after an
 enclave exists.
 
-1. Build and publish the `tee-node` image; pin its digest in `docker-compose.yml`.
-2. Deploy two CVMs (`tdx.small` is enough - the enclave is a verifier, not a prover).
-3. `GET /policy` on one of them, write the measurements into
+1. Build and publish the three `tee-node` images; pin each digest in its
+   `deploy/docker-compose.<family>.yml`.
+2. Deploy three CVMs, one per family (`tdx.small` is enough - the enclave is a verifier, not
+   a prover).
+3. `GET /policy` on each, write the measurements into
    `tee-circuit/tee-attestation/enclave-identity.toml`, set
-   `require_enclave = true`, rebuild the circuits.
+   `require_enclave = true`, rebuild.
 4. Deploy Hyperlane core on the Celestia chain, then the warp routes.
 5. Deploy `TeeDcapIsm.sol` on each EVM chain and point the warp routers at it.
 6. Create the per-origin ISMs on Celestia, and a routing ISM over them.
 7. Create the paymaster and start the oracle.
 8. `tee-hyperlane run`.
 
-`make init` does steps 1 to 5. Every step, including 6 and 7, is in
+`make init` does steps 1 to 6. Every step, including 7, is in
 [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
-Until step 3, `require_enclave = false` builds a circuit that accepts any genuine non-debug
+Until step 3, `require_enclave = false` builds an enclave that accepts any genuine non-debug
 TDX enclave on an acceptable TCB level. That is enough to develop and test against, and it is
 not silent: such a build warns at compile time and produces a distinct
 `ANY-DEVELOPMENT-ONLY` identity digest that is visible in the ISM state on chain.
