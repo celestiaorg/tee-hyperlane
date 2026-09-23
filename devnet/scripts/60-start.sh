@@ -203,9 +203,12 @@ fi
 # ---------------------------------------------------------------- l2 -> celestia
 # Both derive their root from the L2's dispute anchor on L1, so a transfer cannot land until
 # the game covering its block resolves. On Base Sepolia that is five days. Not a stall.
-for row in "arbitrum:421614:${ARBITRUM_L2_RPC}:${ARBITRUM_LOGS}:${ARBITRUM_ANCHOR}:${ARBITRUM_MAILBOX}:${ARBITRUM_HOOK}" \
-           "base:84532:${BASE_L2_RPC}:${BASE_RPC}:${BASE_ANCHOR}:${BASE_MAILBOX}:${BASE_HOOK}"; do
-  IFS=: read -r chain domain l2rpc logsrpc anchor mailbox hook <<EOF
+# Separated by `|`, not `:`. Three of these seven fields are URLs and every one of them
+# contains "://", so a colon-separated split assigns "https" to l2_rpc and walks every field
+# after it one position to the left. It produces a config that parses and is wrong.
+for row in "arbitrum|421614|${ARBITRUM_L2_RPC}|${ARBITRUM_LOGS}|${ARBITRUM_ANCHOR}|${ARBITRUM_MAILBOX}|${ARBITRUM_HOOK}" \
+           "base|84532|${BASE_L2_RPC}|${BASE_RPC}|${BASE_ANCHOR}|${BASE_MAILBOX}|${BASE_HOOK}"; do
+  IFS='|' read -r chain domain l2rpc logsrpc anchor mailbox hook <<EOF
 ${row}
 EOF
   has "ism-celestia-${chain}" || { warn "no ism-celestia-${chain}; skipping ${chain}-to-celestia"; continue; }

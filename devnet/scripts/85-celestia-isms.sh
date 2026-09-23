@@ -96,7 +96,22 @@ for row in ${ORIGINS}; do
   IFS=: read -r name domain family tree <<< "${row}"
   say "== ${name} (domain ${domain}, ${family} enclave)"
 
-  genesis="$(genesis_for "${name}" "${family}")"
+  # Already created on this chain, so leave it alone. An origin whose bootstrap failed the
+  # first time is the normal reason to run this again - Eden's needs a synced DA node, which
+  # can take half an hour - and without this the re-run mints a second ISM for every origin
+  # that already worked, and a second routing ISM over them. `make stop` clears .state, so a
+  # fresh chain starts from nothing and this never hides a stale id.
+  if has "ism-celestia-${name}"; then
+    say "  already created: $(load "ism-celestia-${name}")"
+    continue
+  fi
+
+  # `|| true` is load-bearing. lib.sh sets `-euo pipefail`, so a bootstrap that exits non-zero
+  # - base with no archive key, Eden with a DA node that has not caught up - kills the whole
+  # script at this assignment, before the guard on the next line can skip that origin. The
+  # guard read as if it handled the case and never once ran: base took the run down with it
+  # and Eden, the origin after it, was never attempted.
+  genesis="$(genesis_for "${name}" "${family}" || true)"
   [ -n "${genesis}" ] || { warn "  could not anchor ${name}; skipping"; continue; }
 
   OUT_DIR="${OUT_DIR}" python3 - "${genesis}" "${tree}" "${name}" "${family}" <<'PY'
@@ -133,9 +148,16 @@ done
 # Four origins deliver into one Celestia token and each ISM pins one origin domain, so a
 # single ISM would reject three of four.
 say "== routing ism"
-hash="$("${A}" tx hyperlane ism create-routing ${TX} 2>&1 \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')"
-routing="$(settle "${hash}" | python3 -c '
+# Reused, never re-created. This is the ISM the mailbox and both warp tokens point at, so a
+# second one does not replace the first, it orphans it: the domains registered on the old one
+# stay there and nothing points at it any more.
+if has routing-ism-id; then
+  routing="$(load routing-ism-id)"
+  say "  already created: ${routing}"
+else
+  hash="$("${A}" tx hyperlane ism create-routing ${TX} 2>&1 \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')"
+  routing="$(settle "${hash}" | python3 -c '
 import sys, json
 for ev in json.load(sys.stdin)["events"]:
     if "RoutingIsm" in ev["type"] or "routing" in ev["type"].lower():
@@ -144,9 +166,10 @@ for ev in json.load(sys.stdin)["events"]:
                 print(a["value"].strip(chr(34)))
                 raise SystemExit
 ')"
-[ -n "${routing}" ] || die "routing ISM not created"
-save routing-ism-id "${routing}"
-say "  ${routing}"
+  [ -n "${routing}" ] || die "routing ISM not created"
+  save routing-ism-id "${routing}"
+  say "  ${routing}"
+fi
 
 for row in ${ORIGINS}; do
   IFS=: read -r name domain _ _ <<< "${row}"
