@@ -290,7 +290,7 @@ end to end                              0.006011    0.000032    0.001366
 On Celestia an attestation is 343,592 gas and a delivery 117,337, carrying 7,785 bytes of
 quote, event log and Intel collateral.
 
-The enclaves are cheap because they prove nothing: 2 x `tdx.small` is $2.92/day.
+The enclaves are cheap because they prove nothing: 3 x `tdx.small` is $4.38/day.
 
 ## What is trusted
 

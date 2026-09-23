@@ -149,7 +149,7 @@ Budget for it. Do not do it casually.
 > The Nix source filter means editing the coprocessor, the gas oracle or a test **cannot** move
 > the digest. Only `crates/tee-node`, `crates/hyperlane-types`, `tee-circuit/tee-attestation`
 > and the manifests do. Check with
-> `nix eval --raw .#packages.x86_64-linux.image.drvPath` before and after.
+> `nix eval --raw .#packages.x86_64-linux.image-<family>.drvPath` before and after.
 
 ## Rebuilding the chain image
 
@@ -185,6 +185,119 @@ nix build .#image-celestia --rebuild   # exit 0 means bit-identical
 > **`os_image_hash` must be `bd369a8c…`.** That is the production dstack OS. `de9c74f0…` means
 > a dev image was provisioned, which permits shell access into the CVM and makes the
 > measurements meaningless.
+
+---
+
+## Validating the wiring
+
+`verify-digest.sh` proves one link: that a live enclave satisfies a given ISM. It does not
+prove that the ISM is the one your warp routes actually use, or that this relayer is what
+submits to it. Those are separate questions and this is how to answer them.
+
+Every command here is read-only, and each link is checked against the thing downstream of it
+rather than against a config file. `.env.local` and `coprocessor.toml` are both claims; the
+chain is not.
+
+**1. What a warp router will actually consult.** Start here, not from a config. The mailbox
+asks the *recipient* which ISM it wants, and the recipient is the warp router:
+
+```sh
+cast call <router> 'interchainSecurityModule()(address)' --rpc-url <rpc>
+```
+
+Do it for every router on the chain, both assets. They should all name the same ISM. A zero
+address is not a failure but it means something different: the router names none, so the
+mailbox default applies, and that is a different contract to go and check.
+
+**2. What that ISM pins.** All three are immutable and have no setter:
+
+```sh
+cast call <ism> 'identityDigest()(bytes32)'      --rpc-url <rpc>
+cast call <ism> 'enclaveMeasurements()(bytes32)' --rpc-url <rpc>
+cast call <ism> 'mailbox()(address)'             --rpc-url <rpc>
+```
+
+**3. That a live enclave satisfies it.** This is the link `verify-digest.sh` already covers:
+
+```sh
+FAMILY=celestia deploy/verify-digest.sh <app-id> --ism <ism> --rpc <rpc>
+```
+
+An EVM destination verifies a *Celestia*-origin attestation, so all four EVM ISMs pin the
+**celestia** family. The Celestia-side ISMs pin whichever family attests their origin.
+
+**4. That this relayer is the thing submitting.** The strongest evidence, because it is
+history rather than configuration. Every state change is a `submitAttestation` from the
+relayer key, and nothing else can write to an ISM:
+
+```sh
+curl -s "https://eth-sepolia.blockscout.com/api/v2/addresses/<ism>/transactions?filter=to" \
+  | jq -r '.items[] | "\(.timestamp) \(.from.hash) \(.method) \(.status)"'
+```
+
+Cross-check a submission against the state it produced: the transaction should land a few
+seconds after the origin head time in `state()`. Decode that state as:
+
+```
+[ 0: 32] state_root      [32: 36] origin_domain   [36: 44] height
+[44: 52] timestamp       [52: 84] lc_store_commit [84:116] identity_digest
+```
+
+**The Celestia side** is the same walk through the module instead of through contracts. Both
+warp tokens name a routing ISM; the routing ISM fans out by origin domain; the ISM it routes
+to is the one that verifies:
+
+```sh
+curl -s localhost:1317/hyperlane/v1/tokens | jq -r '.tokens[] | "\(.id) \(.ism_id)"'
+curl -s localhost:1317/hyperlane/v1/isms/<routing-ism> | jq -r '.ism.routes[]'
+celestia-appd query teeism ism <origin-ism> --node tcp://localhost:26657 -o json
+```
+
+### Two things that look wrong and are not
+
+> **`origin_domain` reads `1297040200` on every EVM ISM, and this chain's `local_domain` is
+> `1297040299`.** That is not drift. `Origin::Celestia => 1297040200` is a constant in
+> `crates/tee-node/src/origins/mod.rs`, mocha's domain, and the deployed chain is a local
+> devnet. The field is self-consistent across genesis and every transition, which is why
+> nothing rejects.
+>
+> What it costs: that field separates a Celestia-origin attestation from an Ethereum one,
+> which is what it is for, but it does **not** bind an ISM to one particular Celestia chain.
+> `lc_store_commit` does. The enclave verifies Tendermint consensus forward from that stored
+> light-client commitment, so a different Celestia chain has a different validator set and
+> cannot produce headers that verify against it. The protection is real; the label is wrong.
+> Fixing it means taking the domain from the origin's config rather than a constant, and that
+> changes the state layout's meaning, so it is a redeploy.
+
+> **An ISM's state can be hours old and the route be healthy.** A route only advances when it
+> has something to deliver, so the age of `timestamp` measures the last transfer, not
+> liveness. Base sitting at five days is its dispute window. Read `/api/status` for what the
+> relayer is doing now.
+
+### Where the source is verified
+
+`TeeDcapIsm` is verified on **Blockscout** on all four EVM chains, not on Etherscan, Arbiscan
+or Basescan. Those index the same contracts but hold no source, so a link there shows raw
+bytecode and looks alarming. The UI links to Blockscout for this reason.
+
+```
+https://eth-sepolia.blockscout.com/address/<ism>?tab=contract
+https://arbitrum-sepolia.blockscout.com/address/<ism>?tab=contract
+https://base-sepolia.blockscout.com/address/<ism>?tab=contract
+https://eden-testnet.blockscout.com/address/<ism>?tab=contract
+```
+
+Verifying on Etherscan as well needs an Etherscan API key, which this repo does not carry.
+The constructor arguments any verifier needs can be recovered without one, by splitting the
+creation transaction at the end of the locally built init bytecode:
+
+```sh
+forge build
+cast tx <creation-tx> input --rpc-url <rpc>        # init bytecode ++ abi-encoded args
+```
+
+That comparison is worth more than the badge: if the local init bytecode is a prefix of the
+deployment's, the deployed contract *is* this source, verified or not.
 
 ---
 

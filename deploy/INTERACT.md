@@ -301,8 +301,8 @@ On Celestia an attestation is 343,592 gas and a delivery 117,337, carrying 7,785
 quote, event log and Intel collateral.
 
 An attestation covers a whole **batch**, so these are per batch and not per message. The
-enclaves themselves are cheap because they prove nothing: two `tdx.small` instances at
-$0.0608/hr, $2.92/day for both.
+enclaves themselves are cheap because they prove nothing: three `tdx.small` instances, one
+per origin family, at $0.0608/hr, $4.38/day for all three.
 
 Fees are charged to the sender and accrue to the paymaster's beneficiary: on Celestia in
 `utia` to the IGP owner, on the EVM chains to the relayer key.
