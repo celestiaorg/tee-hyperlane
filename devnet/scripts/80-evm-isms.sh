@@ -74,10 +74,15 @@ say "  origin hook   ${HOOK}"
 # chain : chain-id : hyperlane mailbox
 # Eden's mailbox is ours: unlike the other three it has no canonical Hyperlane deployment,
 # so `DeployHyperlaneCore` put one there.
-CHAINS="arbitrum:421614:0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8
+# Override CHAINS to bring up a subset, which is what a partial or staged deployment needs:
+#
+#   CHAINS="sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766" ./scripts/80-evm-isms.sh
+#
+# Each row is chain : chain-id : hyperlane mailbox.
+CHAINS="${CHAINS:-arbitrum:421614:0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8
 base:84532:0x6966b0E55883d49BFB24539356a2f8A673E02039
 sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766
-eden:3735928814:0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729"
+eden:3735928814:0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729}"
 
 # A here-string, not a pipe: `cmd | while` runs the loop in a subshell, so `die` only exits
 # the subshell and `save` writes state the parent never sees. That is how this silently

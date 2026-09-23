@@ -56,7 +56,7 @@ Three guides, all in [deploy/](deploy/):
 - **[deploy/INTERACT.md](deploy/INTERACT.md)** - Keplr and MetaMask, the CLI, what each route
   should take, what it costs, and how to check the chain rather than the UI.
 
-Run `deploy/verify-digest.sh <app-id>` to check any value below yourself, without trusting
+Run `FAMILY=<family> deploy/verify-digest.sh <app-id>` to check any value below yourself, without trusting
 this file.
 
 ## Deployments

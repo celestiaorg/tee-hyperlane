@@ -167,9 +167,9 @@ A consensus-relevant change to `x/teeism` is a chain upgrade, not a container re
 ## Verifying what is actually running
 
 ```sh
-deploy/verify-digest.sh <app-id>                            # the compose chain
-deploy/verify-digest.sh <app-id> --ism <addr> --rpc <url>   # also what the chain accepts
-deploy/verify-digest.sh <app-id> --rebuild                  # also the image, ~35 min
+FAMILY=celestia deploy/verify-digest.sh <app-id>                          # the compose chain
+FAMILY=celestia deploy/verify-digest.sh <app-id> --ism <a> --rpc <url>    # also what the chain accepts
+FAMILY=celestia deploy/verify-digest.sh <app-id> --rebuild                # also the image, ~35 min
 ```
 
 It reproduces `compose_hash` from the `app_compose` the enclave hands over, checks that the

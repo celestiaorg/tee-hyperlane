@@ -103,6 +103,13 @@ Only `EVM_PRIVATE_KEY` is required. Leave `CELESTIA_MNEMONIC` empty on a first d
 4 generates one and writes it back into the same file. `ALCHEMY_API_KEY` and `ALCHEMY_BASE_KEY`
 are wanted by two routes each; the file says which and why.
 
+> **`EVM_PRIVATE_KEY` must be this deployment's alone.** It pays for deploys *and* signs every
+> relayer submission, so two deployments sharing one key put two relayers in a nonce race on
+> every EVM chain they have in common. Both then see `nonce too low` and `replacement
+> transaction underpriced` at random, on routes that are otherwise healthy. Generate a fresh
+> one with `cast wallet new` and fund it; do not copy the key from a host that is still
+> running.
+
 `devnet/.env` survives `make stop`, which is the point of keeping it out of `.state/`.
 
 > **Upgrading a host that predates this file**, and still has `.state/evm-key`,
@@ -205,6 +212,7 @@ identities.
 Adding a family is four small things: the `families` list in `flake.nix`, a cargo feature in
 `crates/tee-node/Cargo.toml`, a module under `crates/tee-node/src/origins/`, and a compose
 file. Nothing else in the build is per-family.
+
 ---
 
 ## 6. The three Phala CVMs
@@ -514,6 +522,11 @@ IGP.
 > On Celestia no aggregation is needed, because `required_hook` is already the merkle tree
 > hook, so `default_hook` can be the IGP and both run.
 
+> `20-celestia-hyperlane.sh` wires it the other way round, `--default-hook` the merkle tree
+> hook and `--required-hook` the noop hook, because a devnet has no IGP yet. Either order runs
+> the merkle tree hook, which is the part attestation depends on. Only redo it as described
+> here once the IGP exists.
+
 Register this deployment's Celestia domain on each EVM IGP with `setDestinationGasConfigs`.
 This is manual and the oracle service does not do it; without it `transferRemote` reverts with
 `IGP: no gas oracle for domain 1297040299`.
@@ -610,6 +623,7 @@ roots behind it, so a celestia-node light node for mocha runs beside the chain:
 
 ```sh
 IMG=ghcr.io/celestiaorg/celestia-node:v0.34.2-mocha
+D=$PWD/.state/mocha-light && mkdir -p "$D"      # from devnet/
 docker run --rm -v $D:/home/celestia -u "$(id -u):$(id -g)" $IMG celestia light init --p2p.network mocha
 # `init` writes a config `start` then rejects. Both need fixing by hand:
 #   add   [Share.LightAvailability] / SampleAmount = 16
@@ -665,6 +679,11 @@ then `InitHyperlaneCore`, an ISM, and the two synthetic routers.
 
 Write `.state/coprocessor.toml` from [coprocessor.toml.example](coprocessor.toml.example),
 replacing every ISM and router address with this deployment's.
+
+> **Only if you run the relayer under systemd, as step 13 does.** `make start` calls
+> `60-start.sh`, which *generates* this same file from `.state/out/` on every run and
+> overwrites whatever is there. On a devnet, let it; hand-editing is for the deployed host,
+> where nothing regenerates it.
 
 Per route, the fields that matter:
 
@@ -881,5 +900,5 @@ reverse waits on origin finality, and the two L2 origins wait on their dispute w
 Finally, verify that what is deployed is what is in this checkout:
 
 ```sh
-deploy/verify-digest.sh <app-id> --ism <addr> --rpc <url>
+FAMILY=celestia deploy/verify-digest.sh <app-id> --ism <addr> --rpc <url>
 ```
