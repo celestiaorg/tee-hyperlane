@@ -35,10 +35,15 @@ TX="--from relayer --keyring-backend test --home ${CELHOME} --chain-id ${CHAINID
     --node ${CELESTIA_RPC} --fees 200000utia --gas 900000 --broadcast-mode sync -y -o json"
 
 # origin : domain : enclave family : merkle tree address on that origin
-ORIGINS="sepolia:11155111:ethereum:0x0000000000000000000000004917a9746a7b6e0a57159ccb7f5a6744247f2d0d
+#
+# Override ORIGINS to bring up a subset, and keep it in step with CHAINS in 80-evm-isms.sh
+# and 90-evm-warp.sh. An origin with an ISM here but no enrolled warp router from 90 produces
+# a route that attests fine and then fails every delivery with "no enrolled router found for
+# origin <domain>", forever.
+ORIGINS="${ORIGINS:-sepolia:11155111:ethereum:0x0000000000000000000000004917a9746a7b6e0a57159ccb7f5a6744247f2d0d
 arbitrum:421614:ethereum:0x000000000000000000000000ad34a66bf6db18e858f6b686557075568c6e031c
 base:84532:ethereum:0x00000000000000000000000086fb9f1c124fb20ff130c41a79a432f770f67afd
-eden:3735928814:evolve:0x000000000000000000000000cfbe7016d123d52a7db4fc7d087ccb5421dbf8db"
+eden:3735928814:evolve:0x000000000000000000000000cfbe7016d123d52a7db4fc7d087ccb5421dbf8db}"
 
 # Wait for a transaction and report its code, since `--broadcast-mode sync` only means the
 # node accepted it.
