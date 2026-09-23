@@ -729,7 +729,14 @@ arbitrum  logs                  https://arbitrum-sepolia-rpc.publicnode.com
 arbitrum  l2 archive            https://api.zan.top/arb-sepolia
 base      destination + logs    https://sepolia.base.org
 base      l2 archive            a metered key; see below
+eden      destination + logs    https://rpc.testnet.eden.gateway.fm/
+eden      l2 archive            https://ev-reth-eden-testnet.binarybuilders.services:8545/
+eden      da                    http://localhost:26658, the mocha light node from 11c
 ```
+
+> Eden's `l2_rpc` is the one endpoint here that is not interchangeable. It has to serve
+> `debug_executionWitness`, which is what the enclave re-executes against, and no public Eden
+> endpoint does. `logs_rpc` can stay on the public one.
 
 > **Base origin is the one route that needs a paid archive.** It calls `eth_getProof` roughly
 > 220k blocks back, the five day dispute window. Every free endpoint tried refuses with
