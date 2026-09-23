@@ -25,6 +25,8 @@ import {
   toRecipientBytes32,
 } from "./bridge";
 import type { BridgeFee, Step, Transfer } from "./bridge";
+import type { WiredIsm } from "./ism";
+import { resolveWiredIsm, shortId } from "./ism";
 import { messageIdFromCelestiaTx, sendFromCelestia } from "./celestia";
 import {
   connectKeplr,
@@ -60,7 +62,7 @@ const STEP_LABEL: Record<Step, string> = {
 export default function App() {
   const [evm, setEvm] = useState<Account | null>(null);
   const [cosmos, setCosmos] = useState<Account | null>(null);
-  const [tab, setTab] = useState<"bridge" | "faucet">("bridge");
+  const [tab, setTab] = useState<"bridge" | "faucet" | "history">("bridge");
   const [counterparty, setCounterparty] = useState<ChainId>("sepolia");
   const [outbound, setOutbound] = useState(true);
   const [token, setToken] = useState<TokenId>("TIA");
@@ -69,6 +71,8 @@ export default function App() {
   const [transfers, setTransfers] = useState<Transfer[]>(loadTransfers);
   const [balances, setBalances] = useState<Record<string, bigint>>({});
   const [fee, setFee] = useState<BridgeFee | null>(null);
+  const [ism, setIsm] = useState<WiredIsm | null>(null);
+  const [ismError, setIsmError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   // Shown once the origin transaction is in a block and the message id is known, which is the
@@ -172,6 +176,20 @@ export default function App() {
       current = false;
     };
   }, [from, to]);
+
+  // Which ISM will authorise this on arrival, asked of the destination chain rather than read
+  // from config, so that what is shown is what will actually be consulted.
+  useEffect(() => {
+    let current = true;
+    setIsm(null);
+    setIsmError(null);
+    resolveWiredIsm(token, from, to)
+      .then((wired) => current && setIsm(wired))
+      .catch((e) => current && setIsmError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      current = false;
+    };
+  }, [token, from, to]);
 
 
 
@@ -299,6 +317,14 @@ export default function App() {
             Bridge
           </button>
           <button
+            className={tab === "history" ? "tab on" : "tab"}
+            onClick={() => setTab("history")}
+          >
+            History
+            {/* The count is the reason to look, so it belongs on the tab rather than behind it. */}
+            {transfers.length > 0 && <span className="tab-count">{transfers.length}</span>}
+          </button>
+          <button
             className={tab === "faucet" ? "tab on" : "tab"}
             onClick={() => setTab("faucet")}
           >
@@ -332,6 +358,37 @@ export default function App() {
       <main className="center">
         {tab === "faucet" ? (
           <Faucet address={cosmos?.address ?? null} onFunded={loadBalances} />
+        ) : tab === "history" ? (
+          <section className="card history">
+            <div className="card-head">
+              <h1>History</h1>
+              {transfers.length > 0 && (
+                <span className="history-count">
+                  {transfers.length} transfer{transfers.length === 1 ? "" : "s"}
+                </span>
+              )}
+            </div>
+            {transfers.length === 0 ? (
+              <p className="note">
+                Nothing sent from this browser yet. Transfers are kept locally, so this list is
+                per browser and not per wallet.
+              </p>
+            ) : (
+              // Scrolls inside the card rather than the page, so the heading and the count stay
+              // put while a long history moves under them.
+              <div className="history-scroll">
+                <ul className="transfers">
+                  {transfers.map((t) => (
+                    <TransferRow
+                      key={t.messageId}
+                      transfer={t}
+                      onRefresh={() => update(t.messageId)}
+                    />
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
         ) : (
           <>
           <section className="card">
@@ -449,6 +506,26 @@ export default function App() {
               <dd>{fee ? formatFee(fee) : "quoting…"}</dd>
               <dt>Arrives</dt>
               <dd>{describeDuration(expectedSeconds(from))} from now</dd>
+              <dt>Verified on arrival by</dt>
+              <dd>
+                {ismError ? (
+                  <span className="ism-bad">could not read it: {ismError}</span>
+                ) : !ism ? (
+                  "reading…"
+                ) : (
+                  <>
+                    {ism.url ? (
+                      <a href={ism.url} target="_blank" rel="noreferrer" title={ism.id}>
+                        {shortId(ism.id)}
+                      </a>
+                    ) : (
+                      <span title={ism.id}>{shortId(ism.id)}</span>
+                    )}
+                    <span className="ism-where"> on {destination.name}</span>
+                    {ism.via && <span className="ism-via">{ism.via}</span>}
+                  </>
+                )}
+              </dd>
             </dl>
 
             {!live && <p className="note">{whyNotLive(token, from, to)}</p>}
@@ -465,22 +542,16 @@ export default function App() {
             </p>
           </section>
 
-          <section className="card list">
-            <h2>Your transfers</h2>
-            {transfers.length === 0 ? (
-              <p className="note">Nothing sent from this browser yet.</p>
-            ) : (
-              <ul className="transfers">
-                {transfers.map((t) => (
-                  <TransferRow
-                    key={t.messageId}
-                    transfer={t}
-                    onRefresh={() => update(t.messageId)}
-                  />
-                ))}
-              </ul>
-            )}
-        </section>
+          {/* Transfers live on their own tab now. What belongs beside the form is the one
+              transfer you just sent, not a growing list that pushes the form off screen. */}
+          {transfers.length > 0 && (
+            <p className="note recent">
+              <button className="linklike" onClick={() => setTab("history")}>
+                {transfers.length} transfer{transfers.length === 1 ? "" : "s"} in History
+              </button>
+              , most recently {describeWhen(transfers[0].sentAt)}.
+            </p>
+          )}
           </>
         )}
       </main>
