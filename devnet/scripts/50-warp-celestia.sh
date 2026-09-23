@@ -14,13 +14,19 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 wait_for_chain
 
-# Point a token at the TEE ISM explicitly rather than relying on the mailbox default, so that
-# adding another ISM later cannot silently change what secures the route.
+# Point a token at the routing ISM explicitly rather than relying on the mailbox default, so
+# that adding another ISM later cannot silently change what secures the route.
+#
+# The routing ISM, never one origin's. This pointed at `ism-celestia-sepolia` before the
+# per-family split, which was the same thing when there was one origin and is wrong now: a
+# token secured by the Sepolia-origin ISM rejects every Eden-origin transfer into it. Only
+# reachable if 85-celestia-isms.sh ran first, which in `make init` it does not, so the guard
+# below is the normal path and 85 does the pointing itself.
 point_at_ism() {
   local token="$1"
-  has ism-celestia-sepolia || return 0
-  say "pointing ${token} at the tee ism"
-  tx relayer warp set-token "${token}" --ism-id "$(load ism-celestia-sepolia)" >/dev/null 2>&1 \
+  has routing-ism-id || return 0
+  say "pointing ${token} at the routing ism"
+  tx relayer warp set-token "${token}" --ism-id "$(load routing-ism-id)" >/dev/null 2>&1 \
     || warn "could not set the token ism; the mailbox default still applies"
 }
 

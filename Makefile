@@ -21,9 +21,9 @@ init:
 	@$(SCRIPTS)/10-celestia-up.sh
 	@$(SCRIPTS)/20-celestia-hyperlane.sh
 	@$(SCRIPTS)/30-enclave-up.sh
-	@$(SCRIPTS)/40-create-ism.sh
 	@$(SCRIPTS)/50-warp-celestia.sh
 	@$(SCRIPTS)/80-evm-isms.sh
+	@$(SCRIPTS)/85-celestia-isms.sh
 	@$(SCRIPTS)/90-evm-warp.sh
 	@echo
 	@echo "devnet is ready. 'make start' runs the relayer and the UI."

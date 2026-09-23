@@ -154,6 +154,12 @@ celestia-appd tx warp transfer <celestia-token-id> <destination-domain> \
   --gas auto --gas-adjustment 1.5 --gas-prices 0.002utia --max-hyperlane-fee 10000000utia -y
 ```
 
+> Two things bite if you script this. `--gas auto` prints `gas estimate: <n>` to stdout
+> *before* the response, so `-o json` output is not parseable JSON and a pipe into `jq` or
+> `python -m json.tool` fails on the first line. And the CLI has already broadcast by the time
+> your parser fails, so re-running sends the transfer twice. Read the `txhash` line instead.
+> `-o json` is also not accepted by `keys` subcommands at all; they want `--output json`.
+
 Leaving an EVM chain. A collateral router needs an `approve` first; a synthetic burns its own
 supply and does not. `--value` pays the origin mailbox's protocol fee, which Sepolia's
 canonical mailbox charges and the other three do not.
