@@ -402,6 +402,20 @@ need eight ISMs, four on each side.
 identity of the family named by `ENCLAVE_FAMILY` (default `celestia`, which is right for
 every Celestia-origin route).
 
+> **Bringing up a subset.** `80-evm-isms.sh` and `90-evm-warp.sh` take `CHAINS`, and
+> `85-celestia-isms.sh` takes `ORIGINS`. Set all three or none: an origin with an ISM from 85
+> but no enrolled router from 90 gives you a route that attests cleanly and then fails every
+> delivery with `no enrolled router found for origin <domain>`, forever, with nothing in the
+> deploy output to say why.
+>
+> ```sh
+> S="sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+> CHAINS="$S"  ./scripts/80-evm-isms.sh
+> ORIGINS="sepolia:11155111:ethereum:0x0000000000000000000000004917a9746a7b6e0a57159ccb7f5a6744247f2d0d" \
+>   ./scripts/85-celestia-isms.sh
+> CHAINS="$S"  ./scripts/90-evm-warp.sh
+> ```
+
 `85-celestia-isms.sh` creates all four Celestia-side ISMs and the routing ISM that fans them
 out, then points the mailbox and the warp tokens at it. It knows which family each origin
 belongs to, so Sepolia, Arbitrum and Base pin the ethereum identity while Eden pins the
