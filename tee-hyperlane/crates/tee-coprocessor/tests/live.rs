@@ -58,7 +58,17 @@ async fn checkpoint(epochs: u64) -> String {
 async fn run(config: &Config, name: &str, chain: &Chain) {
     let indexer = config.indexer(name).unwrap();
     let genesis = indexer.bootstrap([7; 32], None).await.expect("genesis");
-    let step = indexer.gather(&genesis).await.expect("gather");
+    // Eden captures one tree proof per call and can only attest a height a later Celestia post
+    // covers, so it takes a few rounds, as it does for the running route.
+    let mut step = indexer.gather(&genesis).await;
+    for _ in 0..rounds(name) {
+        if step.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        step = indexer.gather(&genesis).await;
+    }
+    let step = step.expect("gather");
     if step.chain.is_empty() {
         eprintln!("{name}: no newer head than genesis yet; nothing to check");
         return;
@@ -93,6 +103,10 @@ async fn run(config: &Config, name: &str, chain: &Chain) {
         head.height,
         messages.len()
     );
+}
+
+fn rounds(name: &str) -> usize {
+    if name == "eden" { 80 } else { 0 }
 }
 
 fn anchored(checkpoint: String) -> Config {
