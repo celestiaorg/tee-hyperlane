@@ -67,7 +67,7 @@ fn default_tick() -> u64 {
     60
 }
 fn default_api() -> String {
-    "127.0.0.1:3001".into()
+    "0.0.0.0:3001".into()
 }
 
 impl Config {

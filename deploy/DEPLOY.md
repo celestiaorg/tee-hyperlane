@@ -43,23 +43,21 @@ Keplr reach the chain on a single origin.
 
 ## 1. Where every config lives, and what goes in it
 
-Nothing here is created by a clone. Three files start as a template you copy and edit, two
-more you write from scratch, and everything else a script writes for you.
+Nothing here is created by a clone. Two files start as a template you copy and edit, one more
+you write from scratch, and everything else a script writes for you.
 
 ```sh
 cp devnet/.env.example             devnet/.env                      # every secret, one file
-cp deploy/coprocessor.toml.example devnet/.state/coprocessor.toml   # the eight routes
 cp deploy/gas-oracle.toml.example  devnet/.state/gas-oracle.toml    # paymaster upkeep
 chmod 600 devnet/.env
 ```
 
-The two `.state/` copies can wait until step 2 has created that directory. Only `devnet/.env`
+The `.state/` copy can wait until step 2 has created that directory. Only `devnet/.env`
 is needed before anything else runs.
 
 | you fill in | at | holds |
 |---|---|---|
 | `devnet/.env` | step 2 | every secret and metered key. One value is required, three are optional |
-| `devnet/.state/coprocessor.toml` | step 12 | the eight routes. Every ISM and router address |
 | `devnet/.state/gas-oracle.toml` | step 11 | `igp_id` and `evm_key_file` |
 | `bridge-app/.env.local` | step 14 | every address the UI shows |
 | `deploy/docker-compose.<family>.yml` | step 5, only if you rebuild an enclave | that family's image digest. **Measured** |
@@ -67,6 +65,7 @@ is needed before anything else runs.
 | written for you | by | holds |
 |---|---|---|
 | `devnet/.state/out/*` | the numbered scripts | one deployed id per file |
+| `devnet/.state/coprocessor.toml` | `write_config` in `devnet/scripts/lib.sh` | every chain and route, from `out/` |
 | `devnet/.state/out/pccs-<chain>.json` | step 8, or copied from another host | the Automata addresses per EVM chain |
 | `devnet/.state/bin/*` | step 3 | `celestia-appd`, `teeism-collateral`, `teeism-identity` |
 | `devnet/.state/celestia/` | step 4 | chain data and the keyring |
@@ -144,9 +143,6 @@ cd ~/tee-ism-nonzk/tee-hyperlane
 cargo build --release -p tee-coprocessor -p gas-oracle
 ```
 
-> The cargo build needs **Go on PATH** for a cgo dependency. Without it it fails with
-> `Failed to build Go library`, naming neither Go nor the crate.
-
 > The chain image carries no version or commit. `celestia-appd version --long` reports empty
 > strings, so an image cannot tell you which commit built it. Record the commit yourself, or
 > add `-ldflags` before you ship a second one.
@@ -209,9 +205,9 @@ Load, tag and push each, then pin its digest in `deploy/docker-compose.<family>.
 three compose files are what the three CVMs are deployed from, and their hashes are the three
 identities.
 
-Adding a family is four small things: the `families` list in `flake.nix`, a cargo feature in
-`crates/tee-node/Cargo.toml`, a module under `crates/tee-node/src/origins/`, and a compose
-file. Nothing else in the build is per-family.
+Adding a family is the `families` list and `familyOnly` in `flake.nix`, a cargo feature in
+`crates/tee-node/Cargo.toml`, and a compose file. Adding a chain to an existing family needs
+none of those; see step 15.
 
 ---
 
@@ -419,9 +415,10 @@ every Celestia-origin route).
 `85-celestia-isms.sh` creates all four Celestia-side ISMs and the routing ISM that fans them
 out, then points the mailbox and the warp tokens at it. It knows which family each origin
 belongs to, so Sepolia, Arbitrum and Base pin the ethereum identity while Eden pins the
-evolve one. Each reads a live checkpoint from its origin; Eden's uses `bootstrap-eden`
-(step 11c). Set `ISM_GENESIS_<ORIGIN>` to anchor one at an older checkpoint instead, which is
-the only way to carry in-flight messages across a redeployment. Live values:
+evolve one. Each genesis state comes from `tee-hyperlane genesis --chain <origin>`, which
+anchors at the origin's current head using the endpoints in the coprocessor config. Set
+`ISM_GENESIS_<ORIGIN>` to anchor one at an older checkpoint instead, which is the only way to
+carry in-flight messages across a redeployment. Live values:
 
 | origin | ISM on `teeism-local` |
 |---|---|
@@ -499,7 +496,7 @@ oracle change either, because the oracle keys on chains rather than assets.
 3. Point each EVM router at that chain's ISM and set the same aggregation hook the TIA router
    uses. **Skip the hook and the IGP quotes zero.**
 4. Add both new routers to `routers` on both directions of each affected route in
-   `coprocessor.toml` (step 12).
+   the coprocessor config (step 12).
 5. Add the `VITE_*` values to `bridge-app/.env.local` (step 14) and rebuild.
 6. Fund the collateral side.
 
@@ -591,17 +588,10 @@ $A tx bank send validator "$($A keys show faucet -a $H)" 1000000000000utia $H \
 
 > `keys add` takes `--output json`, not `-o json`. `-o` is rejected as an unknown shorthand.
 
-The endpoint lives in the attestation API, so `teeism-api.service` needs a keyring to sign
-with. Without `CELHOME` the endpoint reports itself unconfigured and the UI hides the tab
-rather than offering a button that cannot work:
-
-```
-Environment=APPD=/home/chef/tee-ism-nonzk/devnet/.state/bin/celestia-appd
-Environment=CELHOME=/home/chef/tee-ism-nonzk/devnet/.state/celestia
-Environment=CELESTIA_CHAIN_ID=teeism-local
-Environment=CELESTIA_RPC=http://localhost:26657
-Environment=FAUCET_KEY=faucet
-```
+The endpoint is served by the coprocessor's API and pays out on the chain named by
+`[faucet]` in its config, with that chain's `home` keyring. Without a `[faucet]` table the
+endpoint reports itself unconfigured and the UI hides the tab rather than offering a button
+that cannot work.
 
 Claims are recorded under `<proof_dir>/.faucet/<address>`, one file each, created before the
 send so two racing requests cannot both be paid. A failed send removes the marker so the
@@ -627,7 +617,7 @@ sequencer       ed25519 4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d6
 chain id string edennet-2
 ```
 
-The namespace and key are pinned in `origins/celestia_l2.rs`, not configured, for the same
+The namespace and key are pinned in `tee-node/src/celestia/eden.rs`, not configured, for the same
 reason the L2 anchors are. Neither came from a spec sheet: Eden's blocks are empty so its
 state root is constant, and using that as a needle found a Celestia blob carrying 657 Eden
 headers that all verify under this key.
@@ -654,26 +644,16 @@ docker run -d --name mocha-light --restart unless-stopped -p 127.0.0.1:26658:266
 **Eden's own RPC serves `eth_getProof` for the `latest` tag only.** Not a pruning window: a
 numbered block is refused even at head-minus-zero, because ten blocks a second means the
 block has moved on before the request lands. The relayer therefore captures a proof each tick
-and files it under its height, then attests once Celestia carries the signed header for that
-same height. Nothing to configure; it is how `attest_eden` works. `bootstrap-eden` does the
-same, anchoring only at a height it managed to capture.
+and files it under its height in `.state/proofs/chains/eden/trees/`, then attests once Celestia
+carries the signed header for that same height. Nothing to configure. `genesis --chain eden`
+does the same, anchoring only at a height it managed to capture.
 
-```sh
-tee-hyperlane bootstrap-eden --rpc https://rpc-mocha.pops.one \
-  --da-rpc http://localhost:26658 --identity-digest <digest> \
-  --out .state/proofs/eden-to-celestia/staging/attestation.json
-```
-
-**`l2_rpc` must serve `debug_executionWitness`.** That is what the enclave re-executes
+**Eden's `rpc` must serve `debug_executionWitness`.** That is what the enclave re-executes
 against, and it is the one field on this route that a plain public endpoint will not answer.
 Unlike `eth_getProof` it is served for historical blocks, so no capture-ahead is needed for
 it. The relayer finds the blocks that changed Eden's state by bisecting on the state root
 between the trusted height and the target, so a quiet stretch costs a handful of
 `eth_getBlockByNumber` calls rather than one per block.
-
-> A route that falls a long way behind will report that a span is "too long to re-execute in
-> one step". That is not a stall: it steps forward through the backlog one attestation at a
-> time, taking the newest height whose re-execution fits.
 
 The rest is ordinary: the Automata stack from step 8, Hyperlane core from `DeployHyperlaneCore`
 then `InitHyperlaneCore`, an ISM, and the two synthetic routers.
@@ -689,37 +669,47 @@ then `InitHyperlaneCore`, an ISM, and the two synthetic routers.
 
 ---
 
-## 12. The relayer config
+## 12. The coprocessor config
 
-Write `.state/coprocessor.toml` from [coprocessor.toml.example](coprocessor.toml.example),
-replacing every ISM and router address with this deployment's.
+`write_config` in `devnet/scripts/lib.sh` writes `.state/coprocessor.toml` from `.state/out/`:
+every chain once, and a route for every ISM that exists. The ISM scripts call it before they
+need a genesis state and `make start` calls it before starting, so on a devnet you never edit
+it. On a deployed host, run it the same way (`. devnet/scripts/lib.sh && write_config`) rather
+than editing by hand; [coprocessor.toml.example](coprocessor.toml.example) is what it produces
+on `ark`.
 
-> **Only if you run the relayer under systemd, as step 13 does.** `make start` calls
-> `60-start.sh`, which *generates* this same file from `.state/out/` on every run and
-> overwrites whatever is there. On a devnet, let it; hand-editing is for the deployed host,
-> where nothing regenerates it.
+```toml
+[chains.base]            # one table per chain; `kind` picks the code that reads it
+kind = "base"
+domain = 84532
+l1 = "sepolia"           # the chain whose light client secures this one
+rpc = "..."              # proof reads: an archive
+logs_rpc = "..."         # eth_getLogs, when `rpc` caps the range
+send_rpc = "..."         # transactions and ISM reads, when `rpc` is metered or rate-limited
+mailbox = "0x..."
+merkle_tree_hook = "0x..."
 
-Per route, the fields that matter:
+[[routes]]
+name = "base-to-celestia"
+from = "base"
+to = "celestia"
+enclave = "https://<app-id>-8080.dstack-pha-prod9.phala.network"
+ism = "0x..."
+routers = ["0x..."]
+```
 
-| field | meaning |
-|---|---|
-| `name` | route id, used in logs and by the dashboard |
-| `tee_node_url` | which CVM serves this origin |
-| `ism_id` | the destination ISM. An address on EVM, a 32-byte id on Celestia |
-| `merkle_tree_address` | the **origin's** Hyperlane merkle tree hook |
-| `attest_only = true` | selects the direct submit path. Without it the route uses the proof-carrying script and fails on a missing vkey |
-| `routers` | which recipients trigger a batch early. See below |
+Each kind's fields are documented on its `Config` in `tee-coprocessor/src/<chain>.rs`, and an
+unknown field is an error rather than silently ignored.
 
-**`routers` is the only per-asset field in this file.** Everything else is per chain pair. It
-names the recipients you actually serve, so that other traffic on a shared mailbox does not
-start a batch you have no message in. Get it wrong and nothing breaks: your transfers still
-deliver, because merkle replay forces batch completeness. They simply wait for other traffic
-to trigger a batch instead of triggering their own. Latency, never correctness. Left empty, the
-route falls back to matching on destination domain, which is looser and more wasteful.
+**`routers` is the only per-asset field.** It names the recipients you serve, so other traffic
+on a shared mailbox does not start a batch you have no message in. Get it wrong and nothing
+breaks: your transfers still deliver, because merkle replay forces batch completeness. They
+wait for other traffic to trigger a batch instead of triggering their own. Latency, never
+correctness. Left empty, any message for the destination triggers.
 
 ### Endpoints
 
-No endpoint here needs an API key except Base. Verified working:
+No endpoint here needs an API key except Base's `rpc`. Verified working:
 
 ```
 sepolia   execution + archive   https://rpc.sepolia.ethpandaops.io
@@ -734,19 +724,19 @@ eden      l2 archive            https://ev-reth-eden-testnet.binarybuilders.serv
 eden      da                    http://localhost:26658, the mocha light node from 11c
 ```
 
-> Eden's `l2_rpc` is the one endpoint here that is not interchangeable. It has to serve
+> Eden's `rpc` is the one endpoint here that is not interchangeable. It has to serve
 > `debug_executionWitness`, which is what the enclave re-executes against, and no public Eden
 > endpoint does. `logs_rpc` can stay on the public one.
 
 > **Base origin is the one route that needs a paid archive.** It calls `eth_getProof` roughly
 > 220k blocks back, the five day dispute window. Every free endpoint tried refuses with
 > "distance to target block exceeds maximum permitted", and Base's own RPC does not serve the
-> method at all. Put the key in `ALCHEMY_BASE_KEY` in `devnet/.env` and wire it to `base-to-celestia`'s
-> `l2_rpc` **only**. A free Alchemy tier is enough: archive `eth_getProof` works, and the
+> method at all. Put the key in `.state/alchemy-base-key`; `write_config` wires it to Base's
+> `rpc` **only**. A free Alchemy tier is enough: archive `eth_getProof` works, and the
 > 10-block `eth_getLogs` cap does not matter because Base logs go to `sepolia.base.org`.
 
-> **`archive_rpc` must never be a metered key.** `dispatched_messages` runs on the archive
-> reader, so a large `eth_getLogs` sweep goes there. Pointing it at a rate-limited key
+> **An Ethereum chain's `archive_rpc` must never be a metered key.** Its dispatch index runs on
+> the archive reader, so a large `eth_getLogs` sweep goes there. Pointing it at a rate-limited key
 > exhausts the tier and backs off every route at once, including routes with nothing to do
 > with Ethereum.
 
@@ -755,20 +745,23 @@ eden      da                    http://localhost:26658, the mocha light node fro
 ## 13. Services
 
 ```sh
-sudo cp deploy/server/teeism-{relayer,api,gas-oracle}.service /etc/systemd/system/
+sudo cp deploy/server/teeism-{relayer,gas-oracle}.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now teeism-relayer teeism-api teeism-gas-oracle
+sudo systemctl enable --now teeism-relayer teeism-gas-oracle
 ```
+
+`teeism-relayer` runs every route, and the dashboard and API on `api_listen` (`0.0.0.0:3001`,
+which the gateway also proxies as `/api`), in one process.
 
 > The relayer unit reads `devnet/.env` directly as its `EnvironmentFile`, so there is no second
 > copy of the key to write and keep in step. That is also why `EVM_PRIVATE_KEY` in that file
 > needs its `0x`: systemd passes the value through untouched.
 
-> Each unit puts `.state/bin` **first** on PATH. The API and the oracle shell out to
+> Each unit puts `.state/bin` **first** on PATH. The relayer and the oracle shell out to
 > `celestia-appd` by name, and any other build on the host will not have the teeism module.
 > The symptom is `unknown command "teeism" for "query"` on every Celestia-origin route.
 
-> The API and the oracle bind `0.0.0.0`, not localhost, or their dashboards are unreachable
+> The relayer and the oracle bind `0.0.0.0`, not localhost, or their dashboards are unreachable
 > from anywhere but the host.
 
 The relayer shells out to `cast` and `celestia-appd` to sign rather than reimplementing two
@@ -852,58 +845,40 @@ the public endpoints, which is what this deployment does.
 
 ## 15. Adding a chain the bridge has never seen
 
-A chain joins as an **origin** (its state is attested) or a **destination** (it stores an ISM).
-Most need both. Adding one adds no new enclave logic beyond two functions:
+A chain joins as an **origin** (its outbox is attested) or a **destination** (it holds an
+ISM). Most are both.
 
-```rust
-fn get_<chain>_root(store) -> AttestedRoot            // verified head and state root
-fn get_<chain>_merkle_tree(root, proof) -> MerkleTree // the origin's Hyperlane tree
-```
+**As an origin, a chain is two files with the same name**, one per crate, under the chain it
+rides on if it rides on one (`ethereum/arbitrum.rs`, `celestia/eden.rs`):
 
-**A new EVM rollup that settles to a chain we already attest** needs one function and no light
-client, because it publishes an L2 commitment into that chain's L1 storage.
+| crate | implements | what it does |
+|---|---|---|
+| `tee-node` | `origin::Origin` | `verify` authenticates a head and returns its state root; `merkle_tree` proves the Hyperlane tree under it |
+| `tee-coprocessor` | `origin::Indexer` | `gather` fetches what `verify` and `merkle_tree` need; `index` lists the messages between two heights; `bootstrap` makes a genesis state |
 
-1. Find where the commitment lives. Two shapes cover most rollups. **OP Stack** stores an
-   output root, `keccak(version ‖ stateRoot ‖ messagePasserStorageRoot ‖ blockHash)`, whose
-   preimage contains the state root directly. **Arbitrum BoLD** stores an assertion hash whose
-   preimage carries the L2 block hash, which is *not* the state root, so you also supply the L2
-   block header RLP and take `header.stateRoot`.
-2. Derive the slot from L1 rather than accepting it. Read `latestConfirmed` or the anchor out
-   of storage and compute the mapping slot from it, so a relayer cannot point the enclave at a
-   stale commitment. Watch for packed slots, and check the status: a pending assertion is still
-   inside its challenge window.
-3. Add the arm to `OriginInput` and the config block. Everything downstream is unchanged.
+Then a `Chain { name, domain, origin }` entry in its parent module's `CHAINS`, and a `kind`
+arm in `tee-coprocessor/src/config.rs`. Everything else - the attest pipeline, the batch
+replay, the route loop, recovery - is shared and unchanged. A chain that rides on another
+calls that chain's `verify` first: Arbitrum's starts with `Ethereum.verify`.
 
-> **The anchor contract and its storage layout are compiled into the enclave, never taken from
-> the request.** Anyone can deploy a contract whose storage mimics a rollup and prove it
-> honestly against the real L1 state root. Putting the addresses under `compose_hash` means
-> changing one is a redeploy of the whole identity, not a field in a JSON body.
+Two rules every `verify` keeps, because both were once criticals: **never take "where to
+look" from the input** - anchor contracts, storage slots and keys are constants in the chain's
+file, under the enclave's measurement - and **never take the clock from the input**.
+
+Before trusting a new chain's layout, reproduce a live tree root from raw state in a test, and
+compare `(count, root)` rather than the raw branch array: implementations differ on unused
+branch levels. `tee-coprocessor/tests/live.rs` then runs the whole pipeline for it, minus the
+quote, against live endpoints.
+
+**As a destination**, a chain needs an ISM mirroring `TeeDcapIsm.sol` (store an opaque state
+whose first 32 bytes are the root, verify a TDX quote against pinned measurements, authorise a
+batch of ids per root, consume each once) and a `Destination` impl in
+`tee-coprocessor/src/destination.rs`. EVM chains reuse `destination::Evm` as they are.
 
 > Verify a rollup is live before building against its layout. Arbitrum Sepolia is BoLD, and the
 > canonical address `0xd808…81C8` is the *deprecated* pre-BoLD contract that still answers
 > `latestConfirmed()` and has created no node in over eleven days. The live rollup is
 > `inbox.bridge().rollup()` = `0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4`.
-
-**An entirely new chain** (Solana, Move, another Cosmos) needs three things, and the rest
-follows: a light client that is pure verification with no I/O and whose store fits or hashes
-into the ISM's `state` field; a membership proof from the state root to Hyperlane's merkle tree
-(MPT for EVM, ics23 for Cosmos, an account proof against the bank hash for Solana); and a
-Hyperlane deployment whose merkle tree is the same incremental structure. Verify the last one
-by reproducing a live root from raw state before trusting anything, and compare `(count, root)`
-rather than the raw branch array, because implementations differ on unused branch levels.
-
-A new destination needs a contract or module mirroring `TeeDcapIsm.sol`: store an opaque state
-whose first 32 bytes are the root, verify a TDX quote against pinned measurements, authorise a
-batch of message ids per root, and consume each id once.
-
-Checklist:
-
-- [ ] `get_<chain>_root` verifies consensus, or derives the root from a chain that does
-- [ ] `get_<chain>_merkle_tree` proves the tree against that root
-- [ ] a live root reproduced from raw state, in a test
-- [ ] domain id registered, and carried in the ISM state so it cannot be replayed cross-origin
-- [ ] `Origin` variant, `OriginInput` arm, config block
-- [ ] ISM deployed with a genesis state naming the checkpoint and the current identity
 
 ---
 
@@ -915,11 +890,11 @@ curl -s -o /dev/null -w '%{http_code}\n' $B/                       # UI         
 curl -s $B/rpc/status | jq -r .result.node_info.network            # chain id
 curl -s -X POST $B/rpc -H 'content-type: application/json' \
      -d '{"jsonrpc":"2.0","id":1,"method":"status"}' | head -c 40  # no slash, must be JSON
-curl -s -o /dev/null -w '%{http_code}\n' $B/api/health             # attestation API 200
+curl -s -o /dev/null -w '%{http_code}\n' $B/api/health             # coprocessor API 200
 for c in sepolia arbitrum base; do curl -s -X POST $B/evm/$c/ \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'; done
-curl -s http://<host>:3001/api/status | jq -r '.[] | "\(.name) \(.height)"'
+curl -s $B/api/status | jq -r '.[] | "\(.name) \(.height)"'
 ```
 
 The last one is the real check: every route must report a height and a state root. A route

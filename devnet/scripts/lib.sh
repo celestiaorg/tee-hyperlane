@@ -257,7 +257,7 @@ write_config() {
 # deployed, so editing it by hand does not survive. See deploy/coprocessor.toml.example.
 tick_secs = ${TICK_SECS:-6}
 proof_dir = "${STATE_DIR}/proofs"
-api_listen = "${API_LISTEN:-127.0.0.1:3001}"
+api_listen = "${API_LISTEN:-0.0.0.0:3001}"
 
 [faucet]
 chain = "celestia"

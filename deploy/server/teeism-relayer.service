@@ -1,5 +1,5 @@
 [Unit]
-Description=TEE ISM coprocessor: every route, and the dashboard API on 127.0.0.1:3001
+Description=TEE ISM coprocessor: every route, and the dashboard and API on :3001
 After=network-online.target docker.service
 Wants=network-online.target
 

@@ -9,7 +9,7 @@
 
 tick_secs = 2
 proof_dir = "/home/chef/tee-ism-nonzk/devnet/.state/proofs"
-api_listen = "127.0.0.1:3001"
+api_listen = "0.0.0.0:3001"
 
 [faucet]
 chain = "celestia"

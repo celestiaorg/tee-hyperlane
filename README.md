@@ -35,12 +35,20 @@ nothing.
 ## Layout
 
 ```
-tee-circuit/     enclave identity check, and the SP1 programs the testnet path used
-tee-hyperlane/   the enclave, the coprocessor, TeeDcapIsm.sol, the CLI
-bridge-app/      React UI, MetaMask + Keplr
-devnet/          the whole stack against a local chain, and the gateway
-deploy/          the guides, the measured compose file, submit scripts, systemd units
+tee-hyperlane/crates/tee-node/          the enclave: verifies a chain's head and its Hyperlane tree
+tee-hyperlane/crates/tee-coprocessor/   the service: finds what the enclave needs, relays the result
+tee-hyperlane/contracts/                TeeDcapIsm.sol, the EVM side's ISM
+tee-circuit/tee-attestation/            the enclave identity check both ISMs share
+bridge-app/                             React UI, MetaMask + Keplr
+devnet/                                 the whole stack against a local chain, and the gateway
+deploy/                                 the guides, the measured compose files, systemd units
 ```
+
+Both crates are laid out by chain, the same way. Everything about Base is in
+`ethereum/base.rs` in each: in the enclave, how Base's root is verified out of Ethereum; in the
+coprocessor, how that proof is fetched. A chain rides under the chain its trust comes from
+(`ethereum/arbitrum.rs`, `celestia/eden.rs`). The enclave's `origin.rs` and the coprocessor's
+`origin.rs` hold the one trait each side implements per chain; everything else is shared.
 
 ## Docs
 
@@ -53,8 +61,9 @@ Three guides, all in [deploy/](deploy/):
 - **[deploy/MAINTAIN.md](deploy/MAINTAIN.md)** - the monthly collateral job, replacing an
   enclave, what forces a redeploy, telling a waiting route from a stuck one, and the trust
   model.
-- **[deploy/INTERACT.md](deploy/INTERACT.md)** - Keplr and MetaMask, the CLI, what each route
-  should take, what it costs, and how to check the chain rather than the UI.
+- **[deploy/INTERACT.md](deploy/INTERACT.md)** - Keplr and MetaMask, sending from the command
+  line, what each route should take, what it costs, and how to check the chain rather than the
+  UI.
 
 Run `FAMILY=<family> deploy/verify-digest.sh <app-id>` to check any value below yourself, without trusting
 this file.
@@ -86,8 +95,8 @@ and the instance id, so pinning it would tie an ISM to one CVM rather than to th
 runs.
 
 Which image a family runs is `nix build .#image-<family>` and
-`deploy/docker-compose.<family>.yml`. Adding a family - Solana, say - is an entry in the
-`families` list in `flake.nix`, a cargo feature, an `origins/` module and a compose file.
+`deploy/docker-compose.<family>.yml`. Adding a chain to a family is two files, one per crate;
+see "Adding a chain" in [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 There are no vkeys. Nothing is proved.
 
@@ -178,8 +187,7 @@ One host runs everything that is not an enclave, including the chain and a mocha
 teeism-celestia     docker   the chain
 mocha-light         docker   celestia-node, for Eden's blob proofs
 teeism-gateway      docker   UI, chain proxy, transaction view
-teeism-relayer      systemd  eight routes
-teeism-api          systemd  attestation lookup
+teeism-relayer      systemd  eight routes, the dashboard and the API
 teeism-gas-oracle   systemd  paymaster upkeep
 ```
 
@@ -227,7 +235,7 @@ enclave exists.
 5. Deploy `TeeDcapIsm.sol` on each EVM chain and point the warp routers at it.
 6. Create the per-origin ISMs on Celestia, and a routing ISM over them.
 7. Create the paymaster and start the oracle.
-8. `tee-hyperlane run`.
+8. Start `teeism-relayer`.
 
 `make init` does steps 1 to 6. Every step, including 7, is in
 [deploy/DEPLOY.md](deploy/DEPLOY.md).
@@ -245,20 +253,12 @@ healthy the container is.
 ## Run the bridge
 
 ```sh
-tee-hyperlane run   --config coprocessor.toml      # attest, prove, relay, every route
-tee-hyperlane serve --proof-dir /var/lib/...       # attestations for the UI
+tee-hyperlane --config coprocessor.toml     # every route, and the dashboard and API on :3001
 ```
 
-Needs `cast` and `celestia-appd` on PATH: the relayer shells out to them to sign rather than
-reimplementing two transaction formats.
-
-## Send and check a transfer
-
-```sh
-tee-hyperlane send --route celestia-to-sepolia --token TIA --amount 1000000 --to 0x...
-tee-hyperlane verify --message-id 0x...
-tee-hyperlane status
-```
+It needs `cast` and `celestia-appd` on PATH: it shells out to them to sign rather than
+reimplementing two transaction formats. Sending and checking a transfer is in
+[deploy/INTERACT.md](deploy/INTERACT.md).
 
 ## Measured cost
 

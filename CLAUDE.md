@@ -25,7 +25,8 @@ merge or push to `main` without asking.
 Server "ark", Zurich, `chef@178.199.12.26`, checkout at `~/tee-ism-nonzk`. It is an rsync of
 this tree with no `.git`, so nothing there is committable.
 
-- systemd: `teeism-relayer`, `teeism-api`, `teeism-gas-oracle`. `bridge-ui` exists but is
+- systemd: `teeism-relayer` (every route, plus the dashboard and API on :3001) and
+  `teeism-gas-oracle`. `bridge-ui` exists but is
   disabled: the gateway container serves the built `bridge-app/dist` instead.
 - a local celestia-app devnet, not mocha, with pruning disabled
 - a mocha light node (`mocha-light`), which only the Eden origin needs
@@ -43,7 +44,7 @@ this tree with no `.git`, so nothing there is committable.
 | `deploy/DEPLOY.md` | standing up a whole bridge, and where every config lives |
 | `deploy/MAINTAIN.md` | the monthly job, redeploys, waiting vs stuck, the trust model |
 | `deploy/INTERACT.md` | wallets, the CLI, expected latency and cost |
-| `deploy/coprocessor.toml.example` | the deployed route config, verbatim but for the one key |
+| `deploy/coprocessor.toml.example` | the deployed chains and routes, verbatim but for the one key |
 | `deploy/verify-digest.sh` | compose file to `compose_hash` to `mr_config_id`, against the signed quote |
 | `deploy/check-secrets.sh` | run before every commit |
 
@@ -81,7 +82,8 @@ ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier
   its own source filter, so editing `evm/` moves the evolve digest alone. `Cargo.lock` and the
   shared modules are in every image's source, so touching those still moves all three.
 - **Re-deployment moves the checkpoint.** A new ISM anchors at the origin's head, so anything
-  in flight is skipped. `tee-hyperlane rotate-state` plus `ISM_GENESIS` anchors at an old
+  in flight is skipped. `ISM_GENESIS` (the old ISM's state with the new identity spliced into
+its last 32 bytes) anchors at an old
   checkpoint instead, which is the only way to recover such a message.
 - **Eden's root is re-executed, not believed.** The enclave runs the blocks that changed the
   state, from the root the ISM already trusts, and the chain has to arrive at the root the

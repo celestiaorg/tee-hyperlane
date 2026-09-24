@@ -140,8 +140,7 @@ waiting rather than stuck.
 
 ## Sending from the command line
 
-There is no `tee-hyperlane send`: a transfer is an ordinary warp transaction, so it goes
-through each chain's own tooling and needs no wrapper.
+A transfer is an ordinary warp transaction, so it goes through each chain's own tooling.
 
 Leaving Celestia. The recipient is a 32-byte Hyperlane address, so a 20-byte EVM address is
 left-padded with twelve zero bytes. `--max-hyperlane-fee` is what the paymaster may charge;
@@ -171,10 +170,10 @@ cast send <router> "transferRemote(uint32,bytes32,uint256)(bytes32)" \
   --rpc-url <rpc> --private-key $EVM_PRIVATE_KEY
 ```
 
-Where each route stands, by name, ISM and domain:
+Where each route stands, by name, ISM, height and any blocker:
 
 ```sh
-tee-hyperlane --config .state/coprocessor.toml status
+curl -s localhost:3001/api/status | jq '.[] | {name, height, blocked}'
 ```
 
 ### Did it arrive
@@ -218,9 +217,9 @@ journalctl -u teeism-relayer -f | grep -E 'attesting|submitting|delivered|scan f
 A healthy cycle for one route reads:
 
 ```
-commands::ethereum_l2: attesting l2 rollup="base" height=46890863 trusted=46889663 leaves=2
-tasks: submitting route=base-to-celestia destination=1297040299
-tasks: batch delivered route=base-to-celestia
+route: attesting route=base-to-celestia from=46889663 to=46890863 leaves=2
+destination: delivering id=...
+route: batch delivered route=base-to-celestia height=46890863
 ```
 
 > `leaves=N` is how many leaves are in **this batch**, not how many are in the tree. On the

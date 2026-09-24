@@ -86,8 +86,8 @@ ethereum  0xfe294574ecdc4f20d23226ed475ba711e08c23edbbc83365781cda29a5101bc3
 evolve    0x259d450e50a8374a42b6a0e514cb0e23cb3ae1a40f962ca31db214b98ebac91e
 ```
 
-**If it matches**, there is nothing else to do. Edit `tee_node_url` for that route in
-`.state/coprocessor.toml` and restart:
+**If it matches**, there is nothing else to do. Point that family's routes at the new URL
+(`enclave-url-<family>` in `.state/out/`, then `write_config`) and restart:
 
 ```sh
 sudo systemctl restart teeism-relayer
@@ -131,7 +131,7 @@ if (_readBytes32(_genesisState, 84) != _identityDigest) revert IdentityChanged()
 So the full cost of an enclave code change is: build and push, re-pin the digest in that
 family's `deploy/docker-compose.<family>.yml`, redeploy that CVM, deploy new ISMs for every
 route the family attests, re-point the Celestia routing ISM and the EVM warp routers, and
-update `coprocessor.toml`. The old ISMs keep serving anything already in flight.
+regenerate the coprocessor config. The old ISMs keep serving anything already in flight.
 
 How many ISMs depends on the family, which is what the split bought:
 
@@ -195,7 +195,7 @@ prove that the ISM is the one your warp routes actually use, or that this relaye
 submits to it. Those are separate questions and this is how to answer them.
 
 Every command here is read-only, and each link is checked against the thing downstream of it
-rather than against a config file. `.env.local` and `coprocessor.toml` are both claims; the
+rather than against a config file. `.env.local` and the coprocessor config are both claims; the
 chain is not.
 
 **1. What a warp router will actually consult.** Start here, not from a config. The mailbox
@@ -256,8 +256,8 @@ celestia-appd query teeism ism <origin-ism> --node tcp://localhost:26657 -o json
 ### Two things that look wrong and are not
 
 > **`origin_domain` reads `1297040200` on every EVM ISM, and this chain's `local_domain` is
-> `1297040299`.** That is not drift. `Origin::Celestia => 1297040200` is a constant in
-> `crates/tee-node/src/origins/mod.rs`, mocha's domain, and the deployed chain is a local
+> `1297040299`.** That is not drift. `DOMAIN = 1297040200` is a constant in
+> `crates/tee-node/src/celestia/mod.rs`, mocha's domain, and the deployed chain is a local
 > devnet. The field is self-consistent across genesis and every transition, which is why
 > nothing rejects.
 >
@@ -347,8 +347,9 @@ growing.
 **An Ethereum origin is waiting on finality.** The enclave attests the *finalized* head, so a
 message waits roughly two epochs, about 15 minutes, before it can be attested at all.
 
-**A Celestia origin is waiting for a non-empty epoch boundary.** Light-client bootstrap only
-exists for epoch-boundary checkpoint roots. A route sits until one lands, which is normal.
+**An Ethereum-backed origin is waiting for a non-empty epoch boundary.** A light-client
+bootstrap only exists for an epoch-boundary checkpoint, so Sepolia, Arbitrum and Base routes
+skip a finalized head whose boundary slot was empty, about one in fourteen, and take the next.
 
 **`leaves=N` in the log is the batch size, not the tree size.** We reuse the canonical
 Hyperlane deployments on the EVM chains, so their merkle tree hooks carry everyone's traffic.
@@ -358,10 +359,9 @@ A batch of nine leaves with zero deliveries means those nine belonged to other p
 
 ## A route that is actually stuck
 
-**Symptom: `TrustedStateMismatch` forever.** A staged batch went stale, usually because
-something else advanced the ISM. The relayer detects this by comparing the payload's
-`prev_state` against the on-chain state and discards it, but a batch staged before that
-handling existed has to be removed by hand from `.state/proofs/<route>/staging/`.
+**Symptom: `stale batch` in the log.** Something else advanced the ISM past a staged batch's
+starting state. Not stuck: the relayer discards that batch and builds the next one from where
+the ISM actually is, which skips nothing.
 
 **Symptom: the ISM height is far behind and never moves.** The light client needs the commit
 at its trusted height, and a pruned chain no longer has it. Confirm `pruning = "nothing"` and
@@ -376,7 +376,7 @@ the origin, and never point it at a metered key.
 PATH is not putting `.state/bin` first, so a different `celestia-appd` is being found.
 
 **Re-anchoring.** If a route's trusted height is too old to prove forward from, it is
-re-anchored by bootstrapping it to a recent checkpoint. That is a manual intervention and it
+re-anchored: a new ISM from a fresh `genesis`. That is a manual intervention and it
 means the route was genuinely broken, not merely slow. Treat every re-anchor as an incident
 worth a root cause, not routine upkeep.
 
@@ -459,20 +459,19 @@ they all run it.
 This needed more than cargo features to be true. `buildRustPackage` is input-addressed and
 rustc writes the source path into the binary, so while every family shared one filtered source
 tree, any edit anywhere gave all three a new store path and a new digest even when the compiled
-code was identical. `flake.nix` now gives each family its own filter, listing the origin files
-the others must not see.
+code was identical. `flake.nix` therefore builds each image from a source tree without the
+other families' chain files: the celestia image never sees `ethereum/` or Eden, the ethereum
+image never sees `celestia/`, the evolve image never sees `ethereum/`.
 
-Measured both ways: before the filters, changing one error string in `evm/exec.rs` moved all
+Measured both ways: before the filters, changing one error string in Eden's executor moved all
 three digests; after them, it moves only evolve's.
 
 **A dependency change still moves all three**, because `Cargo.lock` is in every image's source,
-as are `attest.rs`, `hyperlane_state.rs` and `state_proofs.rs`. That is correct - all three
-compile them - but it means the split bounds origin-specific changes, not every change.
+as are `attest.rs`, `origin.rs` and `evm.rs`. That is correct - all three compile them - but it
+means the split bounds chain-specific changes, not every change.
 
 Each is `nix build .#image-<family>` from the cargo feature of the same name, pinned by
-`deploy/docker-compose.<family>.yml`. Adding a family is an entry in the `families` list in
-`flake.nix`, a feature in `crates/tee-node/Cargo.toml`, a module under `origins/` and a compose
-file; nothing in the build is per-family except the name.
+`deploy/docker-compose.<family>.yml`.
 
 `devnet/scripts/85-celestia-isms.sh` knows which family each origin belongs to, and
 `80-evm-isms.sh` takes `ENCLAVE_FAMILY` (default `celestia`).
@@ -487,13 +486,12 @@ one. It is accepted here; the testnet is not worth coupling every deployment to 
 To recover such a message, anchor the replacement at the old checkpoint instead:
 
 ```sh
-cast call <old-ism> "state()(bytes)" --rpc-url <rpc>
-tee-hyperlane rotate-state --state <that> --identity-digest <new identity>
-ISM_GENESIS=<the genesis state it prints> ./devnet/scripts/80-evm-isms.sh
+old="$(cast call <old-ism> "state()(bytes)" --rpc-url <rpc>)"
+ISM_GENESIS="${old:0:170}${new_identity#0x}" ./devnet/scripts/80-evm-isms.sh
 ```
 
-`rotate-state` keeps the root, height, timestamp and store commitment and changes only the
-identity, which is the one field the ISM checks against itself. The route then replays the gap
+That keeps the old state's root, height, timestamp and store commitment and swaps only the
+identity in its last 32 bytes, the one field the ISM checks against itself. The route then replays the gap
 and delivers what the old one had seen. `ISM_GENESIS_<ORIGIN>` does the same for the
 Celestia-side ISMs.
 
