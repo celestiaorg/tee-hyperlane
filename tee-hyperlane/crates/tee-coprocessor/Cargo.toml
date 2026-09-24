@@ -21,17 +21,17 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process"] }
+async-trait = "0.1"
+tempfile = "3"
 toml = "0.8"
 tendermint.workspace = true
 tendermint-rpc.workspace = true
 reqwest.workspace = true
-sp1-sdk = { version = "=5.2.2", features = ["native-gnark"] }
 dcap-qvl = { version = "=0.5.3", default-features = false, features = ["std", "rustcrypto", "default-x509", "report"] }
 tendermint-light-client-verifier.workspace = true
 helios-consensus-core.workspace = true
 axum.workspace = true
-tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
@@ -41,4 +41,3 @@ path = "src/main.rs"
 
 [dev-dependencies]
 filetime = "0.2"
-tempfile = "3"

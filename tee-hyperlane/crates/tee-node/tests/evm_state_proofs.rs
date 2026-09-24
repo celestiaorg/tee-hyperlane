@@ -3,8 +3,8 @@
 
 use alloy_primitives::{Address, Bytes, B256, U256};
 use hyperlane_types::{get_message_id, get_tree_root, insert_leaf, HyperlaneMessage, MerkleTree};
-use tee_node::hyperlane_state::*;
-use tee_node::state_proofs::*;
+use tee_node::attest::*;
+use tee_node::evm::*;
 
 #[derive(serde::Deserialize)]
 struct Fixture {
@@ -23,8 +23,8 @@ fn fixture() -> Fixture {
     serde_json::from_str(include_str!("../testdata/sepolia_hook_proof.json")).unwrap()
 }
 
-fn tree_proof(f: &Fixture) -> EvmTreeProof {
-    EvmTreeProof {
+fn tree_proof(f: &Fixture) -> TreeProof {
+    TreeProof {
         merkle_tree_hook: f.address,
         account: f.account,
         account_proof: f.account_proof.clone(),
@@ -32,14 +32,23 @@ fn tree_proof(f: &Fixture) -> EvmTreeProof {
     }
 }
 
+/// Read a tree the way the chains do: through `read_tree`, with the proof as JSON.
+fn read(p: &TreeProof, root: B256, slot: u64) -> anyhow::Result<MerkleTree> {
+    Ok(read_tree(serde_json::to_value(p).unwrap(), root, slot)?.tree)
+}
+
+fn refused(result: anyhow::Result<MerkleTree>, why: &str) {
+    let err = result.expect_err("must be refused").to_string();
+    assert!(err.contains(why), "expected `{why}`, got `{err}`");
+}
+
 #[test]
 fn live_sepolia_state_root_yields_the_hyperlane_merkle_root() {
     let f = fixture();
-    let tree = verify_evm_merkle_tree(f.state_root, f.base_slot, &tree_proof(&f))
-        .expect("proof must verify");
+    let tree = read(&tree_proof(&f), f.state_root, f.base_slot).expect("proof must verify");
     assert_eq!(tree.count, f.expected_count);
     assert_eq!(
-        B256::from(get_merkle_root(&tree)),
+        B256::from(get_tree_root(&tree)),
         f.expected_root,
         "reconstructed root disagrees with the hook's root() at block {}",
         f.block_number
@@ -64,12 +73,10 @@ fn zero_valued_branch_slots_are_proven_by_exclusion() {
 #[test]
 fn a_wrong_state_root_is_rejected() {
     let f = fixture();
-    let err =
-        verify_evm_merkle_tree(B256::repeat_byte(0xab), f.base_slot, &tree_proof(&f)).unwrap_err();
-    assert!(matches!(
-        err,
-        HyperlaneStateError::Mpt(MptError::AccountProof { .. })
-    ));
+    refused(
+        read(&tree_proof(&f), B256::repeat_byte(0xab), f.base_slot),
+        "does not prove against state root",
+    );
 }
 
 #[test]
@@ -77,11 +84,10 @@ fn a_tampered_slot_value_is_rejected() {
     let f = fixture();
     let mut p = tree_proof(&f);
     p.storage_proof[0].value = U256::from(1);
-    let err = verify_evm_merkle_tree(f.state_root, f.base_slot, &p).unwrap_err();
-    assert!(matches!(
-        err,
-        HyperlaneStateError::Mpt(MptError::StorageProof { .. })
-    ));
+    refused(
+        read(&p, f.state_root, f.base_slot),
+        "does not prove against storage root",
+    );
 }
 
 /// Claiming a real value for the wrong slot must not slip through.
@@ -90,11 +96,10 @@ fn slots_must_arrive_in_the_expected_order() {
     let f = fixture();
     let mut p = tree_proof(&f);
     p.storage_proof.swap(0, 1);
-    let err = verify_evm_merkle_tree(f.state_root, f.base_slot, &p).unwrap_err();
-    assert!(matches!(
-        err,
-        HyperlaneStateError::SlotMismatch { index: 0, .. }
-    ));
+    refused(
+        read(&p, f.state_root, f.base_slot),
+        "storage proof 0 is for slot",
+    );
 }
 
 /// 151 is the L2 deployments' layout and wrong for Hyperlane's Sepolia hook. The slot is
@@ -103,29 +108,27 @@ fn slots_must_arrive_in_the_expected_order() {
 #[test]
 fn a_wrong_base_slot_is_rejected() {
     let f = fixture();
-    let err = verify_evm_merkle_tree(f.state_root, 151, &tree_proof(&f)).unwrap_err();
-    assert!(matches!(
-        err,
-        HyperlaneStateError::SlotMismatch { index: 0, .. }
-    ));
+    refused(
+        read(&tree_proof(&f), f.state_root, 151),
+        "storage proof 0 is for slot",
+    );
 }
 
-/// Each origin's slot is fixed, and an unknown origin has none rather than a default.
+/// Each origin pins its own slot, and it is the chain module's constant that decides, never
+/// the request. Read through the chains themselves: Sepolia's pins 103 and reads the live
+/// hook, an L2 pins 151 and must refuse the same proof.
 #[test]
 fn the_base_slot_is_pinned_per_origin() {
-    use tee_node::hyperlane_state::merkle_tree_base_slot;
-    assert_eq!(
-        merkle_tree_base_slot(11155111),
-        Some(103),
-        "Sepolia's canonical hook"
-    );
-    assert_eq!(merkle_tree_base_slot(421614), Some(151), "Arbitrum Sepolia");
-    assert_eq!(merkle_tree_base_slot(84532), Some(151), "Base Sepolia");
-    assert_eq!(
-        merkle_tree_base_slot(1),
-        None,
-        "no guessing for an unknown origin"
-    );
+    use tee_node::ethereum::{arbitrum::ARBITRUM, ETHEREUM};
+    let f = fixture();
+    let proof = serde_json::to_value(tree_proof(&f)).unwrap();
+    let read = ETHEREUM
+        .origin
+        .merkle_tree(proof.clone(), f.state_root)
+        .unwrap();
+    assert_eq!(read.tree.count, f.expected_count);
+    assert_eq!(read.address, padded(f.address));
+    assert!(ARBITRUM.origin.merkle_tree(proof, f.state_root).is_err());
 }
 
 #[test]
@@ -133,13 +136,10 @@ fn a_short_storage_proof_is_rejected() {
     let f = fixture();
     let mut p = tree_proof(&f);
     p.storage_proof.pop();
-    assert!(matches!(
-        verify_evm_merkle_tree(f.state_root, f.base_slot, &p),
-        Err(HyperlaneStateError::WrongSlotCount {
-            expected: 33,
-            got: 32
-        })
-    ));
+    refused(
+        read(&p, f.state_root, f.base_slot),
+        "expected 33 storage proofs, got 32",
+    );
 }
 
 // ---- message batch authorisation ----
@@ -179,7 +179,7 @@ fn an_empty_batch_is_refused_even_when_nothing_was_dispatched() {
     let (t, _) = tree_of(5);
     assert_eq!(
         verify_message_batch(t, &[], &t),
-        Err(HyperlaneStateError::EmptyBatch)
+        Err(BatchError::EmptyBatch)
     );
 }
 
@@ -191,7 +191,7 @@ fn a_forged_message_id_is_rejected() {
     forged[1] = [0xde; 32];
     assert!(matches!(
         verify_message_batch(snapshot, &forged, &onchain),
-        Err(HyperlaneStateError::ReplayMismatch { .. })
+        Err(BatchError::ReplayMismatch { .. })
     ));
 }
 
@@ -202,7 +202,7 @@ fn a_gap_in_the_batch_is_rejected() {
     let gapped: Vec<_> = all[5..].iter().skip(1).copied().collect();
     assert!(matches!(
         verify_message_batch(snapshot, &gapped, &onchain),
-        Err(HyperlaneStateError::CountMismatch { .. })
+        Err(BatchError::CountMismatch { .. })
     ));
 }
 
@@ -214,7 +214,7 @@ fn reordering_the_batch_is_rejected() {
     swapped.swap(0, 1);
     assert!(matches!(
         verify_message_batch(snapshot, &swapped, &onchain),
-        Err(HyperlaneStateError::ReplayMismatch { .. })
+        Err(BatchError::ReplayMismatch { .. })
     ));
 }
 
@@ -226,7 +226,7 @@ fn a_snapshot_ahead_of_chain_state_is_rejected() {
     let (onchain, _) = tree_of(5);
     assert!(matches!(
         verify_message_batch(ahead, &ids[..1], &onchain),
-        Err(HyperlaneStateError::SnapshotAhead {
+        Err(BatchError::SnapshotAhead {
             snapshot: 9,
             onchain: 5
         })
@@ -248,12 +248,12 @@ fn a_wrong_snapshot_cannot_reproduce_the_onchain_tree() {
     let (onchain, _) = tree_of(9);
     assert!(matches!(
         verify_message_batch(wrong, &all[5..], &onchain),
-        Err(HyperlaneStateError::CountMismatch { .. })
+        Err(BatchError::CountMismatch { .. })
     ));
     // ...whereas the true snapshot does.
     let (snapshot, _) = tree_of(5);
     assert_eq!(verify_message_batch(snapshot, &all[5..], &onchain), Ok(()));
-    assert_eq!(get_tree_root(&onchain), get_merkle_root(&onchain));
+    assert_eq!(get_tree_root(&onchain), get_tree_root(&onchain));
 }
 
 /// hyperlane-cosmos pre-fills a tree's unused branch levels with the canonical zero hashes;

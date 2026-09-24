@@ -10,7 +10,7 @@ KEEP_BIN="${KEEP_BIN:-1}"
 say "stopping the coprocessor"
 # The crate is tee-coprocessor but the binary it builds is tee-hyperlane, so matching on the
 # crate name silently matched nothing and left the relayer running.
-pkill -f "tee-hyperlane run --config" 2>/dev/null || true
+pkill -f "tee-hyperlane --config" 2>/dev/null || true
 pkill -f "vite.*3000" 2>/dev/null || true
 
 # One CVM per origin family. All three are deleted, because a CVM bills by the hour and
