@@ -42,12 +42,21 @@ settle() {
   return 1
 }
 
+# The identity digest an ISM pins: the last 32 bytes of its state, which the module checks
+# against the identity it stores.
+pinned_identity() {
+  "${A}" query teeism ism "$1" --node "${CELESTIA_RPC}" -o json 2>/dev/null | python3 -c '
+import base64, json, sys
+print(base64.b64decode(json.load(sys.stdin)["ism"]["state"])[-32:].hex())
+' 2>/dev/null
+}
+
 # The genesis state for one origin, anchored at its current head. The chain's endpoints come
 # from the coprocessor config, so there is one place they are set.
 #
 # ISM_GENESIS_<ORIGIN> overrides it, which is how a checkpoint from an earlier deployment is
 # re-used to recover messages it had already seen: take the live ISM's state and splice the new
-# identity into its last 32 bytes (see "Re-deployment moves the checkpoint" in MAINTAIN.md).
+# identity into its last 32 bytes (see "Keeping in-flight messages" in MAINTAIN.md).
 genesis_for() { # <origin> <family>
   local override
   override="$(eval "printf '%s' \"\${ISM_GENESIS_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_'):-}\"")"
@@ -64,14 +73,22 @@ for row in ${ORIGINS}; do
   IFS=: read -r name domain family tree <<< "${row}"
   say "== ${name} (domain ${domain}, ${family} enclave)"
 
-  # Already created on this chain, so leave it alone. An origin whose bootstrap failed the
+  # Already created for this enclave, so leave it alone. An origin whose bootstrap failed the
   # first time is the normal reason to run this again - Eden's needs a synced DA node, which
   # can take half an hour - and without this the re-run mints a second ISM for every origin
-  # that already worked, and a second routing ISM over them. `make stop` clears .state, so a
-  # fresh chain starts from nothing and this never hides a stale id.
+  # that already worked. An ISM pinning an older identity is the other case: that is a
+  # rotation, and it gets a new ISM, which the routing step below swaps in.
   if has "ism-celestia-${name}"; then
-    say "  already created: $(load "ism-celestia-${name}")"
-    continue
+    existing="$(load "ism-celestia-${name}")"
+    pinned="$(pinned_identity "${existing}")"
+    # Unreadable is not the same as different: minting a replacement on a query hiccup would
+    # re-point the route for nothing.
+    [ -n "${pinned}" ] || die "could not read ${existing} from ${CELESTIA_RPC}"
+    if [ "${pinned}" = "$(load "identity-digest-${family}" | tr 'A-F' 'a-f' | sed 's/^0x//')" ]; then
+      say "  already created for this enclave: ${existing}"
+      continue
+    fi
+    say "  ${existing} pins an older enclave; creating a replacement"
   fi
 
   # `|| true` is load-bearing. lib.sh sets `-euo pipefail`, so a bootstrap that exits non-zero
@@ -143,6 +160,11 @@ for row in ${ORIGINS}; do
   IFS=: read -r name domain _ _ <<< "${row}"
   has "ism-celestia-${name}" || continue
   say "  domain ${domain} -> $(load "ism-celestia-${name}")"
+  # Remove, then set. On mocha-5 a set on a domain already present succeeded, emitted the
+  # event naming the new ISM, and changed nothing. The version pinned here overwrites, but a
+  # rotation has to hold on either, and removing an absent domain is a no-op.
+  settle "$("${A}" tx hyperlane ism remove-routing-ism-domain "${routing}" "${domain}" ${TX} 2>&1 \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
   settle "$("${A}" tx hyperlane ism set-routing-ism-domain "${routing}" "${domain}" \
     "$(load "ism-celestia-${name}")" ${TX} 2>&1 \
     | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null

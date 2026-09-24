@@ -23,6 +23,17 @@ OS_IMAGE="${PHALA_OS_IMAGE:-dstack-0.5.9}"
 
 authenticated=0
 
+# The compose file an enclave measured, from the app_compose dstack reports. The same document
+# `deploy/verify-digest.sh` checks against the signed quote.
+measured_compose() {
+  curl -sf -m 30 "$1/identity" 2>/dev/null | python3 -c '
+import json, sys
+tcb = json.load(sys.stdin)["info"]["tcb_info"]
+tcb = json.loads(tcb) if isinstance(tcb, str) else tcb
+sys.stdout.write(json.loads(tcb["app_compose"])["docker_compose_file"])
+' 2>/dev/null
+}
+
 deploy_family() {
   local family="$1"
   local compose="${REPO_DIR}/deploy/docker-compose.${family}.yml"
@@ -31,13 +42,21 @@ deploy_family() {
 
   [ -f "${compose}" ] || die "no compose for ${family} at ${compose}"
 
+  # Keep a recorded enclave only if it answers *and* measured this compose file. Answering is
+  # not enough: after an image is re-pinned the old CVM is still healthy, and keeping it would
+  # leave every ISM this family deploys next pinning the old code.
   if has "enclave-url-${family}"; then
     url="$(load "enclave-url-${family}")"
     if curl -sf -m 15 "${url}/health" >/dev/null 2>&1; then
-      say "${family} enclave already up at ${url}"
-      return 0
+      if [ "$(measured_compose "${url}")" = "$(cat "${compose}")" ]; then
+        say "${family} enclave already up at ${url}"
+        return 0
+      fi
+      warn "recorded ${family} enclave ${url} runs a different compose; deploying a new one"
+      warn "the old CVM keeps running; delete it with 'phala cvms delete' once nothing uses it"
+    else
+      warn "recorded ${family} enclave ${url} is not answering; deploying a new one"
     fi
-    warn "recorded ${family} enclave ${url} is not answering; deploying a new one"
   fi
 
   # Checked once, and only when something actually needs deploying, so a devnet whose three

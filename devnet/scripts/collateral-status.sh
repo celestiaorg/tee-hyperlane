@@ -29,7 +29,7 @@ if [ ${#CHAINS[@]} -eq 0 ]; then
     name="$(basename "$f" .json)"; CHAINS+=("${name#pccs-}")
   done
 fi
-[ ${#CHAINS[@]} -gt 0 ] || die "no PCCS records in ${OUT_DIR}; run step 8 of DEPLOY.md first"
+[ ${#CHAINS[@]} -gt 0 ] || die "no PCCS records in ${OUT_DIR}; run step 6 of DEPLOY.md first"
 
 # What Intel is serving right now, for the evaluation-number check below. Advisory only: a
 # reachability problem with Intel is not a reason to call the on-chain state bad, so this
@@ -170,7 +170,7 @@ sys.exit(worst)
     pinned="$(cast call "${TCBDAO}" "TCB_EVALUATION_NUMBER()(uint32)" --rpc-url "${RPC}" 2>/dev/null | head -1)"
     if [ -n "${pinned}" ] && [ "${pinned}" != "${INTEL_EVAL}" ]; then
       printf '  %-19s %-8s pinned %s, Intel now serves %s\n' "eval number" "MOVED" "${pinned}" "${INTEL_EVAL}"
-      warn "a re-seed will not fix this; see 'Bringing up a fourth EVM chain' in DEPLOY.md"
+      warn "a re-seed will not fix this; see appendix C of DEPLOY.md"
       FAILED=1
     else
       printf '  %-19s %-8s %s\n' "eval number" "ok" "${pinned:-unknown}"

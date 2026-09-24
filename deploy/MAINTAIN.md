@@ -1,556 +1,209 @@
 # MAINTAIN
 
-Keeping a deployed bridge alive: what expires, what breaks, how to tell the difference
-between a route that is waiting and a route that is stuck, and what forces a redeploy.
-
-[DEPLOY.md](DEPLOY.md) stands one up. [INTERACT.md](INTERACT.md) uses one.
+Keeping a deployed bridge running. On ark, as `chef`, from `~/tee-ism-nonzk/devnet`.
 
 ---
 
-## The only recurring job
-
-**Republish Intel's collateral on the three EVM chains every month.**
+## Monthly: republish Intel's collateral
 
 ```sh
-devnet/scripts/seed-evm-collateral.sh sepolia
-devnet/scripts/seed-evm-collateral.sh arbitrum
-devnet/scripts/seed-evm-collateral.sh base
+./scripts/collateral-status.sh                     # read-only: what each chain holds, and when it lapses
+for c in sepolia arbitrum base eden; do ./scripts/seed-evm-collateral.sh $c; done
 ```
 
-Idempotent. Reports `published`, `already current`, or `FAILED` with a reason, per artifact.
-Nothing in it is trusted: every artifact is signed by Intel and the DAO verifies that
-signature on upload, so a tampered or stale blob is rejected on chain rather than believed.
+Each artifact reports `published`, `already current` or `FAILED` with a reason. Nothing it
+uploads is trusted: the DAO checks Intel's signature on upload.
 
-### What expires, and what does not
+TCB info, QE identity and the PCK CRLs are valid for 30 days on each EVM chain. When they
+lapse, the EVM ISMs reject quotes with `TCBR` or `PCKCRLH` and the four Celestia-to-EVM routes
+stop. Routes into Celestia are unaffected, because they carry fresh collateral in every
+transaction.
 
-| | valid for | where |
+If `TCBR` persists right after a successful republish, Intel has moved the TDX TCB evaluation
+number past 20. The versioned DAOs pin 20, so each chain needs a new versioned FMSPC DAO for the
+new number, with the router pointed at it.
+
+## Rolling out new code
+
+| change | what to do |
+|---|---|
+| coprocessor, gas oracle, UI, scripts | rsync, rebuild, `write_config`, restart. No ISM changes |
+| a new asset | [DEPLOY appendix A](DEPLOY.md#a-adding-an-asset) |
+| enclave code (`crates/tee-node`, `hyperlane-types`, `tee-attestation`, `Cargo.lock`) | the sequence below: new ISMs for each family whose digest moved |
+| a new dstack OS or Phala KMS | the sequence below, for all three families |
+
+An enclave identity is immutable in both ISMs, so a new image always means new ISMs, with the
+routers re-pointed at them. The scripts compare what is recorded with what is pinned and redo
+only what differs, so the sequence below handles one family or all three.
+
+**0. Drain.** A new ISM starts from its origin's current head, so a transfer dispatched and
+not yet delivered never arrives. Wait until every transfer in flight has arrived (the UI's
+history shows them); Base can hold one for five days. To carry one across instead, see
+[Keeping in-flight messages](#keeping-in-flight-messages).
+
+**1. Code, stop, back up.** From the machine with the repo:
+
+```sh
+rsync -a --exclude target --exclude .git --exclude keys --exclude devnet/.state \
+  --exclude 'result-*' ./ chef@<host>:~/tee-ism-nonzk/
+```
+
+On the host:
+
+```sh
+sudo systemctl stop teeism-relayer
+cp -a .state ~/teeism-state-$(date +%F)          # the rollback
+mv .state/proofs ~/teeism-proofs-$(date +%F)     # batch history for the old ISMs
+```
+
+On a host from before the relayer served the API, also remove the old units:
+
+```sh
+sudo systemctl disable --now teeism-api bridge-ui
+sudo rm /etc/systemd/system/{teeism-api,bridge-ui}.service && sudo systemctl daemon-reload
+```
+
+**2. Images:** [DEPLOY step 4](DEPLOY.md#4-enclave-images).
+
+**3. Enclaves:** [DEPLOY step 5](DEPLOY.md#5-enclaves). This deploys a CVM only for families
+whose compose changed. The old CVMs keep running.
+
+**4. ISMs and routers.** Each script replaces only ISMs that pin an old identity, and
+`90-evm-warp.sh` re-points the routers:
+
+```sh
+./scripts/80-evm-isms.sh && ./scripts/85-celestia-isms.sh && ./scripts/90-evm-warp.sh
+```
+
+Each router should print `repointing <router> at <ism>`. If one prints `deploying the collateral
+USDC router`, stop: a new collateral router abandons the old one's escrow.
+
+**5. Relayer:**
+
+```sh
+. scripts/lib.sh && write_config
+sudo cp ../deploy/server/teeism-relayer.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl start teeism-relayer
+curl -s localhost:3001/api/status | jq -r '.[] | "\(.name) \(.height)"'
+```
+
+**6. Test.** Send one transfer each way on every route. Until they land nothing is lost, since
+the old CVMs and ISMs still exist.
+
+To roll back:
+1. restore `~/teeism-state-*` as `.state`
+2. with the new scripts still in place, run `./scripts/85-celestia-isms.sh && ./scripts/90-evm-warp.sh`,
+   which re-point the routing ISM and routers at whatever `.state/out/` names
+3. restore the old code, rebuild, and restart the relayer
+
+**7. Retire and record:**
+- delete the old CVMs with `phala cvms delete`
+- copy the compose files back into the repo
+- refresh `coprocessor.toml.example` (the command is at the top of that file)
+- update the identities and ISM ids in `README.md`
+- run `deploy/check-secrets.sh`, then commit
+
+## Replacing an enclave, same image
+
+An enclave holds no state, so a CVM running the same image is a drop-in swap. Deleting the old
+CVM makes `30-enclave-up.sh` deploy a new one:
+
+```sh
+phala cvms delete <old app id>
+./scripts/30-enclave-up.sh      # new CVM, same identity; check it matches README.md
+. scripts/lib.sh && write_config && sudo systemctl restart teeism-relayer
+```
+
+Routes resume from the heights their ISMs hold. If the identity differs, the image or OS
+changed: use the sequence above.
+
+## Keeping in-flight messages
+
+Anchor the replacement ISM at the old one's checkpoint instead of the current head. Take the
+old state and splice the new identity into its last 32 bytes:
+
+```sh
+. scripts/lib.sh
+old="$(cast call "$(cat ~/teeism-state-*/out/ism-sepolia)" 'state()(bytes)' --rpc-url <rpc>)"
+ISM_GENESIS="${old:0:170}$(load identity-digest-celestia | sed 's/^0x//')" \
+  CHAINS="sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766" ./scripts/80-evm-isms.sh
+```
+
+For Celestia-side ISMs, set `ISM_GENESIS_<ORIGIN>` (for example `ISM_GENESIS_BASE`) before
+running `85-celestia-isms.sh`. The route then replays everything since the old checkpoint.
+
+## Is it waiting or stuck?
+
+Most "stuck" routes are waiting. Check this first:
+
+| route | normal wait | how to confirm |
 |---|---|---|
-| TCB info | 30 days | on chain, per EVM chain |
-| QE identity | 30 days | on chain, per EVM chain |
-| PCK CRLs (platform, processor) | 30 days | on chain, per EVM chain |
-| Root CA CRL | ~1 year | on chain |
-| Root and TCB signing certificates | effectively never | on chain |
-| Enclave measurements | never; they change only when you rebuild | in every ISM, immutably |
+| Celestia to any EVM chain | under a minute | |
+| Sepolia to Celestia | ~15 min (finality), more if an epoch boundary slot was empty | |
+| Eden to Celestia | 1-2 min (Eden's DA posting) | |
+| Arbitrum to Celestia | ~1h40m | |
+| Base to Celestia | 5 days + ~3 min (dispute game) | anchor below the dispatch block means waiting: `cast call 0x2fF5cC82dBf333Ea30D8ee462178ab1707315355 "getAnchorRoot()(bytes32,uint256)" --rpc-url https://rpc.sepolia.ethpandaops.io` |
 
-**Celestia-destination routes are not affected by any of this.** Their collateral is fetched
-fresh from Phala's PCCS mirror on every single attestation and carried inside the transaction,
-because consensus cannot make network calls and every validator has to reach the same verdict
-from the same bytes. Only the EVM-destination routes read collateral from chain, and only they
-go stale.
+- `leaves=N` in the log is the batch size. The EVM mailboxes are Hyperlane's shared ones, so
+  most leaves are other people's.
+- An ISM's `timestamp` is hours old on an idle route. It moves only when there is something to
+  deliver, plus a heartbeat every 12 hours.
 
-When it lapses, the verifier returns `TCBR` or `PCKCRLH` and the three Celestia-to-EVM routes
-stop. The other three keep running.
+## Symptoms
 
-### Three tiers of failure
+| symptom | cause | fix |
+|---|---|---|
+| `TCBR`, `PCKCRLH`, `QEIDCH` or another collateral code on Celestia to EVM routes | collateral expired | the monthly job |
+| `TCBR` right after republishing | Intel moved the evaluation number | a new versioned DAO per chain |
+| a quote revert with no data at all | quote bytes damaged in transit, not a wrong enclave | check the relayer's submission |
+| `WrongEnclave` or `IdentityChanged` | the enclave's identity is not the one the ISM pins | [roll out](#rolling-out-new-code), or point the route back at the right CVM |
+| `unknown command "teeism"` on Celestia-origin routes | a different `celestia-appd` on PATH | the unit must put `.state/bin` first |
+| `eth_getProof` fails at an old height | endpoint pruned | set an archive endpoint ([DEPLOY appendix D](DEPLOY.md#d-endpoints)) |
+| a Celestia-origin ISM never moves and the light client cannot find its trusted commit | chain was pruned | the ISM must be replaced; keep `pruning = "nothing"` |
+| `discarding a batch the ISM has moved past` | something advanced the ISM first | nothing; the next pass rebuilds from the ISM |
+| `no enrolled router found for origin` | ISM created without its routers | run `90-evm-warp.sh` for that chain |
+| `nonce too low`, `replacement transaction underpriced` at random | two relayers share the EVM key | one key per deployment |
+| every route backing off at once | a shared endpoint is rate-limited | move logs off metered keys |
+| UI says `Failed to fetch` for everyone | bundle built with a local `.env.local` | rebuild on the host ([DEPLOY step 11](DEPLOY.md#11-ui-and-gateway)) |
 
-```
-certs expired              the three commands above
-the devnet was torn down   also make init, which redeploys the ISMs
-Intel advanced the eval    also a new versioned DAO per chain, and repoint the router
-```
+To expand an Automata code: `cast call <ism> "describeQuoteError(bytes)(string)" $(cast from-utf8 TCBR)`.
 
-The third will surprise you, because the symptom is `TCBR`, identical to ordinary expiry. The
-versioned DAO pins its evaluation number:
+A route is paused after repeated failures, backing off up to 30 minutes. Its blocker shows in
+`/api/status` and in the log as `route failed`.
 
-```solidity
-if (tcbInfo.evaluationDataNumber != TCB_EVALUATION_NUMBER)   // 20
-    revert Invalid_Tcb_Evaluation_Data_Number();
-```
-
-All three chains currently report `standard(TDX) = 20`, and Intel already publishes 13 through
-22. When the standard advances past 20, fresh TCB info arrives stamped 21, our eval-20 DAO
-rejects it, and the router simultaneously looks up a DAO for eval 21 that does not exist.
-
----
-
-## Replacing an enclave
-
-An enclave is disposable. It holds no keys, no state and no disk: the destination chain's ISM
-is the light client's only database, so a new CVM picks up exactly where the old one left off.
-
-What must **not** change is its identity: the OS image, the container image and the KMS. The
-app id and instance id are deliberately not pinned, which is what makes this a swap.
+## Verifying what runs
 
 ```sh
-phala deploy --node-id 18 --image dstack-0.5.9 --no-dev-os \
-  -c deploy/docker-compose.<family>.yml
-curl -s https://<new-app-id>-8080.dstack-pha-prod9.phala.network/identity | jq -r .
+FAMILY=celestia ../deploy/verify-digest.sh <app id>                        # compose -> quote
+FAMILY=celestia ../deploy/verify-digest.sh <app id> --ism <ism> --rpc <rpc> # and the ISM accepts it
+FAMILY=celestia ../deploy/verify-digest.sh <app id> --rebuild              # and the image is this source, ~35 min
 ```
 
-Redeploy from the compose of the family you are replacing, and compare against what that
-family's ISMs already trust:
+It reproduces `compose_hash`, finds it inside the signed quote, and diffs the measured compose
+against this checkout. `os_image_hash` must be `bd369a8c…`; `de9c74f0…` is a dev image with
+shell access.
 
-```
-celestia  0x26ba429fdd51a3131520393c09a033423c2ec715a03094288f6d25ee55fdb66f
-ethereum  0xfe294574ecdc4f20d23226ed475ba711e08c23edbbc83365781cda29a5101bc3
-evolve    0x259d450e50a8374a42b6a0e514cb0e23cb3ae1a40f962ca31db214b98ebac91e
-```
-
-**If it matches**, there is nothing else to do. Point that family's routes at the new URL
-(`enclave-url-<family>` in `.state/out/`, then `write_config`) and restart:
+To check the wiring behind it, start from the router, not from a config:
 
 ```sh
-sudo systemctl restart teeism-relayer
-curl -s localhost:3001/api/status | jq '.[] | {name, height}'
-```
-
-The heights should be the ones the old enclave left behind, and the next tick advances them.
-Nothing is replayed, because the relayer derives its whole starting position from the ISM.
-
-**If it does not match**, the image or the OS changed. That is a new identity, and no ISM can
-be updated to trust it: the identity is `immutable` in `TeeDcapIsm.sol` and `x/teeism` has no
-update message at all. The only path is fresh ISMs. See "What forces a redeploy" below.
-
----
-
-## Rebuilding the enclave image
-
-Nothing updates automatically, and that is deliberate. The CVMs keep running the pinned digest
-until someone edits it. There is no silent update path.
-
-The moment you do re-pin, this happens:
-
-```
-new image digest -> new app_compose -> new compose_hash -> new mr_config_id
-                 -> new identity -> every ISM rejects every attestation
-```
-
-Not degraded. Halted. And unfixable in place, because both sides pin the identity immutably:
-
-- `TeeDcapIsm.sol`: `bytes32 public immutable identityDigest`, set in the constructor and
-  re-checked on every transition with `revert IdentityChanged()`. No setter exists.
-- `x/teeism`: the proto has only `CreateInterchainSecurityModule` and `SubmitAttestation`.
-
-The constructor even refuses to deploy an ISM whose genesis state does not already name the
-new identity:
-
-```solidity
-if (_readBytes32(_genesisState, 84) != _identityDigest) revert IdentityChanged();
-```
-
-So the full cost of an enclave code change is: build and push, re-pin the digest in that
-family's `deploy/docker-compose.<family>.yml`, redeploy that CVM, deploy new ISMs for every
-route the family attests, re-point the Celestia routing ISM and the EVM warp routers, and
-regenerate the coprocessor config. The old ISMs keep serving anything already in flight.
-
-How many ISMs depends on the family, which is what the split bought:
-
-| family changed | ISMs to redeploy |
-|---|---|
-| celestia | **4** - the `TeeDcapIsm` on Sepolia, Arbitrum, Base and Eden |
-| ethereum | **3** - the Celestia-side ISMs for the Sepolia, Arbitrum and Base origins |
-| evolve | **1** - the Celestia-side ISM for the Eden origin |
-
-Touching `Cargo.lock` or a module every family compiles moves all three digests, correctly,
-and then it is all eight.
-
-Budget for it. Do not do it casually.
-
-> The Nix source filter means editing the coprocessor, the gas oracle or a test **cannot** move
-> the digest. Only `crates/tee-node`, `crates/hyperlane-types`, `tee-circuit/tee-attestation`
-> and the manifests do. Check with
-> `nix eval --raw .#packages.x86_64-linux.image-<family>.drvPath` before and after.
-
-## Rebuilding the chain image
-
-Nothing measures `celestia-app-teeism:local`, so this is an ordinary container upgrade: build,
-recreate, done. Two caveats.
-
-The tag is mutable and the binary carries no version, so `:local` today and `:local` next
-month are different code with nothing inside them to tell you apart. Record the commit, or add
-`-ldflags "-X …Version=$(git describe) -X …Commit=$(git rev-parse HEAD)"` to the build.
-
-A consensus-relevant change to `x/teeism` is a chain upgrade, not a container restart.
-
----
-
-## Verifying what is actually running
-
-```sh
-FAMILY=celestia deploy/verify-digest.sh <app-id>                          # the compose chain
-FAMILY=celestia deploy/verify-digest.sh <app-id> --ism <a> --rpc <url>    # also what the chain accepts
-FAMILY=celestia deploy/verify-digest.sh <app-id> --rebuild                # also the image, ~35 min
-```
-
-It reproduces `compose_hash` from the `app_compose` the enclave hands over, checks that the
-same hash appears in `mr_config_id` **inside the signed quote** rather than only in the
-unsigned `info` block, and diffs the embedded compose against the file in this checkout.
-
-To confirm the image build is reproducible rather than merely repeatable on one machine:
-
-```sh
-nix build .#image-celestia --rebuild   # exit 0 means bit-identical
-```
-
-> **`os_image_hash` must be `bd369a8c…`.** That is the production dstack OS. `de9c74f0…` means
-> a dev image was provisioned, which permits shell access into the CVM and makes the
-> measurements meaningless.
-
----
-
-## Validating the wiring
-
-`verify-digest.sh` proves one link: that a live enclave satisfies a given ISM. It does not
-prove that the ISM is the one your warp routes actually use, or that this relayer is what
-submits to it. Those are separate questions and this is how to answer them.
-
-Every command here is read-only, and each link is checked against the thing downstream of it
-rather than against a config file. `.env.local` and the coprocessor config are both claims; the
-chain is not.
-
-**1. What a warp router will actually consult.** Start here, not from a config. The mailbox
-asks the *recipient* which ISM it wants, and the recipient is the warp router:
-
-```sh
-cast call <router> 'interchainSecurityModule()(address)' --rpc-url <rpc>
-```
-
-Do it for every router on the chain, both assets. They should all name the same ISM. A zero
-address is not a failure but it means something different: the router names none, so the
-mailbox default applies, and that is a different contract to go and check.
-
-**2. What that ISM pins.** All three are immutable and have no setter:
-
-```sh
-cast call <ism> 'identityDigest()(bytes32)'      --rpc-url <rpc>
-cast call <ism> 'enclaveMeasurements()(bytes32)' --rpc-url <rpc>
-cast call <ism> 'mailbox()(address)'             --rpc-url <rpc>
-```
-
-**3. That a live enclave satisfies it.** This is the link `verify-digest.sh` already covers:
-
-```sh
-FAMILY=celestia deploy/verify-digest.sh <app-id> --ism <ism> --rpc <rpc>
-```
-
-An EVM destination verifies a *Celestia*-origin attestation, so all four EVM ISMs pin the
-**celestia** family. The Celestia-side ISMs pin whichever family attests their origin.
-
-**4. That this relayer is the thing submitting.** The strongest evidence, because it is
-history rather than configuration. Every state change is a `submitAttestation` from the
-relayer key, and nothing else can write to an ISM:
-
-```sh
-curl -s "https://eth-sepolia.blockscout.com/api/v2/addresses/<ism>/transactions?filter=to" \
-  | jq -r '.items[] | "\(.timestamp) \(.from.hash) \(.method) \(.status)"'
-```
-
-Cross-check a submission against the state it produced: the transaction should land a few
-seconds after the origin head time in `state()`. Decode that state as:
-
-```
-[ 0: 32] state_root      [32: 36] origin_domain   [36: 44] height
-[44: 52] timestamp       [52: 84] lc_store_commit [84:116] identity_digest
-```
-
-**The Celestia side** is the same walk through the module instead of through contracts. Both
-warp tokens name a routing ISM; the routing ISM fans out by origin domain; the ISM it routes
-to is the one that verifies:
-
-```sh
+cast call <router> 'interchainSecurityModule()(address)' --rpc-url <rpc>    # the ISM it uses
+cast call <ism> 'enclaveMeasurements()(bytes32)' --rpc-url <rpc>            # what that ISM pins
 curl -s localhost:1317/hyperlane/v1/tokens | jq -r '.tokens[] | "\(.id) \(.ism_id)"'
-curl -s localhost:1317/hyperlane/v1/isms/<routing-ism> | jq -r '.ism.routes[]'
-celestia-appd query teeism ism <origin-ism> --node tcp://localhost:26657 -o json
+curl -s localhost:1317/hyperlane/v1/isms/<routing ism> | jq -r '.ism.routes[]'
 ```
 
-### Two things that look wrong and are not
+Every EVM ISM pins the `celestia` family; each Celestia-side ISM pins the family of its origin.
+`TeeDcapIsm` source is verified on Blockscout (`<chain>.blockscout.com/address/<ism>`) on all
+four EVM chains, not on Etherscan.
 
-> **`origin_domain` reads `1297040200` on every EVM ISM, and this chain's `local_domain` is
-> `1297040299`.** That is not drift. `DOMAIN = 1297040200` is a constant in
-> `crates/tee-node/src/celestia/mod.rs`, mocha's domain, and the deployed chain is a local
-> devnet. The field is self-consistent across genesis and every transition, which is why
-> nothing rejects.
->
-> What it costs: that field separates a Celestia-origin attestation from an Ethereum one,
-> which is what it is for, but it does **not** bind an ISM to one particular Celestia chain.
-> `lc_store_commit` does. The enclave verifies Tendermint consensus forward from that stored
-> light-client commitment, so a different Celestia chain has a different validator set and
-> cannot produce headers that verify against it. The protection is real; the label is wrong.
-> Fixing it means taking the domain from the origin's config rather than a constant, and that
-> changes the state layout's meaning, so it is a redeploy.
-
-> **An ISM's state can be hours old and the route be healthy.** A route only advances when it
-> has something to deliver, so the age of `timestamp` measures the last transfer, not
-> liveness. Base sitting at five days is its dispute window. Read `/api/status` for what the
-> relayer is doing now.
-
-### Where the source is verified
-
-`TeeDcapIsm` is verified on **Blockscout** on all four EVM chains, not on Etherscan, Arbiscan
-or Basescan. Those index the same contracts but hold no source, so a link there shows raw
-bytecode and looks alarming. The UI links to Blockscout for this reason.
-
-```
-https://eth-sepolia.blockscout.com/address/<ism>?tab=contract
-https://arbitrum-sepolia.blockscout.com/address/<ism>?tab=contract
-https://base-sepolia.blockscout.com/address/<ism>?tab=contract
-https://eden-testnet.blockscout.com/address/<ism>?tab=contract
-```
-
-Verifying on Etherscan as well needs an Etherscan API key, which this repo does not carry.
-The constructor arguments any verifier needs can be recovered without one, by splitting the
-creation transaction at the end of the locally built init bytecode:
-
-```sh
-forge build
-cast tx <creation-tx> input --rpc-url <rpc>        # init bytecode ++ abi-encoded args
-```
-
-That comparison is worth more than the badge: if the local init bytecode is a prefix of the
-deployment's, the deployed contract *is* this source, verified or not.
-
----
-
-## Reading a rejection
-
-Automata returns a four-letter code. `TeeDcapIsm` passes it through unchanged in
-`QuoteRejected(bytes)` and can expand it for free off chain:
-
-```sh
-cast call <ism> "describeQuoteError(bytes)(string)" $(cast from-utf8 TCBR)
-```
-
-All 28 codes are mapped and a test asserts none falls through to "unrecognised". Codes naming
-collateral - `TCBR`, `TCBCH`, `QEIDCH`, `PCKCRLM`, `PCKCRLH`, `ROOTCRLH`, `ROOTH`, `SIGNH` -
-mean republish. Everything else means the quote or the enclave is wrong.
-
-> One case produces no reason at all. A quote whose signature fails to parse inside Automata's
-> verifier reverts with empty returndata rather than returning `(false, code)`, so there is no
-> `QuoteRejected` to expand and `eth_call` reports a bare `execution reverted`. A *truncated*
-> quote does come back as `QuoteRejected("QHS")`. A rejection with no data at all means the
-> quote bytes are damaged, not that the enclave is wrong.
-
----
-
-## A route that looks stuck but is not
-
-Check this list before touching anything. Most "stuck" routes are working correctly.
-
-**An L2 origin is waiting on its dispute window.** `base-to-celestia` and
-`arbitrum-to-celestia` derive their root from the L2's dispute anchor on L1, so a transfer
-cannot land until the game covering its block resolves. On Base Sepolia that is **exactly five
-days plus about three minutes**, measured across consecutive games, and the anchor adopts a
-game the moment it resolves. Arbitrum is roughly 31 minutes, which is the validator's posting
-cadence rather than its 20-block challenge period.
-
-To tell waiting from stuck, compare the live anchor against the dispatch block:
-
-```sh
-cast call 0x2fF5cC82dBf333Ea30D8ee462178ab1707315355 "getAnchorRoot()(bytes32,uint256)" \
-  --rpc-url https://rpc.sepolia.ethpandaops.io     # Base Sepolia's anchor, as an L2 block
-```
-
-If the anchor is below the dispatch block, it is waiting. The anchor tracks the chain, 600 L2
-blocks per game, one game about every 20.5 minutes, so the lag stays constant rather than
-growing.
-
-**An Ethereum origin is waiting on finality.** The enclave attests the *finalized* head, so a
-message waits roughly two epochs, about 15 minutes, before it can be attested at all.
-
-**An Ethereum-backed origin is waiting for a non-empty epoch boundary.** A light-client
-bootstrap only exists for an epoch-boundary checkpoint, so Sepolia, Arbitrum and Base routes
-skip a finalized head whose boundary slot was empty, about one in fourteen, and take the next.
-
-**`leaves=N` in the log is the batch size, not the tree size.** We reuse the canonical
-Hyperlane deployments on the EVM chains, so their merkle tree hooks carry everyone's traffic.
-A batch of nine leaves with zero deliveries means those nine belonged to other people.
-
----
-
-## A route that is actually stuck
-
-**Symptom: `stale batch` in the log.** Something else advanced the ISM past a staged batch's
-starting state. Not stuck: the relayer discards that batch and builds the next one from where
-the ISM actually is, which skips nothing.
-
-**Symptom: the ISM height is far behind and never moves.** The light client needs the commit
-at its trusted height, and a pruned chain no longer has it. Confirm `pruning = "nothing"` and
-`min-retain-blocks = 0`. If the commit is genuinely gone, the ISM has to be redeployed; there
-is no recovery.
-
-**Symptom: `eth_getProof` fails on the archive endpoint.** Resuming from a trusted height more
-than about 128 blocks back needs state proofs a public node has pruned. Set `archive_rpc` on
-the origin, and never point it at a metered key.
-
-**Symptom: `unknown command "teeism" for "query"` on every Celestia-origin route.** The unit's
-PATH is not putting `.state/bin` first, so a different `celestia-appd` is being found.
-
-**Re-anchoring.** If a route's trusted height is too old to prove forward from, it is
-re-anchored: a new ISM from a fresh `genesis`. That is a manual intervention and it
-means the route was genuinely broken, not merely slow. Treat every re-anchor as an incident
-worth a root cause, not routine upkeep.
-
----
-
-## What forces a redeploy, and what does not
-
-| change | cost |
-|---|---|
-| a new asset or warp route | scripts plus config. No ISM changes |
-| a new EVM chain | PCCS stack plus one ISM per direction. Existing routes untouched |
-| a relayer, oracle or UI change | rebuild and restart |
-| collateral expiry | the monthly job |
-| an enclave swap, same measurements | edit one URL, restart |
-| **a new enclave image** | **new ISMs for that family: 4 celestia, 3 ethereum, 1 evolve** |
-| **a new dstack OS or Phala KMS** | **all three identities move: eight new ISMs** |
-| Intel advancing the TCB eval number | a new versioned DAO per chain, repoint the router |
-
----
+Two readings that look wrong and are not:
+- **`origin_domain` on the EVM ISMs is `1297040200`, mocha's domain, not this chain's.** It is
+  a constant in `celestia/mod.rs`. What binds an ISM to this particular chain is the
+  light-client commitment in its state.
+- **An idle route's ISM state is hours old.** That is normal; see above.
 
 ## Secrets
 
-`keys/` and `devnet/.state/` are gitignored and hold real credentials. Never commit them,
-never copy them into a tracked file, never send them to an external service.
-
-```sh
-deploy/check-secrets.sh                                   # before every commit
-ln -s ../../deploy/check-secrets.sh .git/hooks/pre-commit # or let the hook refuse it
-```
-
-An Alchemy key reached `main` in this public repo once and was scraped, which is the likely
-reason that free tier ran out early. Rotation is the only fix for a key already pushed.
-
-The relayer keys pay gas and can stall the bridge, but neither can make any chain accept a
-message the enclave did not attest. The keys that matter more are the Automata `owner` and
-`ATTESTER_ROLE`, which can repoint the router at a different DAO. That is the strongest
-privilege anywhere in the EVM path, and today it is the same EOA that pays gas. Splitting
-those, and moving the ISM and router owners to a multisig, is the most valuable hardening
-left.
-
----
-
-## What is trusted
-
-**Trusted.** Intel TDX and the DCAP PKI, whose root CA is compiled into the enclave. The
-pinned enclave measurements. The ISM's genesis state, which names the light-client checkpoint
-and is public at creation. On the EVM side, our own Automata DCAP deployment and the Intel
-collateral published into it.
-
-**Not trusted.** Every RPC - beacon, execution, Celestia, PCCS - which are data sources only.
-The coprocessor and the relayer, which can stall but never forge. Phala as operator, beyond
-liveness. The host clock, which is bounded to the attested chain head's timestamp, so a
-rewound clock cannot revive a TCB level Intel has revoked. Every field of an `AttestRequest`:
-the endpoint is public and anyone can post to it.
-
-That last one is the recurring source of bugs. Several past fixes were the same mistake in
-different clothes - a value that looked like configuration was in fact a request field, and
-proving something *about* it proved nothing about the bridge. Hence the merkle tree address,
-the L2 anchor contract and its slot layout all being compiled in rather than accepted.
-
-## One enclave per origin family
-
-The identity an ISM pins is a hash of the enclave image, and the ISM cannot be told to trust a
-different one: it is `immutable` in `TeeDcapIsm.sol` and `x/teeism` has no update message. So
-every origin sharing one image meant every ISM sharing one identity, and a change to Eden's
-executor re-deployed the Ethereum side too.
-
-There are now three images, one per origin family:
-
-| family | attests | pinned by |
-|---|---|---|
-| `celestia` | the Celestia origin | the four `TeeDcapIsm` on the EVM chains |
-| `ethereum` | Sepolia, Arbitrum, Base | three Celestia-side ISMs |
-| `evolve` | Eden | one Celestia-side ISM |
-
-So a change to the evolve executor re-deploys one ISM, not eight. A change to shared code -
-`attest.rs`, the tree verification, the state layout - still moves all three, which is correct:
-they all run it.
-
-This needed more than cargo features to be true. `buildRustPackage` is input-addressed and
-rustc writes the source path into the binary, so while every family shared one filtered source
-tree, any edit anywhere gave all three a new store path and a new digest even when the compiled
-code was identical. `flake.nix` therefore builds each image from a source tree without the
-other families' chain files: the celestia image never sees `ethereum/` or Eden, the ethereum
-image never sees `celestia/`, the evolve image never sees `ethereum/`.
-
-Measured both ways: before the filters, changing one error string in Eden's executor moved all
-three digests; after them, it moves only evolve's.
-
-**A dependency change still moves all three**, because `Cargo.lock` is in every image's source,
-as are `attest.rs`, `origin.rs` and `evm.rs`. That is correct - all three compile them - but it
-means the split bounds chain-specific changes, not every change.
-
-Each is `nix build .#image-<family>` from the cargo feature of the same name, pinned by
-`deploy/docker-compose.<family>.yml`.
-
-`devnet/scripts/85-celestia-isms.sh` knows which family each origin belongs to, and
-`80-evm-isms.sh` takes `ENCLAVE_FAMILY` (default `celestia`).
-
-### Re-deployment moves the checkpoint
-
-A new identity means a new ISM, and the new one is anchored at the origin's **current head**.
-Anything dispatched and not yet delivered is below that anchor and never arrives. On Base,
-where a transfer is in flight for five days, that is the normal case rather than the corner
-one. It is accepted here; the testnet is not worth coupling every deployment to the last.
-
-To recover such a message, anchor the replacement at the old checkpoint instead:
-
-```sh
-old="$(cast call <old-ism> "state()(bytes)" --rpc-url <rpc>)"
-ISM_GENESIS="${old:0:170}${new_identity#0x}" ./devnet/scripts/80-evm-isms.sh
-```
-
-That keeps the old state's root, height, timestamp and store commitment and swaps only the
-identity in its last 32 bytes, the one field the ISM checks against itself. The route then replays the gap
-and delivers what the old one had seen. `ISM_GENESIS_<ORIGIN>` does the same for the
-Celestia-side ISMs.
-
-## Eden, and what it costs in trust
-
-Eden is an evolve-stack chain: an EVM chain with no consensus of its own, whose single
-sequencer signs each block header and publishes it as a blob in one Celestia namespace on
-mocha. Three things have to hold before the enclave will attest a root from it:
-
-1. the blob was in a Celestia block the light client verified,
-2. the pinned sequencer key signed the header in it, and
-3. **the enclave re-executed the blocks that produced that root** and reached the same root,
-   starting from the state the ISM already trusts.
-
-The third is the one that matters. A signature says who claimed a root, not whether it is the
-root executing the chain produces, so without re-execution a dishonest sequencer could sign a
-header naming any state it liked and mint whatever it wanted on the far side. With it the
-sequencer keeps the powers a sequencer must have - deciding which transactions run and in
-what order - and loses the one it must not, which is inventing a state those transactions
-would never reach. It cannot sign other people's transactions, so it cannot move their funds.
-
-Only the blocks that changed the state are executed. That is not a shortcut: the executions
-chain by state root and the chain has to arrive at the root the sequencer signed for the
-target height, so a block left out is an effect missing from the result and the roots stop
-matching. Eden makes ten blocks a second and nearly all of them are empty, which is the
-difference between verifying a handful of blocks per batch and verifying a million.
-
-The executor lives in `tee-hyperlane/crates/tee-node/src/evm/`: revm for execution, and a
-merkle-patricia trie that reads and rewrites itself through the witness rather than a
-database. It is held to Eden's own answers by `tests/eden_exec.rs`, which replays real blocks
-off the chain, and to a trie built from scratch by `tests/eden_trie.rs`.
-
-**One quirk worth knowing**: Eden does not burn the base fee, it pays it to the block's
-beneficiary along with the priority fee. revm burns it, following Ethereum, so the executor
-credits it back. The first run of it came out short on exactly one account by exactly
-`base_fee * gas_used`, which is how this was found. If Eden ever changes that rule, every
-Eden attestation stops rather than starts lying.
-
-What is left to trust: the sequencer can still censor and reorder, and it can still stop.
-Neither takes anyone's funds, and both are visible.
-
-### Residual risks
-
-- A TDX break, or an unrevoked but vulnerable TCB, forges any root. This is the irreducible
-  assumption. The TCB-status allowlist is the only lever, and it trades liveness for safety on
-  TCB-recovery days.
-- Message inclusion is enclave-verified, not proven on chain. This widens nothing in practice,
-  because a compromised enclave already owns the root and could forge a proof under it, but it
-  means a TDX break forges messages directly rather than in two steps.
-- The enclave operator can withhold attestations. Funds are never at risk, but a bridge that
-  does not advance is a bridge that is down.
-- Celestia does no freshness check of its own. The EVM side enforces `maxStateAge`; Celestia
-  cannot reject a stale but well-formed state.
-- Light-client security is the standard model: a fork needs a third of the *trusted* validator
-  set or sync committee to equivocate.
-- L2 roots are trustless only once confirmed, gated on each chain's challenge window.
-- ISM and warp router owners are single EOAs today.
-- Eden's sequencer can censor and reorder, and can stop. It cannot forge a state, because the
-  enclave re-executes; see above.
-- Eden's executor is ours rather than reth's, so a transaction it disagrees with halts Eden's
-  routes. That is the safe direction - a disagreement is a refusal, never an acceptance - but
-  it is a liveness risk the other origins do not carry.
+`keys/`, `devnet/.env` and `devnet/.state/` hold real credentials and are gitignored. Run
+`deploy/check-secrets.sh` before every commit (the pre-commit hook from DEPLOY step 1 does
+this). A key that reaches the public repo must be rotated; deleting it leaves it in history.

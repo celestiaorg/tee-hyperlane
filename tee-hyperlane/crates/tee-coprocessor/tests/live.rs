@@ -62,7 +62,7 @@ async fn run(config: &Config, name: &str, chain: &Chain) {
     // covers, so it takes a few rounds, as it does for the running route.
     let mut step = indexer.gather(&genesis).await;
     for _ in 0..rounds(name) {
-        if step.is_ok() {
+        if matches!(&step, Ok(s) if !s.chain.is_empty()) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;

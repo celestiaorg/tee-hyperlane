@@ -26,8 +26,9 @@ Server "ark", Zurich, `chef@178.199.12.26`, checkout at `~/tee-ism-nonzk`. It is
 this tree with no `.git`, so nothing there is committable.
 
 - systemd: `teeism-relayer` (every route, plus the dashboard and API on :3001) and
-  `teeism-gas-oracle`. `bridge-ui` exists but is
-  disabled: the gateway container serves the built `bridge-app/dist` instead.
+  `teeism-gas-oracle`. The gateway container serves the built `bridge-app/dist`. Until the
+  next rollout ark also has the old `teeism-api` unit and a disabled `bridge-ui` unit, which
+  the current binary cannot run; the rollout removes both.
 - a local celestia-app devnet, not mocha, with pruning disabled
 - a mocha light node (`mocha-light`), which only the Eden origin needs
 - nginx gateway on `:3000` exposing `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`
@@ -41,9 +42,10 @@ this tree with no `.git`, so nothing there is committable.
 
 | file | covers |
 |---|---|
-| `deploy/DEPLOY.md` | standing up a whole bridge, and where every config lives |
-| `deploy/MAINTAIN.md` | the monthly job, redeploys, waiting vs stuck, the trust model |
-| `deploy/INTERACT.md` | wallets, the CLI, expected latency and cost |
+| `README.md` | every live id and identity, the design, the trust model |
+| `deploy/DEPLOY.md` | standing up a whole bridge, step by step; adding an asset or a chain |
+| `deploy/MAINTAIN.md` | the monthly job, rolling out new code, waiting vs stuck, symptoms |
+| `deploy/INTERACT.md` | wallets, sending, checking arrival, latency and cost |
 | `deploy/coprocessor.toml.example` | the deployed chains and routes, verbatim but for the one key |
 | `deploy/verify-digest.sh` | compose file to `compose_hash` to `mr_config_id`, against the signed quote |
 | `deploy/check-secrets.sh` | run before every commit |
@@ -54,8 +56,8 @@ this tree with no `.git`, so nothing there is committable.
 key, mnemonics). Never commit them, never copy them into a tracked file, never send them to an
 external service. `deploy/check-secrets.sh` must pass before any commit.
 
-Only the Base route uses a metered RPC: an Alchemy key at `devnet/.state/alchemy-base-key` on
-ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier, so archive
+Only the Base route uses a metered RPC: an Alchemy key (`ALCHEMY_BASE_KEY` in `devnet/.env`, or
+`devnet/.state/alchemy-base-key` on older hosts), on ark wired to the single `rpc` field of `[chains.base]`. It is a free tier, so archive
 `eth_getProof` works but `eth_getLogs` is capped at 10 blocks; Base logs therefore go to
 `sepolia.base.org`. Every other endpoint is a free public one.
 
@@ -79,8 +81,9 @@ ark, wired to the single `l2_rpc` field of `base-to-celestia`. It is a free tier
   fixtures passed on Prague and proved nothing; a DCAP verification does not, because P-256
   verification is an Osaka precompile. Under Prague it reverts with empty data.
 - **The per-family split bounds origin-specific changes only.** `flake.nix` gives each family
-  its own source filter, so editing `evm/` moves the evolve digest alone. `Cargo.lock` and the
-  shared modules are in every image's source, so touching those still moves all three.
+  its own source filter, so editing `celestia/eden.rs` or `celestia/eden/` moves the evolve
+  digest alone. `Cargo.lock` and the shared modules (`attest.rs`, `origin.rs`, `evm.rs`) are in
+  every image's source, so touching those still moves all three.
 - **Re-deployment moves the checkpoint.** A new ISM anchors at the origin's head, so anything
   in flight is skipped. `ISM_GENESIS` (the old ISM's state with the new identity spliced into
 its last 32 bytes) anchors at an old
@@ -89,8 +92,8 @@ its last 32 bytes) anchors at an old
   state, from the root the ISM already trusts, and the chain has to arrive at the root the
   sequencer signed. Only state-changing blocks are sent, which is safe because a missing one
   shows up as a root mismatch. Eden does **not** burn the base fee: it pays it to the block
-  beneficiary, and the executor credits that back. See `crates/tee-node/src/evm/` and the
-  Eden section of `deploy/MAINTAIN.md`.
+  beneficiary, and the executor credits that back. See `crates/tee-node/src/celestia/eden/` and the
+  Design section of `README.md`.
 - **Rotating the enclave identity re-points routers, never redeploys them.** Redeploying a
   collateral router abandons its escrow; that stranded real USDC on Sepolia once.
 

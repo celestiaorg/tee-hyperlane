@@ -54,7 +54,7 @@ mailbox = "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8"
 merkle_tree_hook = "0xAD34A66Bf6dB18E858F6B686557075568c6E031C"
 
 # The one metered endpoint: free archive plans cap eth_getLogs at ten blocks, so logs go to
-# the public node. Keep the key in devnet/.state/alchemy-base-key, never commit it.
+# the public node. The key is ALCHEMY_BASE_KEY in devnet/.env; never commit it.
 [chains.base]
 kind = "base"
 domain = 84532
