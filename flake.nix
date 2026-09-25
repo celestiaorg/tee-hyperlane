@@ -64,22 +64,21 @@
           in seg "target" || seg "tests" || seg "testdata" || seg "node_modules"
             || pkgs.lib.hasSuffix "/enclave-identity.toml" rel;
 
-        # Which origin files belong to which family, so a build never sees code it does not
-        # compile.
+        # Each image is built from a source tree without the other families' chain files in it.
         #
         # Feature gates alone are not enough for this. buildRustPackage is input-addressed and
         # rustc writes the source path into the binary, so any edit anywhere in the shared tree
         # gives every family a new store path and therefore a new image digest, even when the
         # compiled code is identical. Measured, not assumed: changing one error string in
-        # `evm/exec.rs` moved all three digests before this filter existed.
+        # Eden's executor moved all three digests before this filter existed.
         #
-        # What stays shared - attest.rs, hyperlane_state.rs, state_proofs.rs, lib.rs, main.rs -
-        # genuinely is shared, so a change there still moves all three, as it should. So does a
-        # change to Cargo.lock, which every build reads.
+        # So a change to `ethereum/base.rs` moves only the ethereum image. The shared files -
+        # attest.rs, origin.rs, evm.rs, main.rs - genuinely are shared and move all three, as
+        # does Cargo.lock. Evolve keeps `celestia/`, because Eden is verified through Celestia.
         familyOnly = {
-          celestia = [ "origins/ethereum.rs" "origins/ethereum_l2.rs" "origins/celestia_l2.rs" "evm" ];
-          ethereum = [ "origins/celestia.rs" "origins/celestia_l2.rs" "evm" ];
-          evolve = [ "origins/ethereum.rs" "origins/ethereum_l2.rs" ];
+          celestia = [ "ethereum" "celestia/eden.rs" "celestia/eden" ];
+          ethereum = [ "celestia" ];
+          evolve = [ "ethereum" ];
         };
 
         srcFor = feature:
@@ -232,9 +231,8 @@
       in
       {
         packages =
-          # One origin family per entry, and adding one is this list plus a cargo feature, an
-          # `origins/` module and a compose file. Nothing here is per-family except the name,
-          # so a Solana or SVM origin joins without touching the build.
+          # One image per entry. Adding one is this list, `familyOnly` above, a cargo feature and
+          # a compose file. Adding a chain to an existing image touches none of those.
           let
             families = [ "celestia" "ethereum" "evolve" ];
             outputs = pkgs.lib.listToAttrs (pkgs.lib.concatMap (f: [

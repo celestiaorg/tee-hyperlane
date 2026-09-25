@@ -1,35 +1,44 @@
-//! What the bridge UI reads.
+//! The dashboard API, served from the same process as the routes.
 //!
-//! Two endpoints: where each route's trusted state stands right now, and — given a message
-//! id — which batch carried it and what the enclave signed for that batch. Everything served
-//! here is public: a quote, a set of message ids and a state root already on chain.
+//! Everything it reports comes from two places: each route's directory, where the route loop
+//! writes its staged and finished batches and its markers, and each destination's ISM, read
+//! live. It holds no state of its own.
 
+use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use serde_json::{json, Value};
+use tracing::{info, warn};
 
-use crate::chains::read_ism_state;
-use crate::config::{ChainConfig, RouteConfig};
-use tee_attestation::decode_ism_state;
+use crate::config::{self, Config};
+use crate::destination::Destination;
 
-/// One attested batch, as the prover recorded it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttestationRecord {
-    pub height: u64,
-    pub state_root: String,
-    pub quote: String,
-    pub measurements: Measurements,
-    /// Every message id authorised together with this one.
-    pub batch: Vec<String>,
+/// How many finished batches the dashboard lists per route.
+const RECENT_BATCHES: usize = 10;
+
+#[derive(Clone)]
+pub struct Api {
+    proof_dir: Arc<PathBuf>,
+    routes: Arc<Vec<RouteView>>,
+    faucet: Option<Arc<Faucet>>,
 }
 
+struct RouteView {
+    config: config::Route,
+    origin_domain: u32,
+    destination_domain: u32,
+    destination: Box<dyn Destination>,
+}
+
+/// What the enclave measured, as shown next to each batch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Measurements {
     #[serde(rename = "mrTd")]
@@ -40,436 +49,334 @@ pub struct Measurements {
     pub compose_hash: String,
 }
 
-/// Where one route's trusted state stands, read live from the destination chain.
-#[derive(Debug, Clone, Serialize)]
-pub struct RouteStatus {
-    pub name: String,
-    pub origin: u32,
-    pub destination: u32,
-    pub ism: String,
-    /// Origin height the ISM currently trusts, and the origin head time it was taken at.
-    pub height: Option<u64>,
-    pub timestamp: Option<u64>,
-    #[serde(rename = "stateRoot")]
-    pub state_root: Option<String>,
-    /// Message ids in the most recent batches this route proved, newest first.
-    pub batches: Vec<Batch>,
-    /// The batch currently being proved, if any. Proving is minutes of CPU, so a route
-    /// spends most of its time here rather than idle.
-    pub proving: Option<Batch>,
-    /// The highest origin block the next proof could attest, which is not the origin's own
-    /// head: Ethereum's is the finalized block, an L2's is the block Ethereum has *confirmed*,
-    /// and Celestia's trails the head by the attest lag. Showing the raw head instead would
-    /// make every route look permanently behind by an amount that is a property of the chain
-    /// rather than of this relayer. Without it an idle route is indistinguishable from a
-    /// stuck one - "trusted 571870, attestable to 573707" says which.
-    #[serde(rename = "originHead")]
-    pub origin_head: Option<u64>,
-    /// Set when the destination chain could not be reached this request.
-    pub error: Option<String>,
-    /// Why this route's last tick failed, if it did. Distinct from `error`, which is about
-    /// this HTTP request rather than about the route.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blocked: Option<Blocker>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Batch {
+/// A finished batch, as `route.rs` files it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Record {
     pub height: u64,
-    pub messages: Vec<String>,
-    /// Where this batch actually is: "proving" only for the one route holding the CPU,
-    /// "queued" for those waiting their turn, "awaiting submission" once the proof exists.
-    ///
-    /// Reporting all three as "proving" made a dashboard that showed six routes proving at
-    /// once, which one CPU semaphore makes impossible, and hid the routes that had finished
-    /// hours earlier and were failing to submit.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stage: Option<&'static str>,
-}
-
-/// Why a route stopped, as its tick loop last recorded it.
-#[derive(Debug, Clone, Serialize)]
-pub struct Blocker {
-    pub error: String,
-    #[serde(rename = "consecutiveFailures")]
-    pub consecutive_failures: u64,
-    pub at: u64,
-}
-
-/// Attestations are read from the proof store, so the API has no state of its own and a
-/// restart loses nothing.
-const RECENT_BATCHES: usize = 10;
-
-#[derive(Clone)]
-pub struct Api {
-    root: Arc<PathBuf>,
-    routes: Arc<Vec<RouteConfig>>,
-    /// `None` when this deployment has no keyring to sign a grant with.
-    faucet: Option<Arc<crate::faucet::Faucet>>,
+    pub state_root: String,
+    pub quote: String,
+    pub measurements: Measurements,
+    pub batch: Vec<String>,
 }
 
 impl Api {
-    pub fn new(proof_dir: impl Into<PathBuf>, routes: Vec<RouteConfig>) -> Self {
-        let root: PathBuf = proof_dir.into();
-        let faucet = crate::faucet::Faucet::from_env(&root).map(Arc::new);
-        if faucet.is_none() {
-            tracing::info!("no CELHOME, so the faucet endpoint reports itself unconfigured");
-        }
-        Self {
-            root: Arc::new(root),
+    pub fn new(config: &Config) -> Result<Self> {
+        let routes = config
+            .routes
+            .iter()
+            .map(|r| {
+                Ok(RouteView {
+                    origin_domain: config.domain(&r.from)?,
+                    destination_domain: config.domain(&r.to)?,
+                    destination: config.destination(&r.to, &r.ism)?,
+                    config: r.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            proof_dir: Arc::new(config.proof_dir()),
             routes: Arc::new(routes),
-            faucet,
-        }
+            faucet: Faucet::new(config)?.map(Arc::new),
+        })
     }
 
-    pub fn router(self) -> Router {
-        Router::new()
-            // Opening this port in a browser should show the routes, not raw JSON.
-            .route("/", get(dashboard))
-            .route("/api/status", get(status))
-            .route("/api/attestation/{message_id}", get(attestation))
-            .route("/api/health", get(|| async { "ok" }))
-            .route("/api/faucet", get(faucet_info).post(faucet_claim))
-            .route("/api/faucet/{address}", get(faucet_claimed))
-            .with_state(self)
+    fn route_dir(&self, route: &str) -> PathBuf {
+        self.proof_dir.join(route)
     }
 
-    /// The batch this route has in flight, and which stage it has actually reached.
-    fn in_flight(&self, route: &str) -> Option<Batch> {
-        // Whichever of the two exists. A route that proves reads `attestation.json` until the
-        // proof replaces it; a route that only attests renames it to `proved.json` the moment
-        // it is staged, so looking only at the first name made every batch on a direct route
-        // invisible for its whole life and the dashboard showed the route as idle while it
-        // was in fact submitting.
-        let dir = self.root.join(route);
-        let staging = dir.join("staging");
-        let staged = [staging.join("attestation.json"), staging.join("proved.json")]
-            .into_iter()
-            .find(|p| p.exists())?;
-        let raw = std::fs::read(staged).ok()?;
-        let record: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-        let state = hex::decode(record["attestation"]["new_state"].as_str()?).ok()?;
-        let state = decode_ism_state(&state).ok()?;
-        let messages = record["messages"].as_array()?;
-        let stage = if staging.join("proved.json").exists() {
-            "submitting"
-        } else if dir.join("proving").exists() {
-            "attesting"
-        } else {
-            "queued"
+    fn read_json(&self, route: &str, file: &str) -> Option<Value> {
+        serde_json::from_slice(&std::fs::read(self.route_dir(route).join(file)).ok()?).ok()
+    }
+
+    fn records(&self, route: &str) -> Vec<Record> {
+        let Ok(entries) = std::fs::read_dir(self.route_dir(route)) else {
+            return Vec::new();
         };
-        Some(Batch {
-            height: state.height,
-            messages: messages
-                .iter()
-                .filter_map(|m| m.as_str())
-                .map(message_id)
-                .collect(),
-            stage: Some(stage),
-        })
+        entries
+            .filter_map(|e| e.ok()?.path().to_str().map(PathBuf::from))
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .filter_map(|p| serde_json::from_slice(&std::fs::read(p).ok()?).ok())
+            .collect()
     }
 
-    /// Why this route last stopped, if it is stopped.
-    fn blocker(&self, route: &str) -> Option<Blocker> {
-        let raw = std::fs::read(self.root.join(route).join("blocked.json")).ok()?;
-        let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-        Some(Blocker {
-            error: value["error"].as_str()?.to_string(),
-            consecutive_failures: value["consecutiveFailures"].as_u64().unwrap_or(0),
-            at: value["at"].as_u64().unwrap_or(0),
-        })
-    }
-
-    /// The attestable head this route's prover last recorded.
-    ///
-    /// Preferred over asking the chain, because for Arbitrum there is nothing to ask: its
-    /// confirmed block is not exposed by any view, only by the `AssertionCreated` log behind
-    /// `latestConfirmed()`. The prover resolves it every tick regardless, so the dashboard
-    /// reads that rather than repeating the work on every poll.
-    fn recorded_head(&self, route: &str) -> Option<u64> {
-        let raw = std::fs::read(self.root.join(route).join("head.json")).ok()?;
-        let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-        value["target"].as_u64()
-    }
-
-    /// The last few batches this route proved, newest first.
-    fn recent_batches(&self, route: &str) -> Vec<Batch> {
-        let mut batches: Vec<Batch> = read_dir(&self.root.join(route))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|f| f.extension().is_some_and(|e| e == "json"))
-            .filter_map(|f| {
-                serde_json::from_slice::<AttestationRecord>(&std::fs::read(f).ok()?).ok()
-            })
-            .map(|record| Batch {
-                height: record.height,
-                messages: record.batch,
-                // A filed batch has no stage left to be in; it landed.
-                stage: None,
-            })
-            .collect();
+    async fn status(&self, view: &RouteView) -> Value {
+        let name = &view.config.name;
+        let mut batches = self.records(name);
         batches.sort_by(|a, b| b.height.cmp(&a.height));
         batches.truncate(RECENT_BATCHES);
-        batches
-    }
-
-    /// Scan recorded batches for one containing this message.
-    fn find(&self, message_id: &str) -> Result<Option<AttestationRecord>> {
-        let wanted = message_id.trim_start_matches("0x").to_lowercase();
-        for route in read_dir(self.root.as_path())? {
-            for file in read_dir(&route)? {
-                if file.extension().is_none_or(|e| e != "json") {
-                    continue;
-                }
-                let record: AttestationRecord = match serde_json::from_slice(&std::fs::read(&file)?)
-                {
-                    Ok(record) => record,
-                    // A file the prover is still writing is not an error.
-                    Err(_) => continue,
-                };
-                if record
-                    .batch
+        // A batch attested but not yet delivered, from its staged record.
+        let submitting = self
+            .read_json(name, "staging/batch.json")
+            .and_then(|staged| {
+                let state = hex::decode(staged["attestation"]["new_state"].as_str()?).ok()?;
+                let height = tee_attestation::decode_ism_state(&state).ok()?.height;
+                let ids: Vec<String> = staged["messages"]
+                    .as_array()?
                     .iter()
-                    .any(|id| id.trim_start_matches("0x").eq_ignore_ascii_case(&wanted))
-                {
-                    return Ok(Some(record));
-                }
+                    .filter_map(|m| {
+                        Some(format!(
+                            "0x{}",
+                            hex::encode(alloy_primitives::keccak256(
+                                hex::decode(m.as_str()?).ok()?
+                            ))
+                        ))
+                    })
+                    .collect();
+                Some(json!({ "height": height, "messages": ids, "stage": "submitting" }))
+            });
+        let mut status = json!({
+            "name": name,
+            "origin": view.origin_domain,
+            "destination": view.destination_domain,
+            "ism": view.config.ism,
+            "batches": batches.iter().map(|b| json!({ "height": b.height, "messages": b.batch })).collect::<Vec<_>>(),
+            "proving": submitting,
+            "originHead": self.read_json(name, "head.json").and_then(|h| h["target"].as_u64()),
+            "blocked": self.read_json(name, "blocked.json"),
+        });
+        match view.destination.state().await {
+            Ok(state) => {
+                status["height"] = state.height.into();
+                status["timestamp"] = state.timestamp.into();
+                status["stateRoot"] = format!("0x{}", hex::encode(state.state_root)).into();
             }
+            Err(e) => status["error"] = e.to_string().into(),
         }
-        Ok(None)
+        status
     }
 }
 
-/// A Hyperlane message id is the keccak of its encoding.
-fn message_id(message_hex: &str) -> String {
-    let raw = hex::decode(message_hex.trim_start_matches("0x")).unwrap_or_default();
-    format!("0x{}", hex::encode(alloy_primitives::keccak256(raw)))
-}
-
-fn read_dir(path: &std::path::Path) -> Result<Vec<PathBuf>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    Ok(std::fs::read_dir(path)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect())
-}
-
-/// The page this port serves. Small enough to embed, so the API ships as one binary.
-async fn dashboard() -> axum::response::Html<&'static str> {
-    axum::response::Html(include_str!("../ui/relayer.html"))
-}
-
-/// Read every route's trusted state.
-///
-/// Each route costs two chain reads and each shells out to `cast` or `celestia-appd`, so done
-/// in sequence a five-route page takes half a minute. They are independent, so they run at
-/// once and the page waits for the slowest rather than the sum.
-async fn status(State(api): State<Api>) -> Json<Vec<RouteStatus>> {
-    let mut reads = Vec::new();
-    for (index, route) in api.routes.iter().enumerate() {
-        let route = route.clone();
-        let api = api.clone();
-        reads.push(tokio::task::spawn_blocking(move || {
-            (index, read_route(&api, &route))
-        }));
-    }
-
-    let mut statuses: Vec<(usize, RouteStatus)> = Vec::new();
-    for read in reads {
-        if let Ok(result) = read.await {
-            statuses.push(result);
-        }
-    }
-    // Keep configuration order, which is the order a reader expects.
-    statuses.sort_by_key(|(index, _)| *index);
-    Json(statuses.into_iter().map(|(_, status)| status).collect())
-}
-
-fn read_route(api: &Api, route: &RouteConfig) -> RouteStatus {
-    let batches = api.recent_batches(&route.name);
-    // A staged attestation at a height already filed is a leftover from a finished batch, not
-    // work in progress. Reporting it would show the same block as both proven and proving.
-    let proving = api
-        .in_flight(&route.name)
-        .filter(|staged| !batches.iter().any(|done| done.height == staged.height));
-
-    let mut status = RouteStatus {
-        name: route.name.clone(),
-        origin: route.origin.domain(),
-        destination: route.destination.domain(),
-        ism: route.ism_id.clone(),
-        height: None,
-        timestamp: None,
-        state_root: None,
-        batches,
-        proving,
-        origin_head: api
-            .recorded_head(&route.name)
-            .or_else(|| read_origin_head(&route.origin)),
-        error: None,
-        blocked: api.blocker(&route.name),
-    };
-
-    match read_trusted_state(route) {
-        Ok((root, height, timestamp)) => {
-            status.state_root = Some(root);
-            status.height = Some(height);
-            status.timestamp = Some(timestamp);
-        }
-        Err(error) => status.error = Some(error.to_string()),
-    }
-    status
-}
-
-/// The newest L2 block Ethereum has confirmed, which is what an L2 route can attest up to.
-fn read_confirmed_l2_block(rollup: &str, anchor: &str, l1_rpc: &str) -> Option<u64> {
-    let (signature, line) = match rollup {
-        // Base's registry hands back the root and the block it belongs to.
-        "base" => ("getAnchorRoot()(bytes32,uint256)", 1),
-        // Arbitrum's rollup has no equivalent view; its confirmed block only falls out of the
-        // assertion preimage, which is the attestation's job rather than the dashboard's.
-        _ => return None,
-    };
-    let output = std::process::Command::new("cast")
-        .args(["call", anchor, signature, "--rpc-url", l1_rpc])
-        .output()
-        .ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
-    text.lines()
-        .nth(line)?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
-}
-
-fn read_origin_head(origin: &ChainConfig) -> Option<u64> {
-    match origin {
-        // An evolve chain's attestable head is the newest signed header sitting in a Celestia
-        // block the DA node has sampled, which no single view call answers. The scanner
-        // records it instead, the same way Arbitrum's confirmed block is recorded.
-        ChainConfig::CelestiaL2 { .. } => None,
-        ChainConfig::Celestia { rpc, .. } => {
-            let output = std::process::Command::new("celestia-appd")
-                .args(["status", "--node", rpc, "-o", "json"])
-                .output()
-                .ok()?;
-            let status: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-            status["sync_info"]["latest_block_height"]
-                .as_str()?
-                .parse()
-                .ok()
-        }
-        // For an Ethereum origin the relevant head is the *finalized* one, because that is
-        // all the enclave will attest.
-        ChainConfig::Ethereum { execution_rpc, .. } => {
-            let output = std::process::Command::new("cast")
-                .args([
-                    "block",
-                    "finalized",
-                    "--field",
-                    "number",
-                    "--rpc-url",
-                    execution_rpc,
-                ])
-                .output()
-                .ok()?;
-            String::from_utf8(output.stdout).ok()?.trim().parse().ok()
-        }
-        // An L2's own head is not the useful number: the enclave attests the block Ethereum
-        // has *confirmed*, which trails it by a challenge window. Reporting the head would
-        // make every L2 route look permanently thousands of blocks behind.
-        ChainConfig::EthereumL2 {
-            rollup,
-            l1_anchor_contract,
-            l1,
-            ..
-        } => {
-            let ChainConfig::Ethereum { execution_rpc, .. } = &**l1 else {
-                return None;
-            };
-            read_confirmed_l2_block(rollup, l1_anchor_contract, execution_rpc)
-        }
-    }
-}
-
-fn read_trusted_state(route: &RouteConfig) -> Result<(String, u64, u64)> {
-    let hex_state = read_ism_state(&route.destination, &route.ism_id)?;
-    let raw = hex::decode(hex_state.trim_start_matches("0x"))?;
-    let state = decode_ism_state(&raw)?;
-    Ok((
-        format!("0x{}", hex::encode(state.state_root)),
-        state.height,
-        state.timestamp,
-    ))
-}
-
-async fn attestation(
-    State(api): State<Api>,
-    Path(message_id): Path<String>,
-) -> Result<Json<AttestationRecord>, StatusCode> {
-    match api.find(&message_id) {
-        Ok(Some(record)) => Ok(Json(record)),
-        // Not yet attested is the normal case for a fresh message, not a failure.
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
-}
-
-pub async fn serve(api: Api, addr: &str) -> Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!(%addr, "attestation api listening");
-    axum::serve(listener, api.router()).await?;
+pub async fn serve(api: Api, listen: &str) -> Result<()> {
+    let app = Router::new()
+        .route(
+            "/",
+            get(|| async { axum::response::Html(include_str!("../ui/relayer.html")) }),
+        )
+        .route("/api/health", get(|| async { "ok" }))
+        .route("/api/status", get(status))
+        .route("/api/attestation/{message_id}", get(attestation))
+        .route("/api/faucet", get(faucet_info).post(faucet_claim))
+        .route("/api/faucet/{address}", get(faucet_claimed))
+        .with_state(api);
+    let listener = tokio::net::TcpListener::bind(listen).await?;
+    info!(listen, "api listening");
+    axum::serve(listener, app).await?;
     Ok(())
 }
 
-// ------------------------------------------------------------------ faucet
-
-/// What the faucet gives and whether it can give it, so the UI can render itself before
-/// anyone presses anything.
-async fn faucet_info(State(api): State<Api>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "enabled": api.faucet.is_some(),
-        "amountTia": crate::faucet::CLAIM_TIA,
-    }))
+async fn status(State(api): State<Api>) -> Json<Vec<Value>> {
+    let mut out = Vec::new();
+    for view in api.routes.iter() {
+        out.push(api.status(view).await);
+    }
+    Json(out)
 }
 
-/// Whether this address has already been paid. Lets the page say so up front rather than
-/// offering a button whose only outcome is a 409.
-async fn faucet_claimed(
+/// The batch that attested a message, so the UI can show what vouched for a transfer.
+async fn attestation(
     State(api): State<Api>,
-    Path(address): Path<String>,
-) -> Json<serde_json::Value> {
+    Path(message_id): Path<String>,
+) -> Result<Json<Record>, StatusCode> {
+    let wanted = message_id.trim_start_matches("0x").to_lowercase();
+    api.routes
+        .iter()
+        .flat_map(|v| api.records(&v.config.name))
+        .find(|r| {
+            r.batch
+                .iter()
+                .any(|id| id.trim_start_matches("0x").eq_ignore_ascii_case(&wanted))
+        })
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+/// The measurements a quote and its event log carry, for display next to a batch.
+pub fn measurements(quote: &str, event_log: &str) -> Result<Measurements> {
+    let quote = dcap_qvl::quote::Quote::parse(&hex::decode(quote.trim_start_matches("0x"))?)
+        .map_err(|e| anyhow::anyhow!("quote does not parse: {e:?}"))?;
+    let td = quote.report.as_td10().context("not a TDX quote")?;
+    let events: Vec<tee_attestation::EventLog> = serde_json::from_str(event_log)?;
+    let event = |name: &str| {
+        tee_attestation::get_event_value(&events, name)
+            .map(hex::encode)
+            .unwrap_or_default()
+    };
+    Ok(Measurements {
+        mr_td: hex::encode(td.mr_td),
+        os_image_hash: event("os-image-hash"),
+        compose_hash: event("compose-hash"),
+    })
+}
+
+// ---------------------------------------------------------------- faucet
+//
+// One grant of test TIA per Celestia address, from the chain named by `[faucet]` in the config.
+// A claim is recorded as a file before anything is sent, so two requests racing for one address
+// cannot both be paid.
+
+const GRANT_UTIA: u64 = 1_000_000_000;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaucetConfig {
+    /// The Celestia chain, by name, to pay out on.
+    pub chain: String,
+    /// The funded key in that chain's keyring.
+    #[serde(default = "default_faucet_key")]
+    pub key: String,
+}
+
+fn default_faucet_key() -> String {
+    "faucet".into()
+}
+
+struct Faucet {
+    claims: PathBuf,
+    rpc: String,
+    chain_id: String,
+    home: String,
+    key: String,
+}
+
+impl Faucet {
+    fn new(config: &Config) -> Result<Option<Self>> {
+        let Some(faucet) = &config.faucet else {
+            return Ok(None);
+        };
+        let chain: crate::celestia::Config = config.chain(&faucet.chain)?;
+        Ok(Some(Self {
+            claims: config.proof_dir().join(".faucet"),
+            rpc: chain.rpc,
+            chain_id: chain.chain_id,
+            home: chain
+                .home
+                .or_else(|| std::env::var("CELHOME").ok())
+                .context("the faucet chain needs `home` or CELHOME")?,
+            key: faucet.key.clone(),
+        }))
+    }
+
+    async fn claim(&self, address: &str) -> Result<String, (StatusCode, String)> {
+        let valid = address.len() == 47
+            && address.starts_with("celestia1")
+            && address[9..]
+                .chars()
+                .all(|c| "qpzry9x8gf2tvdw0s3jn54khce6mua7l".contains(c));
+        if !valid {
+            return Err((StatusCode::BAD_REQUEST, "not a Celestia address".into()));
+        }
+        let fail = |e: String| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("the faucet could not send: {e}"),
+            )
+        };
+        std::fs::create_dir_all(&self.claims).map_err(|e| fail(e.to_string()))?;
+        let marker = self.claims.join(address);
+        let mut file = match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&marker)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "this address has already claimed".into(),
+                ))
+            }
+            Err(e) => return Err(fail(e.to_string())),
+        };
+        let appd = std::env::var("APPD").unwrap_or_else(|_| "celestia-appd".into());
+        let amount = format!("{GRANT_UTIA}utia");
+        let sent = tokio::process::Command::new(&appd)
+            .args([
+                "tx",
+                "bank",
+                "send",
+                &self.key,
+                address,
+                &amount,
+                "--home",
+                &self.home,
+                "--keyring-backend",
+                "test",
+            ])
+            .args([
+                "--chain-id",
+                &self.chain_id,
+                "--node",
+                &self.rpc,
+                "--fees",
+                "200000utia",
+                "--gas",
+                "200000",
+                "-y",
+                "-o",
+                "json",
+            ])
+            .output()
+            .await
+            .map_err(|e| fail(e.to_string()))
+            .and_then(|out| {
+                let body: Value = serde_json::from_slice(&out.stdout)
+                    .map_err(|_| fail(String::from_utf8_lossy(&out.stderr).trim().to_string()))?;
+                match body["code"].as_u64() {
+                    Some(0) | None => body["txhash"]
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| fail("no txhash".into())),
+                    Some(code) => Err(fail(format!("code {code}: {}", body["raw_log"]))),
+                }
+            });
+        match &sent {
+            Ok(tx) => {
+                let _ = file.write_all(
+                    json!({ "address": address, "tx_hash": tx })
+                        .to_string()
+                        .as_bytes(),
+                );
+                info!(address, tx, "faucet paid");
+            }
+            Err((_, e)) => {
+                drop(file);
+                let _ = std::fs::remove_file(&marker);
+                warn!(address, error = %e, "faucet send failed");
+            }
+        }
+        sent
+    }
+}
+
+async fn faucet_info(State(api): State<Api>) -> Json<Value> {
+    Json(json!({ "enabled": api.faucet.is_some(), "amountTia": GRANT_UTIA / 1_000_000 }))
+}
+
+async fn faucet_claimed(State(api): State<Api>, Path(address): Path<String>) -> Json<Value> {
     let claimed = api
         .faucet
         .as_ref()
-        .map(|f| f.already_claimed(address.trim()))
-        .unwrap_or(false);
-    Json(serde_json::json!({ "address": address, "claimed": claimed }))
+        .is_some_and(|f| f.claims.join(address.trim()).exists());
+    Json(json!({ "address": address, "claimed": claimed }))
 }
 
 async fn faucet_claim(
     State(api): State<Api>,
-    Json(req): Json<crate::faucet::ClaimRequest>,
-) -> Result<Json<crate::faucet::Claim>, (StatusCode, Json<serde_json::Value>)> {
-    use crate::faucet::FaucetError;
-    let deny = |code: StatusCode, why: String| (code, Json(serde_json::json!({ "error": why })));
-
-    let Some(faucet) = api.faucet.as_ref() else {
-        return Err(deny(
+    Json(req): Json<BTreeMap<String, String>>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let deny = |(code, why): (StatusCode, String)| (code, Json(json!({ "error": why })));
+    let faucet = api.faucet.as_ref().ok_or_else(|| {
+        deny((
             StatusCode::SERVICE_UNAVAILABLE,
-            FaucetError::NotConfigured.to_string(),
-        ));
-    };
-    match faucet.claim(req.address.trim()) {
-        Ok(claim) => Ok(Json(claim)),
-        Err(e @ FaucetError::AlreadyClaimed) => Err(deny(StatusCode::CONFLICT, e.to_string())),
-        Err(e @ FaucetError::BadAddress) => Err(deny(StatusCode::BAD_REQUEST, e.to_string())),
-        Err(e @ FaucetError::NotConfigured) => {
-            Err(deny(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))
-        }
-        // The request was fine and the chain or the keyring was not, which is ours to fix.
-        Err(e @ FaucetError::SendFailed(_)) => Err(deny(StatusCode::BAD_GATEWAY, e.to_string())),
-    }
+            "the faucet is not configured".into(),
+        ))
+    })?;
+    let address = req
+        .get("address")
+        .map(|a| a.trim().to_string())
+        .unwrap_or_default();
+    let tx = faucet.claim(&address).await.map_err(deny)?;
+    Ok(Json(
+        json!({ "address": address, "amount_tia": GRANT_UTIA / 1_000_000, "tx_hash": tx }),
+    ))
 }

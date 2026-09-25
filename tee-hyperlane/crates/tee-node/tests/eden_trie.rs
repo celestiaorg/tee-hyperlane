@@ -6,7 +6,7 @@
 //! same trie from scratch and comparing roots covers all of them.
 
 use alloy_primitives::{keccak256, B256};
-use tee_node::evm::mpt::{build, Witness, EMPTY_ROOT};
+use tee_node::celestia::eden::trie::{build, Witness, EMPTY_ROOT};
 
 /// A deterministic stand-in for a random generator, so a failure is reproducible.
 struct Rng(u64);
@@ -139,5 +139,8 @@ fn an_empty_trie_grows_from_nothing() {
     let witness = Witness::new(Vec::<Vec<u8>>::new());
     let changes: Vec<(B256, Option<Vec<u8>>)> =
         entries.iter().map(|(k, v)| (*k, Some(v.clone()))).collect();
-    assert_eq!(witness.update(EMPTY_ROOT, &changes).unwrap(), root_of(&entries));
+    assert_eq!(
+        witness.update(EMPTY_ROOT, &changes).unwrap(),
+        root_of(&entries)
+    );
 }

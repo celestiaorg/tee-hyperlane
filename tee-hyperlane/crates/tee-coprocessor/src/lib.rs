@@ -1,18 +1,20 @@
 //! The coprocessor: everything the bridge does that does not need to be trusted.
 //!
-//! It gathers data, asks the enclave to attest it, proves the attestation on local CPU, and
-//! relays the result. None of that is privileged - a dishonest coprocessor can stall the
-//! bridge, but it cannot make either chain accept a message the enclave did not attest.
+//! It finds what the enclave needs, asks it to attest, and delivers the result. A dishonest
+//! coprocessor can stall the bridge; it cannot make a chain accept a message the enclave did
+//! not attest.
+//!
+//! One file per chain under the chain it rides on, mirroring the enclave: `ethereum/base.rs`
+//! finds what the enclave's `ethereum/base.rs` verifies.
 
 pub mod api;
-pub mod celestia;
-pub mod celestia_da;
-pub mod chains;
-pub mod commands;
 pub mod config;
-pub mod enclave;
+pub mod destination;
+pub mod evm;
+pub mod origin;
+pub mod route;
+
+/// Celestia, and Eden, which rides on it.
+pub mod celestia;
+/// Ethereum, and Arbitrum and Base, which ride on it.
 pub mod ethereum;
-pub mod ethereum_l2;
-pub mod faucet;
-pub mod tasks;
-pub mod ui;

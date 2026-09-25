@@ -51,20 +51,19 @@ say "  identity      ${IDENTITY}"
 # What is not accepted is having no way back. Set ISM_GENESIS to anchor at a checkpoint you
 # choose instead, which is how a message stranded by an earlier deployment is recovered:
 #
-#   cast call <old-ism> "state()(bytes)" --rpc-url <rpc>
-#   tee-hyperlane rotate-state --state <that> --identity-digest <new identity>
-#   ISM_GENESIS=<the genesis state it prints> ./scripts/80-evm-isms.sh
+#   old="$(cast call <old-ism> "state()(bytes)" --rpc-url <rpc>)"
+#   ISM_GENESIS="${old:0:170}${new_identity#0x}" ./scripts/80-evm-isms.sh
 #
-# `rotate-state` keeps the root, height, timestamp and store commitment and changes only the
-# identity, so the new ISM resumes where the old one stopped and replays the gap.
+# That keeps the old state's root, height, timestamp and store commitment and swaps only the
+# identity in its last 32 bytes, so the new ISM resumes where the old one stopped and replays
+# the gap.
 if [ -n "${ISM_GENESIS:-}" ]; then
   GENESIS="${ISM_GENESIS}"
   say "anchoring at the checkpoint in ISM_GENESIS, not at ${CHAINID}'s head"
 else
   say "reading a trusted checkpoint from ${CHAINID}"
-  GENESIS="$(cd "${REPO_DIR}/tee-hyperlane" && cargo run --quiet --release -p tee-coprocessor -- \
-    bootstrap-celestia --rpc "${CELESTIA_RPC}" --identity-digest "${IDENTITY}" 2>/dev/null \
-    | sed -n 's/^genesis state *//p' | tr -d ' ')"
+  write_config
+  GENESIS="$("${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" genesis --chain celestia --identity "${IDENTITY}")"
 fi
 [ -n "${GENESIS}" ] || die "could not bootstrap from ${CHAINID}"
 HOOK="$(load merkle-hook-id)"

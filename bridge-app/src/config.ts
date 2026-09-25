@@ -70,7 +70,10 @@ export const CHAINS: Record<ChainId, Chain> = {
     // Proxied by the server that serves this app, so the browser never depends on a
     // rate-limited public endpoint and the upstream key stays server side.
     rpc: env("VITE_SEPOLIA_RPC", "https://ethereum-sepolia-rpc.publicnode.com"),
-    explorer: "https://sepolia.etherscan.io",
+    // Blockscout rather than Etherscan, on every EVM chain. `TeeDcapIsm` is verified there and
+    // not on Etherscan, which indexes the same contract but holds no source for it, so an
+    // Etherscan link lands on raw bytecode. Verifying both would need an Etherscan API key.
+    explorer: "https://eth-sepolia.blockscout.com",
     mailbox: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
     ism: env("VITE_SEPOLIA_ISM", "0x83B41448ADfBdde1926575f774489892F88190A8") as `0x${string}`,
   },
@@ -81,7 +84,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     domain: 421614,
     chainIdHex: "0x66eee",
     rpc: env("VITE_ARBITRUM_RPC", "https://arbitrum-sepolia-rpc.publicnode.com"),
-    explorer: "https://sepolia.arbiscan.io",
+    explorer: "https://arbitrum-sepolia.blockscout.com",
     mailbox: "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8",
     ism: env("VITE_ARBITRUM_ISM", "0xD50322542cCA994322760f170D3A2df8d7f5817e") as `0x${string}`,
   },
@@ -92,7 +95,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     domain: 84532,
     chainIdHex: "0x14a34",
     rpc: env("VITE_BASE_RPC", "https://base-sepolia-rpc.publicnode.com"),
-    explorer: "https://sepolia.basescan.org",
+    explorer: "https://base-sepolia.blockscout.com",
     mailbox: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
     ism: env("VITE_BASE_ISM", "0xcF5929abd3Baa03BB161745319C9E2d2Ce1201C4") as `0x${string}`,
   },
