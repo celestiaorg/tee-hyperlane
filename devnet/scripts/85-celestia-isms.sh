@@ -64,26 +64,42 @@ print(base64.b64decode(json.load(sys.stdin)["ism"]["state"])[-32:].hex())
 ' 2>/dev/null
 }
 
-# The genesis state for one origin, anchored at its current head. The chain's endpoints come
-# from the coprocessor config, so there is one place they are set.
-#
-# ISM_GENESIS_<ORIGIN> overrides it, which is how a checkpoint from an earlier deployment is
-# re-used to recover messages it had already seen: take the live ISM's state and splice the new
-# identity into its last 32 bytes (see "Keeping in-flight messages" in MAINTAIN.md).
-genesis_for() { # <origin> <family>
-  local override
+# The full state of an ISM, as 0x-hex.
+ism_state() {
+  "${A}" query teeism ism "$1" --node "${CELESTIA_RPC}" -o json 2>/dev/null | python3 -c '
+import base64, json, sys
+print("0x" + base64.b64decode(json.load(sys.stdin)["ism"]["state"]).hex())
+' 2>/dev/null
+}
+
+# The genesis state for one origin. In order:
+#   - ISM_GENESIS_<ORIGIN> if set: exactly that state.
+#   - replacing a recorded ISM (<old id> given): that ISM's last state with only the identity,
+#     its last 32 bytes, swapped. The route resumes where the old one stopped, so nothing in
+#     flight is lost. An unreadable old state stops the script rather than fall back to the head.
+#   - otherwise (a first deploy): the origin's current head, from the coprocessor config.
+genesis_for() { # <origin> <family> [old ism id]
+  local override old digest
   override="$(eval "printf '%s' \"\${ISM_GENESIS_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_'):-}\"")"
   if [ -n "${override}" ]; then
     printf '%s' "${override}"
     return
   fi
-  "${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" genesis --chain "$1" --identity "$(load "identity-digest-$2")"
+  digest="$(load "identity-digest-$2" | sed 's/^0x//')"
+  if [ -n "${3:-}" ]; then
+    old="$(ism_state "$3")"
+    [ "${#old}" -eq 234 ] || die "could not read $3's state; refusing to anchor $1 at the head and lose messages"
+    printf '%s' "${old:0:170}${digest}"
+    return
+  fi
+  "${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" genesis --chain "$1" --identity "0x${digest}"
 }
 
 write_config
 
 for row in ${ORIGINS}; do
   IFS=: read -r name domain family tree <<< "${row}"
+  replacing=""
   say "== ${name} (domain ${domain}, ${family} enclave)"
 
   # Already created for this enclave, so leave it alone. An origin whose bootstrap failed the
@@ -101,7 +117,8 @@ for row in ${ORIGINS}; do
       say "  already created for this enclave: ${existing}"
       continue
     fi
-    say "  ${existing} pins an older enclave; creating a replacement"
+    say "  ${existing} pins an older enclave; creating a replacement from its last state"
+    replacing="${existing}"
   fi
 
   # `|| true` is load-bearing. lib.sh sets `-euo pipefail`, so a bootstrap that exits non-zero
@@ -109,8 +126,8 @@ for row in ${ORIGINS}; do
   # script at this assignment, before the guard on the next line can skip that origin. The
   # guard read as if it handled the case and never once ran: base took the run down with it
   # and Eden, the origin after it, was never attempted.
-  genesis="$(genesis_for "${name}" "${family}" || true)"
-  [ -n "${genesis}" ] || { warn "  could not anchor ${name}; skipping"; continue; }
+  genesis="$(genesis_for "${name}" "${family}" "${replacing}" || true)"
+  [ -n "${genesis}" ] || { warn "  could not anchor ${name}; skipping, its current ISM stays in place"; continue; }
 
   OUT_DIR="${OUT_DIR}" python3 - "${genesis}" "${tree}" "${name}" "${family}" <<'PY'
 import json, sys, os

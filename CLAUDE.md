@@ -84,10 +84,10 @@ Only the Base route uses a metered RPC: an Alchemy key (`ALCHEMY_BASE_KEY` in `d
   its own source filter, so editing `celestia/eden.rs` or `celestia/eden/` moves the evolve
   digest alone. `Cargo.lock` and the shared modules (`attest.rs`, `origin.rs`, `evm.rs`) are in
   every image's source, so touching those still moves all three.
-- **Re-deployment moves the checkpoint.** A new ISM anchors at the origin's head, so anything
-  in flight is skipped. `ISM_GENESIS` (the old ISM's state with the new identity spliced into
-its last 32 bytes) anchors at an old
-  checkpoint instead, which is the only way to recover such a message.
+- **A replacement ISM resumes, it never re-anchors.** `80-evm-isms.sh` and
+  `85-celestia-isms.sh` start a replacement from the old ISM's last state with only the identity
+  (last 32 bytes) swapped, so nothing in flight is lost, and stop rather than fall back to the
+  head. Only a first deploy anchors at the head.
 - **Eden's root is re-executed, not believed.** The enclave runs the blocks that changed the
   state, from the root the ISM already trusts, and the chain has to arrive at the root the
   sequencer signed. Only state-changing blocks are sent, which is safe because a missing one

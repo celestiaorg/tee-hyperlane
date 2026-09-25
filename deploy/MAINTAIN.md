@@ -31,8 +31,7 @@ For UI changes, also rebuild the UI ([DEPLOY step 11](DEPLOY.md#11-ui-and-gatewa
 For changes to `crates/tee-node`, `hyperlane-types`, `tee-attestation` or `Cargo.lock`. Each
 changed enclave needs new ISMs. The scripts only redo what changed.
 
-**0.** Wait for in-flight transfers to land (Base takes 5 days), or
-[keep them](#keep-in-flight-messages).
+In-flight transfers are kept; see [No message is lost](#no-message-is-lost).
 
 **1. Pull, stop, back up**
 
@@ -100,25 +99,15 @@ cd ~/tee-ism-nonzk/devnet
 . scripts/lib.sh && write_config && sudo systemctl restart teeism-relayer
 ```
 
-## Keep in-flight messages
+## No message is lost
 
-Start each new ISM from the old ISM's state, with only the enclave identity (its last 32
-bytes) replaced. Run this before step 4:
+When a script replaces an ISM, the new one starts from the old one's last state, with only the
+enclave identity (its last 32 bytes) swapped. The route picks up exactly where it stopped, so
+every message in flight is still delivered. If the old state can't be read, the script stops
+instead of starting from the head.
 
-```sh
-cd ~/tee-ism-nonzk/devnet && . scripts/lib.sh; OLD=~/teeism-state-<date>/out
-# EVM side, e.g. Sepolia
-old=$(cast call "$(cat $OLD/ism-sepolia)" 'state()(bytes)' --rpc-url <sepolia rpc>)
-ISM_GENESIS="${old:0:170}$(load identity-digest-celestia | sed s/^0x//)" \
-  CHAINS="sepolia:11155111:0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766" ./scripts/80-evm-isms.sh
-# Celestia side, e.g. Base
-old=0x$(.state/bin/celestia-appd q teeism ism "$(cat $OLD/ism-celestia-base)" -o json \
-  | python3 -c 'import base64,json,sys;print(base64.b64decode(json.load(sys.stdin)["ism"]["state"]).hex())')
-ISM_GENESIS_BASE="${old:0:170}$(load identity-digest-ethereum | sed s/^0x//)" ./scripts/85-celestia-isms.sh
-```
-
-Then run step 4 as usual; it skips the ISMs you just made. For Celestia → EVM routes, the old checkpoint must be
-under 14 days old.
+A Celestia → EVM route can resume only if its last state is under 14 days old. The relayer's
+12-hour heartbeat keeps it well within that.
 
 ## Waiting or stuck?
 
