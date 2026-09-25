@@ -42,6 +42,19 @@ settle() {
   return 1
 }
 
+# send <what> <tx args...> - broadcast, wait, and stop with the node's own error on any failure,
+# so a failed step is never mistaken for a finished one.
+send() {
+  local what="$1" out hash result; shift
+  out="$("${A}" tx "$@" ${TX} 2>&1 || true)"
+  hash="$(printf '%s' "${out}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])' 2>/dev/null || true)"
+  [ -n "${hash}" ] || die "${what}: not broadcast: ${out}"
+  result="$(settle "${hash}" || true)"
+  [ -n "${result}" ] || die "${what}: ${hash} not included"
+  printf '%s' "${result}" | python3 -c 'import sys,json;d=json.load(sys.stdin);sys.exit(1 if d.get("code") else 0)' \
+    || die "${what}: failed: $(printf '%s' "${result}" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("raw_log",""))')"
+}
+
 # The identity digest an ISM pins: the last 32 bytes of its state, which the module checks
 # against the identity it stores.
 pinned_identity() {
@@ -108,10 +121,10 @@ json.dump({"state": state, "merkle_tree_address": tree,
           open(f"{out}/ism-{name}-origin.json", "w"), indent=2)
 PY
 
-  hash="$("${A}" tx teeism create "${OUT_DIR}/ism-${name}-origin.json" ${TX} 2>&1 \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])' 2>/dev/null)"
-  [ -n "${hash}" ] || { warn "  ${name}: broadcast failed"; continue; }
-  id="$(settle "${hash}" | python3 -c '
+  out="$("${A}" tx teeism create "${OUT_DIR}/ism-${name}-origin.json" ${TX} 2>&1 || true)"
+  hash="$(printf '%s' "${out}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])' 2>/dev/null || true)"
+  [ -n "${hash}" ] || { warn "  ${name}: broadcast failed: ${out}"; continue; }
+  id="$( (settle "${hash}" || true) | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 if d.get("code"):
@@ -122,8 +135,8 @@ for ev in d["events"]:
         for a in ev["attributes"]:
             if a["key"] == "id":
                 print(a["value"].strip(chr(34)))
-' 2>/dev/null)"
-  [ -n "${id}" ] || { warn "  ${name}: ISM not created"; continue; }
+' 2>/dev/null || true)"
+  [ -n "${id}" ] || { warn "  ${name}: ISM not created (tx ${hash})"; continue; }
   save "ism-celestia-${name}" "${id}"
   say "  ${id}"
 done
@@ -163,22 +176,17 @@ for row in ${ORIGINS}; do
   # Remove, then set. On mocha-5 a set on a domain already present succeeded, emitted the
   # event naming the new ISM, and changed nothing. The version pinned here overwrites, but a
   # rotation has to hold on either, and removing an absent domain is a no-op.
-  settle "$("${A}" tx hyperlane ism remove-routing-ism-domain "${routing}" "${domain}" ${TX} 2>&1 \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
-  settle "$("${A}" tx hyperlane ism set-routing-ism-domain "${routing}" "${domain}" \
-    "$(load "ism-celestia-${name}")" ${TX} 2>&1 \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
+  send "remove domain ${domain}" hyperlane ism remove-routing-ism-domain "${routing}" "${domain}"
+  send "set domain ${domain}" hyperlane ism set-routing-ism-domain "${routing}" "${domain}" "$(load "ism-celestia-${name}")"
 done
 
 say "== pointing the tokens and the mailbox at it"
 for key in celestia-token-id celestia-usdc-token-id; do
   has "${key}" || continue
-  settle "$("${A}" tx warp set-token "$(load "${key}")" --ism-id "${routing}" ${TX} 2>&1 \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
+  send "point ${key} at the routing ism" warp set-token "$(load "${key}")" --ism-id "${routing}"
   say "  $(load "${key}")"
 done
-settle "$("${A}" tx hyperlane mailbox set "$(load mailbox-id)" --default-ism "${routing}" ${TX} 2>&1 \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
+send "point the mailbox at the routing ism" hyperlane mailbox set "$(load mailbox-id)" --default-ism "${routing}"
 say "  mailbox default"
 
 say "celestia ISMs ready"
