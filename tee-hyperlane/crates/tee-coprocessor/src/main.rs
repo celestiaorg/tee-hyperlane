@@ -1,512 +1,71 @@
-//! `tee-hyperlane`: run the bridge, send a transfer, or check where a message got to.
+//! The coprocessor service: every route in the config, and the dashboard API.
 //!
-//! One binary rather than several, because these are three views of the same state and
-//! sharing the config file is the point.
+//! ```text
+//! tee-hyperlane --config coprocessor.toml
+//! ```
+//!
+//! One other mode, for creating an ISM, which needs a genesis state before any route exists:
+//!
+//! ```text
+//! tee-hyperlane --config coprocessor.toml genesis --chain sepolia --identity 0x... [--height N]
+//! ```
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tee_coprocessor::commands;
 use tee_coprocessor::config::Config;
 
 #[derive(Parser)]
-#[command(name = "tee-hyperlane", about = "TEE-attested Hyperlane bridge")]
 struct Cli {
-    /// Route configuration.
-    #[arg(long, default_value = "coprocessor.toml", global = true)]
+    #[arg(long, default_value = "coprocessor.toml")]
     config: String,
     #[command(subcommand)]
-    command: Command,
+    genesis: Option<Genesis>,
 }
 
 #[derive(Subcommand)]
-enum Command {
-    /// Drive every configured route: attest, prove, relay.
-    Run,
-    /// Send a warp transfer and print its Hyperlane message id.
-    Send {
-        /// Route name from the config.
+enum Genesis {
+    /// Print the genesis state for a new ISM whose origin is `chain`.
+    Genesis {
         #[arg(long)]
-        route: String,
-        /// Token to move, e.g. "TIA" or "USDC".
+        chain: String,
+        /// The identity digest of the enclave family that attests `chain`.
         #[arg(long)]
-        token: String,
-        /// Amount in the token's smallest unit.
-        #[arg(long)]
-        amount: String,
-        /// Destination address, in that chain's own format.
-        #[arg(long)]
-        to: String,
-    },
-    /// Produce the genesis ISM state for a Celestia-origin ISM.
-    ///
-    /// This is the trust anchor: whoever reads it can see exactly which Celestia header the
-    /// bridge was started from, which is why it belongs on chain in the clear rather than
-    /// buried in an enclave.
-    BootstrapCelestia {
-        #[arg(long, default_value = "https://rpc-mocha.pops.one")]
-        rpc: String,
-        /// How far behind the head to anchor. The app hash for height H lives in H+1, so
-        /// this must be at least 1. Ignored when --height is given.
-        #[arg(long, default_value_t = 8)]
-        lag: u64,
-        /// Anchor at an exact height instead. Useful when messages already sit in the
-        /// origin tree and the ISM must start from before them.
+        identity: String,
+        /// Anchor at this origin height instead of the current head, where the chain allows it.
         #[arg(long)]
         height: Option<u64>,
-        /// Enclave identity digest from `circuit-tool vkeys`.
-        #[arg(long)]
-        identity_digest: String,
-    },
-    /// Anchor an Eden ISM to a Celestia block that carries an Eden header.
-    BootstrapEden {
-        /// Celestia consensus RPC, for the light block.
-        #[arg(long, default_value = "https://rpc-mocha.pops.one")]
-        rpc: String,
-        /// celestia-node DA endpoint, for the namespace data.
-        #[arg(long, default_value = "http://localhost:26658")]
-        da_rpc: String,
-        /// Eden's own RPC, for the tree proof the anchor height needs.
-        #[arg(long, default_value = "https://ev-reth-eden-testnet.binarybuilders.services:8545/")]
-        eden_rpc: String,
-        #[arg(long, default_value = "0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db")]
-        merkle_tree_hook: String,
-        #[arg(long, default_value_t = 151)]
-        base_slot: u64,
-        /// How far behind the DA head to start looking. Ignored when --height is given.
-        #[arg(long, default_value_t = 4)]
-        lag: u64,
-        #[arg(long)]
-        height: Option<u64>,
-        #[arg(long)]
-        identity_digest: String,
-        /// Where the route keeps its proofs, so the Celestia height can be recorded.
-        #[arg(long)]
-        out: Option<String>,
-    },
-    /// Attest one Ethereum -> Celestia step.
-    ///
-    /// Re-derives the light-client store from the same checkpoint the ISM was created with,
-    /// walks it to the current finalized head, then proves the origin tree under that head's
-    /// execution state root.
-    AttestEthereum {
-        /// Only prove when the batch carries a message for this domain.
-        #[arg(long, default_value_t = 1297040200)]
-        destination_domain: u32,
-        #[arg(
-            long,
-            default_value = "https://ethereum-sepolia-beacon-api.publicnode.com"
-        )]
-        beacon: String,
-        #[arg(long, default_value = "https://ethereum-sepolia-rpc.publicnode.com")]
-        execution: String,
-        /// Serves reads at the ISM's trusted height, which public RPCs prune after ~128 blocks.
-        #[arg(long)]
-        archive: Option<String>,
-        #[arg(long)]
-        enclave: String,
-        /// Override the checkpoint. Normally derived from the ISM's own state, so a route
-        /// resumes from nothing but what is on chain.
-        #[arg(long)]
-        checkpoint: Option<String>,
-        #[arg(long)]
-        trusted_state: String,
-        #[arg(long, default_value = "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d")]
-        merkle_tree_hook: String,
-        #[arg(long, default_value = "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766")]
-        mailbox: String,
-        #[arg(long, default_value_t = 103)]
-        base_slot: u64,
-        #[arg(long)]
-        out: Option<String>,
-    },
-    /// Attest one L2 -> Celestia step.
-    ///
-    /// Needs an L2 archive endpoint: the confirmed assertion is thousands of L2 blocks behind
-    /// head - that is the rollup's challenge window - and no public node keeps state there.
-    AttestL2 {
-        /// Only prove when the batch carries a message for this domain.
-        #[arg(long, default_value_t = 1297040200)]
-        destination_domain: u32,
-        /// `arbitrum` or `base`.
-        #[arg(long)]
-        rollup: String,
-        #[arg(
-            long,
-            default_value = "https://ethereum-sepolia-beacon-api.publicnode.com"
-        )]
-        beacon: String,
-        /// L1 execution, archive: the rollup's storage is proven at the finalized L1 block.
-        #[arg(long, default_value = "https://rpc.sepolia.ethpandaops.io")]
-        l1_execution: String,
-        /// Arbitrum Sepolia, archive.
-        #[arg(long)]
-        l2_archive: String,
-        /// Where to read dispatch logs, when the archive endpoint caps the range.
-        #[arg(long)]
-        logs_rpc: Option<String>,
-        #[arg(long)]
-        enclave: String,
-        #[arg(long)]
-        trusted_state: String,
-        /// Arbitrum's BoLD rollup (not the pre-BoLD one the canonical addresses lead to), or
-        /// Base's AnchorStateRegistry.
-        #[arg(long)]
-        anchor: String,
-        #[arg(long, default_value = "0xAD34A66Bf6dB18E858F6B686557075568c6E031C")]
-        merkle_tree_hook: String,
-        #[arg(long, default_value = "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8")]
-        mailbox: String,
-        /// Deployment-specific: Arbitrum Sepolia's hook uses 151, Sepolia's canonical one 103.
-        #[arg(long, default_value_t = 151)]
-        base_slot: u64,
-        /// The L1 checkpoint this ISM was bootstrapped from. Effectively required: an
-        /// L2-origin ISM cannot derive it, and the fallback search only reaches back about
-        /// fifty minutes.
-        #[arg(long)]
-        checkpoint: Option<String>,
-        #[arg(long)]
-        out: Option<String>,
-    },
-    /// Produce the genesis ISM state for an L2-origin ISM.
-    BootstrapL2 {
-        /// `arbitrum` or `base`.
-        #[arg(long)]
-        rollup: String,
-        #[arg(
-            long,
-            default_value = "https://ethereum-sepolia-beacon-api.publicnode.com"
-        )]
-        beacon: String,
-        #[arg(long, default_value = "https://rpc.sepolia.ethpandaops.io")]
-        l1_execution: String,
-        #[arg(long)]
-        l2_archive: String,
-        #[arg(long)]
-        anchor: String,
-        #[arg(long)]
-        checkpoint: Option<String>,
-        #[arg(long)]
-        identity_digest: String,
-    },
-    /// Attest one Celestia -> EVM step: gather, ask the enclave, print the result.
-    ///
-    /// Everything gathered here is untrusted; the enclave re-verifies all of it, so a
-    /// rejection names which check failed rather than producing a wrong root.
-    AttestCelestia {
-        /// Only prove when the batch carries a message for this domain. An origin's tree is
-        /// shared by every destination, so without this one transfer starts a proof on every
-        /// route that reads the same tree.
-        #[arg(long, default_value_t = 11155111)]
-        destination_domain: u32,
-        #[arg(long, default_value = "https://rpc-mocha.pops.one")]
-        rpc: String,
-        /// Serves reads at the ISM's trusted height, which public RPCs prune.
-        #[arg(long)]
-        archive: Option<String>,
-        /// The enclave that attests Celestia.
-        #[arg(long)]
-        enclave: String,
-        /// The destination ISM's current state, hex (116 bytes).
-        #[arg(long)]
-        trusted_state: String,
-        /// Origin merkle tree hook id, 32 bytes hex.
-        #[arg(long)]
-        merkle_tree_hook: String,
-        /// How far behind the head to attest. The app hash for H lives in H+1.
-        #[arg(long, default_value_t = 8)]
-        lag: u64,
-        /// Write the attestation here for the prover to pick up.
-        #[arg(long)]
-        out: Option<String>,
-    },
-    /// Produce the genesis ISM state for an Ethereum-origin ISM.
-    ///
-    /// Anchors to a weak-subjectivity checkpoint. Whoever creates the ISM picks it, and
-    /// everyone can see which one they picked, because it is committed in the state.
-    BootstrapEthereum {
-        #[arg(
-            long,
-            default_value = "https://ethereum-sepolia-beacon-api.publicnode.com"
-        )]
-        beacon: String,
-        #[arg(long, default_value = "https://ethereum-sepolia-rpc.publicnode.com")]
-        execution: String,
-        /// Checkpoint block root. Defaults to the current finalized head.
-        #[arg(long)]
-        checkpoint: Option<String>,
-        #[arg(long)]
-        identity_digest: String,
-    },
-    /// Prove an attestation twice: once per x/zkism public-value shape.
-    ///
-    /// Both proofs verify the *same* quote. They differ only in what they commit, because
-    /// the two destination handlers decode with two different decoders and no single blob
-    /// satisfies both.
-    Prove {
-        /// Attestation written by `attest-celestia`.
-        #[arg(long)]
-        attestation: String,
-        /// Directory holding the guest ELFs.
-        #[arg(long, default_value = "../tee-circuit/elf")]
-        elf_dir: String,
-        #[arg(long)]
-        out: String,
-    },
-    /// Serve attestations to the bridge UI.
-    Serve {
-        #[arg(long, default_value = "0.0.0.0:8081")]
-        listen: String,
-        #[arg(long, default_value = "~/.tee-hyperlane/proofs")]
-        proof_dir: String,
-    },
-    /// Serve the bridge UI, with the API and Celestia's REST proxied to one origin.
-    ServeUi {
-        #[arg(long, default_value = "0.0.0.0:3000")]
-        listen: String,
-        /// The built UI, as `npm run build` leaves it.
-        #[arg(long, default_value = "/opt/bridge-app")]
-        dir: String,
-        #[arg(long, default_value = "http://127.0.0.1:3001")]
-        api: String,
-        #[arg(long, default_value = "https://api-mocha.pops.one")]
-        celestia_rest: String,
-        /// Proxied because Mocha's public RPC omits `Access-Control-Allow-Origin` on POST.
-        #[arg(long, default_value = "https://rpc-mocha.pops.one")]
-        celestia_rpc: String,
-    },
-    /// Carry a live ISM's trusted state onto a new enclave identity.
-    ///
-    /// What a re-deployment should use instead of a bootstrap. The identity is immutable in
-    /// both ISM implementations, so a new enclave means a new ISM; bootstrapping that ISM
-    /// anchors it at the origin's *current* head, and every message dispatched but not yet
-    /// delivered falls below it and is skipped for good. A Base transfer, whose dispute
-    /// window is five days, cannot survive a re-deployment that re-anchors.
-    ///
-    /// Copying the outgoing state carries the root, height, timestamp and light-client store
-    /// commitment across untouched, so the new ISM resumes where the old one stopped. Only
-    /// the identity may differ, which is the one field the ISM checks against itself.
-    RotateState {
-        /// The outgoing ISM's state, hex, as `state()` or the module returns it.
-        #[arg(long)]
-        state: String,
-        /// The new enclave's identity digest.
-        #[arg(long)]
-        identity_digest: String,
-    },
-    /// Show each route's trusted state and how far behind the origin head it is.
-    Status,
-    /// Report where one message stands: dispatched, authorised, or delivered.
-    Verify {
-        #[arg(long)]
-        message_id: String,
     },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Default to info, not the ERROR that `fmt::init()` picks when RUST_LOG is unset - which
-    // silently drops every line this service logs about what it is doing.
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
     let cli = Cli::parse();
-    // Bootstrapping happens before any routes exist, so it must not need a route file.
-    let load = || Config::load(&cli.config);
-
-    match cli.command {
-        Command::Run => commands::run(load()?).await,
-        Command::Send {
-            route,
-            token,
-            amount,
-            to,
-        } => {
-            println!("send {amount} {token} via {route} to {to}");
-            println!("requires a deployed warp route; see README `Deploy`");
-            Ok(())
-        }
-        Command::BootstrapCelestia {
-            rpc,
-            lag,
+    let config = Config::load(&cli.config)?;
+    match cli.genesis {
+        None => tee_coprocessor::route::serve(config).await,
+        Some(Genesis::Genesis {
+            chain,
+            identity,
             height,
-            identity_digest,
-        } => commands::bootstrap_celestia(&rpc, lag, height, &identity_digest).await,
-        Command::BootstrapEden {
-            rpc,
-            da_rpc,
-            eden_rpc,
-            merkle_tree_hook,
-            base_slot,
-            lag,
-            height,
-            identity_digest,
-            out,
-        } => {
-            commands::bootstrap_eden(
-                &rpc, &da_rpc, &eden_rpc, &merkle_tree_hook, base_slot, lag, height,
-                &identity_digest, out,
-            )
-            .await
-        }
-        Command::AttestEthereum {
-            destination_domain,
-            beacon,
-            execution,
-            archive,
-            enclave,
-            checkpoint,
-            trusted_state,
-            merkle_tree_hook,
-            mailbox,
-            base_slot,
-            out,
-        } => {
-            commands::attest_ethereum(
-                &beacon,
-                &execution,
-                archive.as_deref(),
-                &enclave,
-                checkpoint.as_deref(),
-                &trusted_state,
-                destination_domain,
-                // Invoked by hand: the destination asked for is the filter, and there is no
-                // route config here to narrow it against.
-                &[],
-                &merkle_tree_hook,
-                &mailbox,
-                base_slot,
-                out,
-            )
-            .await
-        }
-        Command::AttestCelestia {
-            destination_domain,
-            rpc,
-            archive,
-            enclave,
-            trusted_state,
-            merkle_tree_hook,
-            lag,
-            out,
-        } => {
-            commands::attest_celestia(
-                &rpc,
-                archive.as_deref(),
-                &enclave,
-                &trusted_state,
-                destination_domain,
-                // Invoked by hand: the destination asked for is the filter, and there is no
-                // route config here to narrow it against.
-                &[],
-                &merkle_tree_hook,
-                lag,
-                out,
-            )
-            .await
-        }
-        Command::AttestL2 {
-            destination_domain,
-            rollup,
-            beacon,
-            l1_execution,
-            l2_archive,
-            logs_rpc,
-            enclave,
-            trusted_state,
-            anchor,
-            merkle_tree_hook,
-            mailbox,
-            base_slot,
-            checkpoint,
-            out,
-        } => {
-            commands::attest_l2(
-                rollup.parse()?,
-                &beacon,
-                &l1_execution,
-                &l2_archive,
-                logs_rpc.as_deref(),
-                &enclave,
-                &trusted_state,
-                destination_domain,
-                // Invoked by hand: the destination asked for is the filter.
-                &[],
-                &anchor,
-                &merkle_tree_hook,
-                &mailbox,
-                base_slot,
-                checkpoint.as_deref(),
-                out,
-            )
-            .await
-        }
-        Command::BootstrapL2 {
-            rollup,
-            beacon,
-            l1_execution,
-            l2_archive,
-            anchor,
-            checkpoint,
-            identity_digest,
-        } => {
-            commands::bootstrap_l2(
-                rollup.parse()?,
-                &beacon,
-                &l1_execution,
-                &l2_archive,
-                &anchor,
-                checkpoint,
-                &identity_digest,
-            )
-            .await
-        }
-        Command::BootstrapEthereum {
-            beacon,
-            execution,
-            checkpoint,
-            identity_digest,
-        } => commands::bootstrap_ethereum(&beacon, &execution, checkpoint, &identity_digest).await,
-        Command::Prove {
-            attestation,
-            elf_dir,
-            out,
-        } => commands::prove(&attestation, &elf_dir, &out).await,
-        Command::Serve { listen, proof_dir } => {
-            let routes = load().map(|config| config.routes).unwrap_or_default();
-            let api = tee_coprocessor::api::Api::new(commands::expand_home(&proof_dir), routes);
-            tee_coprocessor::api::serve(api, &listen).await
-        }
-        Command::ServeUi {
-            listen,
-            dir,
-            api,
-            celestia_rest,
-            celestia_rpc,
-        } => {
-            tee_coprocessor::ui::serve(dir.into(), api, celestia_rest, celestia_rpc, &listen).await
-        }
-        Command::RotateState {
-            state,
-            identity_digest,
-        } => commands::rotate_state(&state, &identity_digest),
-        Command::Status => {
-            let config = load()?;
-            for route in &config.routes {
-                println!(
-                    "{:24} origin {} -> destination {}  ism {}",
-                    route.name,
-                    route.origin.domain(),
-                    route.destination.domain(),
-                    route.ism_id
-                );
-            }
-            Ok(())
-        }
-        Command::Verify { message_id } => {
-            println!("message {message_id}: requires a deployed ISM; see README `Deploy`");
+        }) => {
+            let identity: [u8; 32] = hex::decode(identity.trim_start_matches("0x"))?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("the identity digest must be 32 bytes"))?;
+            let state = config.indexer(&chain)?.bootstrap(identity, height).await?;
+            eprintln!(
+                "origin {chain}, height {}, state root 0x{}",
+                state.height,
+                hex::encode(state.state_root)
+            );
+            println!(
+                "0x{}",
+                hex::encode(tee_attestation::encode_ism_state(&state))
+            );
             Ok(())
         }
     }

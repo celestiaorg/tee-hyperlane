@@ -12,7 +12,7 @@
 #   env:   FMSPC (default 20a06f000000), PRIVATE_KEY or EVM_PRIVATE_KEY, and the per-chain RPC
 set -euo pipefail
 
-CHAIN="${1:?usage: seed-evm-collateral.sh <arbitrum|base|sepolia>}"
+CHAIN="${1:?usage: seed-evm-collateral.sh <sepolia|arbitrum|base|eden>}"
 FMSPC="${FMSPC:-20a06f000000}"
 
 # `lib.sh` exports EVM_PRIVATE_KEY, this script has always read PRIVATE_KEY. Under `set -u` an

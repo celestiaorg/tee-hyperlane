@@ -1,5 +1,5 @@
 [Unit]
-Description=TEE ISM relayer (direct attestation, no proving)
+Description=TEE ISM coprocessor: every route, and the dashboard and API on :3001
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -8,19 +8,15 @@ Type=simple
 User=chef
 WorkingDirectory=/home/chef/tee-ism-nonzk
 Environment=HOME=/home/chef
-Environment=PATH=/home/chef/tee-ism-nonzk/devnet/.state/bin:/home/chef/.foundry/bin:/usr/local/go/bin:/home/chef/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+# cast signs EVM transactions, celestia-appd Celestia ones, teeism-collateral fetches Intel's
+# collateral for the Celestia ISM. Chain endpoints, keys' homes and chain ids are in the config.
+Environment=PATH=/home/chef/tee-ism-nonzk/devnet/.state/bin:/home/chef/.foundry/bin:/usr/local/bin:/usr/bin:/bin
 Environment=APPD=/home/chef/tee-ism-nonzk/devnet/.state/bin/celestia-appd
 Environment=COLLATERAL_BIN=/home/chef/tee-ism-nonzk/devnet/.state/bin/teeism-collateral
-Environment=CELHOME=/home/chef/tee-ism-nonzk/devnet/.state/celestia
-Environment=CELESTIA_CHAIN_ID=teeism-local
-Environment=CELESTIA_KEY=relayer
-Environment=CELESTIA_DOMAIN=1297040299
-Environment=CELESTIA_RPC=http://localhost:26657
-Environment=TEE_HYPERLANE_DEPLOY_DIR=/home/chef/tee-ism-nonzk/deploy
-Environment=TEE_COPROCESSOR_CONFIG=/home/chef/tee-ism-nonzk/devnet/.state/coprocessor.toml
 Environment=RUST_LOG=info
+# EVM_PRIVATE_KEY, the relayer's key on every EVM chain.
 EnvironmentFile=/home/chef/tee-ism-nonzk/devnet/.env
-ExecStart=/home/chef/tee-ism-nonzk/tee-hyperlane/target/release/tee-hyperlane run --config /home/chef/tee-ism-nonzk/devnet/.state/coprocessor.toml
+ExecStart=/home/chef/tee-ism-nonzk/tee-hyperlane/target/release/tee-hyperlane --config /home/chef/tee-ism-nonzk/devnet/.state/coprocessor.toml
 Restart=always
 RestartSec=10
 

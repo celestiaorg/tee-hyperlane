@@ -67,6 +67,20 @@ body {
 
 .tab.on { background: var(--surface); color: var(--ink); }
 
+/* How many transfers are on the History tab, so the number is visible without opening it. */
+.tab-count {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--field);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  vertical-align: 0.05rem;
+}
+.tab.on .tab-count { color: var(--ink); }
+
 .wallets { margin-left: auto; display: flex; gap: 0.5rem; }
 
 .pill {
@@ -256,6 +270,36 @@ body {
 .error { color: var(--error); font-size: 0.85rem; margin: 0.75rem 0 0; }
 .muted { color: var(--muted); font-size: 0.82rem; }
 
+/* History
+ *
+ * The list scrolls inside the card, not the page, so the heading and the count stay put while
+ * a long history moves under them. The height is capped against the viewport rather than set
+ * in rems: on a phone a fixed cap is most of the screen, and on a desktop it is a third of it.
+ * `min-height` keeps a two item list from collapsing into a scrollbar with nowhere to go. */
+.history-scroll {
+  max-height: min(62vh, 640px);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Room for the scrollbar so it never sits on top of the rows' right edge. */
+  padding-right: 0.35rem;
+  margin-right: -0.35rem;
+}
+
+.history-count { color: var(--muted); font-size: 0.82rem; }
+
+/* Reads as prose on the bridge tab, behaves as the link to History that it is. */
+.recent .linklike {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
 /* Transfers and routes */
 
 .transfers {
@@ -350,6 +394,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
 
 .quote dt { color: var(--muted); }
 .quote dd { margin: 0; text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* The wired ISM.
+ *
+ * Monospace because the value is an address you are meant to compare against one you already
+ * trust, and proportional digits make that harder than it needs to be. `via` goes on its own
+ * line: it explains how the ISM was reached, which is a sentence, not a value. */
+.quote dd a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.quote dd a:hover { color: var(--accent, inherit); }
+.ism-where { color: var(--muted); font-weight: 400; }
+.ism-via { display: block; color: var(--muted); font-weight: 400; font-size: 0.78rem; margin-top: 0.15rem; }
+.ism-bad { color: var(--bad, #c0392b); font-weight: 400; }
 
 /* Send confirmation
  *

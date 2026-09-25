@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # Run the relayer and the bridge UI.
 #
-# The relayer is the same binary the testnet runs. Nothing is proved anywhere: a TEE ISM
-# verifies the enclave's quote itself, which is what `attest_only` means below.
-#
-# Eight routes across three enclaves, matching deploy/coprocessor.toml.example. The route
-# shapes are the same; only the ids differ, because a devnet mints its own at genesis.
+# The relayer is the same binary the testnet runs, with the config `write_config` generates
+# from what `make init` deployed: the same chains and routes as deploy/coprocessor.toml.example,
+# with this devnet's own ids.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 need docker
@@ -17,269 +15,9 @@ need curl
 
 has routing-ism-id || die "no routing ism; run 'make init' first"
 
-TICK_SECS="${TICK_SECS:-6}"
-
-# Endpoints. Defaults match the live deployment; override in devnet/.env for another one.
-SEPOLIA_RPC="${SEPOLIA_RPC:-https://rpc.sepolia.ethpandaops.io}"
-SEPOLIA_BEACON="${SEPOLIA_BEACON:-https://ethereum-sepolia-beacon-api.publicnode.com}"
-SEPOLIA_MAILBOX="${SEPOLIA_MAILBOX:-0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766}"
-SEPOLIA_HOOK="${SEPOLIA_HOOK:-0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d}"
-# Which storage slot the hook's incremental tree starts at. Deployment-specific: Hyperlane's
-# canonical Sepolia hook uses 103, the others use 151. Wrong here and the reader reconstructs
-# a tree that does not match the one the contract reports.
-SEPOLIA_SLOT="${SEPOLIA_SLOT:-$(has origin-merkle-slot && load origin-merkle-slot || echo 103)}"
-
-ARBITRUM_RPC="${ARBITRUM_RPC:-https://sepolia-rollup.arbitrum.io/rpc}"
-ARBITRUM_L2_RPC="${ARBITRUM_L2_RPC:-https://api.zan.top/arb-sepolia}"
-ARBITRUM_LOGS="${ARBITRUM_LOGS:-https://arbitrum-sepolia-rpc.publicnode.com}"
-ARBITRUM_MAILBOX="${ARBITRUM_MAILBOX:-0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8}"
-ARBITRUM_HOOK="${ARBITRUM_HOOK:-0xAD34A66Bf6dB18E858F6B686557075568c6E031C}"
-ARBITRUM_ANCHOR="${ARBITRUM_ANCHOR:-0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4}"
-
-BASE_RPC="${BASE_RPC:-https://sepolia.base.org}"
-BASE_MAILBOX="${BASE_MAILBOX:-0x6966b0E55883d49BFB24539356a2f8A673E02039}"
-BASE_HOOK="${BASE_HOOK:-0x86fb9F1c124fB20ff130C41a79a432F770f67AFD}"
-BASE_ANCHOR="${BASE_ANCHOR:-0x2fF5cC82dBf333Ea30D8ee462178ab1707315355}"
-# Base's confirmed head trails by the five day dispute window, which no free endpoint serves
-# eth_getProof that far back for. Without a key this route is written anyway but will stall.
-if [ -z "${BASE_L2_RPC:-}" ] && [ -f "${STATE_DIR}/alchemy-base-key" ]; then
-  BASE_L2_RPC="https://base-sepolia.g.alchemy.com/v2/$(cat "${STATE_DIR}/alchemy-base-key")"
-fi
-BASE_L2_RPC="${BASE_L2_RPC:-${BASE_RPC}}"
-
-EDEN_RPC="${EDEN_RPC:-https://rpc.testnet.eden.gateway.fm/}"
-EDEN_L2_RPC="${EDEN_L2_RPC:-https://ev-reth-eden-testnet.binarybuilders.services:8545/}"
-EDEN_MAILBOX="${EDEN_MAILBOX:-0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729}"
-EDEN_HOOK="${EDEN_HOOK:-0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db}"
-EDEN_DOMAIN="${EDEN_DOMAIN:-3735928814}"
-# Eden posts its signed headers to mocha, not to our own chain, so this is a second light
-# client: mocha's, not the devnet's.
-MOCHA_RPC="${MOCHA_RPC:-https://rpc.celestia-mocha.com}"
-MOCHA_GRPC="${MOCHA_GRPC:-https://grpc-mocha.pops.one}"
-MOCHA_DOMAIN="${MOCHA_DOMAIN:-1297040200}"
-EDEN_DA_RPC="${EDEN_DA_RPC:-http://localhost:26658}"
-
-CEL_MAILBOX_ID="$(load mailbox-id)"
-CEL_HOOK_ID="$(load merkle-hook-id)"
-CEL_GRPC="${CELESTIA_GRPC:-http://localhost:9090}"
-
-# The two Celestia warp routers, which are what every EVM-origin route triggers on. An asset
-# that was not deployed is left out rather than written empty: an empty id in this list would
-# match nothing and quietly widen the filter.
-cel_routers() {
-  local out=""
-  for key in celestia-token-id celestia-usdc-token-id; do
-    has "${key}" && out="${out}${out:+, }\"$(load "${key}")\""
-  done
-  printf '[%s]' "${out}"
-}
-
-# The EVM warp routers on one chain, same rule.
-evm_routers() {
-  local chain="$1" out=""
-  for key in "${chain}-router" "${chain}-usdc-router"; do
-    has "${key}" && out="${out}${out:+, }\"$(load "${key}")\""
-  done
-  printf '[%s]' "${out}"
-}
-
-celestia_origin() {
-  cat <<TOML
-
-[routes.origin]
-kind = "celestia"
-domain = ${CELESTIA_DOMAIN}
-rpc = "${CELESTIA_RPC}"
-grpc = "${CEL_GRPC}"
-mailbox_id = "${CEL_MAILBOX_ID}"
-merkle_tree_hook_id = "${CEL_HOOK_ID}"
-ism_module = "teeism"
-TOML
-}
-
-celestia_destination() {
-  cat <<TOML
-
-[routes.destination]
-kind = "celestia"
-domain = ${CELESTIA_DOMAIN}
-rpc = "${CELESTIA_RPC}"
-grpc = "${CEL_GRPC}"
-mailbox_id = "${CEL_MAILBOX_ID}"
-merkle_tree_hook_id = "${CEL_HOOK_ID}"
-ism_module = "teeism"
-TOML
-}
-
-# Sepolia's L1 view, which both L2 origins derive their confirmed root from.
-l1_block() {
-  cat <<TOML
-
-[routes.origin.l1]
-kind = "ethereum"
-domain = 11155111
-execution_rpc = "${SEPOLIA_RPC}"
-beacon_rpc = "${SEPOLIA_BEACON}"
-mailbox = "${SEPOLIA_MAILBOX}"
-TOML
-}
-
-CONFIG="${STATE_DIR}/coprocessor.toml"
-say "writing ${CONFIG}"
-
-{
-cat <<TOML
-# Generated by 'make start'. Regenerated each run from what 'make init' deployed, so editing
-# it by hand does not survive a restart.
-#
-# attest_only is what makes this the non-ZK stack: the enclave's quote travels to the
-# destination as-is and the destination verifies it, so nothing sits between attesting and
-# submitting.
-tick_secs = ${TICK_SECS}
-celestia_lag = 2
-proof_dir = "${STATE_DIR}/proofs"
-TOML
-
-# ---------------------------------------------------------------- celestia -> evm
-# All four are attested by the celestia-family enclave, because the origin is Celestia in
-# every one of them. The EVM side only differs in which ISM and mailbox it lands on.
-CEL_ENCLAVE="$(load enclave-url-celestia)"
-for row in "sepolia:11155111:${SEPOLIA_RPC}:${SEPOLIA_MAILBOX}" \
-           "arbitrum:421614:${ARBITRUM_RPC}:${ARBITRUM_MAILBOX}" \
-           "base:84532:${BASE_RPC}:${BASE_MAILBOX}" \
-           "eden:${EDEN_DOMAIN}:${EDEN_RPC}:${EDEN_MAILBOX}"; do
-  chain="${row%%:*}"; rest="${row#*:}"
-  domain="${rest%%:*}"; rest="${rest#*:}"
-  rpc="${rest%:*}"; mailbox="${rest##*:}"
-  has "ism-${chain}" || { warn "no ism-${chain}; skipping celestia-to-${chain}"; continue; }
-  cat <<TOML
-
-[[routes]]
-name = "celestia-to-${chain}"
-tee_node_url = "${CEL_ENCLAVE}"
-ism_id = "$(load "ism-${chain}")"
-merkle_tree_address = "${CEL_HOOK_ID}"
-attest_only = true
-routers = $(evm_routers "${chain}")
-TOML
-  celestia_origin
-  cat <<TOML
-
-[routes.destination]
-kind = "ethereum"
-domain = ${domain}
-execution_rpc = "${rpc}"
-mailbox = "${mailbox}"
-TOML
-done
-
-# ---------------------------------------------------------------- ethereum -> celestia
-if has ism-celestia-sepolia; then
-cat <<TOML
-
-[[routes]]
-name = "sepolia-to-celestia"
-tee_node_url = "$(load enclave-url-ethereum)"
-ism_id = "$(load ism-celestia-sepolia)"
-merkle_tree_address = "$(pad32 "${SEPOLIA_HOOK}")"
-attest_only = true
-routers = $(cel_routers)
-
-[routes.origin]
-kind = "ethereum"
-domain = 11155111
-# Both point at the archive. The attested block is Ethereum's finalized head, around seventy
-# behind the chain head, and free endpoints serve eth_getProof for the head block alone.
-execution_rpc = "${SEPOLIA_RPC}"
-archive_rpc = "${SEPOLIA_RPC}"
-beacon_rpc = "${SEPOLIA_BEACON}"
-mailbox = "${SEPOLIA_MAILBOX}"
-merkle_tree_hook = "${SEPOLIA_HOOK}"
-merkle_tree_base_slot = ${SEPOLIA_SLOT}
-TOML
-celestia_destination
-fi
-
-# ---------------------------------------------------------------- l2 -> celestia
-# Both derive their root from the L2's dispute anchor on L1, so a transfer cannot land until
-# the game covering its block resolves. On Base Sepolia that is five days. Not a stall.
-# Separated by `|`, not `:`. Three of these seven fields are URLs and every one of them
-# contains "://", so a colon-separated split assigns "https" to l2_rpc and walks every field
-# after it one position to the left. It produces a config that parses and is wrong.
-for row in "arbitrum|421614|${ARBITRUM_L2_RPC}|${ARBITRUM_LOGS}|${ARBITRUM_ANCHOR}|${ARBITRUM_MAILBOX}|${ARBITRUM_HOOK}" \
-           "base|84532|${BASE_L2_RPC}|${BASE_RPC}|${BASE_ANCHOR}|${BASE_MAILBOX}|${BASE_HOOK}"; do
-  IFS='|' read -r chain domain l2rpc logsrpc anchor mailbox hook <<EOF
-${row}
-EOF
-  has "ism-celestia-${chain}" || { warn "no ism-celestia-${chain}; skipping ${chain}-to-celestia"; continue; }
-  cat <<TOML
-
-[[routes]]
-name = "${chain}-to-celestia"
-tee_node_url = "$(load enclave-url-ethereum)"
-ism_id = "$(load "ism-celestia-${chain}")"
-merkle_tree_address = "$(pad32 "${hook}")"
-attest_only = true
-routers = $(cel_routers)
-
-[routes.origin]
-kind = "ethereum_l2"
-domain = ${domain}
-rollup = "${chain}"
-l2_rpc = "${l2rpc}"
-logs_rpc = "${logsrpc}"
-l1_anchor_contract = "${anchor}"
-mailbox = "${mailbox}"
-merkle_tree_hook = "${hook}"
-merkle_tree_base_slot = 151
-TOML
-  l1_block
-  celestia_destination
-done
-
-# ---------------------------------------------------------------- eden -> celestia
-# The only origin re-executed rather than believed: the enclave runs the blocks that changed
-# the state and has to arrive at the root the sequencer signed.
-if has ism-celestia-eden; then
-cat <<TOML
-
-[[routes]]
-name = "eden-to-celestia"
-tee_node_url = "$(load enclave-url-evolve)"
-ism_id = "$(load ism-celestia-eden)"
-merkle_tree_address = "$(pad32 "${EDEN_HOOK}")"
-attest_only = true
-routers = $(cel_routers)
-
-[routes.origin]
-kind = "celestia_l2"
-domain = ${EDEN_DOMAIN}
-rollup = "eden"
-# Serves eth_getProof at the \`latest\` tag only, which is why tree proofs are captured ahead
-# of the header that will justify them. It also serves debug_executionWitness, which the
-# re-execution needs and no public Eden endpoint provides.
-l2_rpc = "${EDEN_L2_RPC}"
-logs_rpc = "${EDEN_RPC}"
-da_rpc = "${EDEN_DA_RPC}"
-mailbox = "${EDEN_MAILBOX}"
-merkle_tree_hook = "${EDEN_HOOK}"
-merkle_tree_base_slot = 151
-
-[routes.origin.celestia]
-kind = "celestia"
-domain = ${MOCHA_DOMAIN}
-rpc = "${MOCHA_RPC}"
-grpc = "${MOCHA_GRPC}"
-mailbox_id = "${CEL_MAILBOX_ID}"
-merkle_tree_hook_id = "${CEL_HOOK_ID}"
-ism_module = "teeism"
-TOML
-celestia_destination
-fi
-} > "${CONFIG}"
-
-routes="$(grep -c '^name = ' "${CONFIG}")"
-say "${routes} routes"
+write_config
+routes="$(grep -c '^\[\[routes\]\]' "${COPROCESSOR_CONFIG}")"
+say "${routes} routes in ${COPROCESSOR_CONFIG}"
 
 mkdir -p "${STATE_DIR}/proofs" "${STATE_DIR}/logs"
 
@@ -291,22 +29,12 @@ for pidfile in relayer ui; do
     rm -f "${STATE_DIR}/${pidfile}.pid"
   fi
 done
-pkill -f "tee-hyperlane run --config" 2>/dev/null || true
+pkill -f "tee-hyperlane --config" 2>/dev/null || true
 
 say "starting the relayer"
-(
-  cd "${REPO_DIR}/tee-hyperlane"
-  APPD="${APPD}" \
-  COLLATERAL_BIN="${COLLATERAL_BIN}" \
-  CELHOME="${CELHOME}" \
-  CELESTIA_CHAIN_ID="${CHAINID}" \
-  CELESTIA_KEY=relayer \
-  TEE_HYPERLANE_DEPLOY_DIR="${REPO_DIR}/deploy" \
-  TEE_COPROCESSOR_CONFIG="${CONFIG}" \
-  cargo run --quiet --release -p tee-coprocessor -- run --config "${CONFIG}" \
-    > "${STATE_DIR}/logs/relayer.log" 2>&1 &
-  echo $! > "${STATE_DIR}/relayer.pid"
-)
+APPD="${APPD}" COLLATERAL_BIN="${COLLATERAL_BIN}" \
+  "${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" > "${STATE_DIR}/logs/relayer.log" 2>&1 &
+echo $! > "${STATE_DIR}/relayer.pid"
 say "relayer log: ${STATE_DIR}/logs/relayer.log"
 
 # The UI's deployment values normally name the live testnet. The devnet mints its ids at

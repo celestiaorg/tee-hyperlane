@@ -4,7 +4,7 @@
 use alloy_consensus::Header;
 use alloy_primitives::{Bytes, B256};
 use alloy_rlp::Encodable;
-use tee_node::evm::{execute_block, BlockExec};
+use tee_node::celestia::eden::exec::{execute_block, BlockExec};
 
 struct Fixture {
     parent_number: u64,
@@ -76,7 +76,8 @@ fn reproduces_edens_state_root() {
 fn rejects_a_tampered_state_root() {
     for name in FIXTURES {
         let mut f = load(name);
-        let mut header: Header = alloy_rlp::Decodable::decode(&mut f.input.header.as_ref()).unwrap();
+        let mut header: Header =
+            alloy_rlp::Decodable::decode(&mut f.input.header.as_ref()).unwrap();
         header.state_root = B256::repeat_byte(9);
         let mut encoded = Vec::new();
         header.encode(&mut encoded);

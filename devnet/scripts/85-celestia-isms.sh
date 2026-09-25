@@ -8,29 +8,13 @@
 # point of the split: before it, one identity served every origin and a change anywhere
 # re-deployed everything.
 #
-# Adding an origin is a row in ORIGINS plus its bootstrap in `genesis_for`.
+# Adding an origin is a row in ORIGINS; its genesis comes from its `[chains.<name>]` table.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 need curl
 wait_for_chain
 
-# Endpoints and anchors the bootstraps need. Defaults match the live deployment; override in
-# devnet/.env for another one.
-SEPOLIA_BEACON="${SEPOLIA_BEACON:-https://ethereum-sepolia-beacon-api.publicnode.com}"
-SEPOLIA_RPC="${SEPOLIA_RPC:-https://rpc.sepolia.ethpandaops.io}"
-ARBITRUM_ARCHIVE="${ARBITRUM_ARCHIVE:-https://api.zan.top/arb-sepolia}"
-ARBITRUM_ANCHOR="${ARBITRUM_ANCHOR:-0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4}"
-BASE_ANCHOR="${BASE_ANCHOR:-0x2fF5cC82dBf333Ea30D8ee462178ab1707315355}"
-MOCHA_RPC="${MOCHA_RPC:-https://rpc.celestia-mocha.com}"
-# Base's confirmed head trails by the five day dispute window, which no free endpoint serves
-# eth_getProof that far back for.
-if [ -z "${BASE_ARCHIVE:-}" ] && [ -f "${STATE_DIR}/alchemy-base-key" ]; then
-  BASE_ARCHIVE="https://base-sepolia.g.alchemy.com/v2/$(cat "${STATE_DIR}/alchemy-base-key")"
-fi
-BASE_ARCHIVE="${BASE_ARCHIVE:-}"
-
 A="${BIN_DIR}/celestia-appd"
-B="${REPO_DIR}/tee-hyperlane/target/release/tee-hyperlane"
 TX="--from relayer --keyring-backend test --home ${CELHOME} --chain-id ${CHAINID}
     --node ${CELESTIA_RPC} --fees 200000utia --gas 900000 --broadcast-mode sync -y -o json"
 
@@ -58,11 +42,21 @@ settle() {
   return 1
 }
 
-# The genesis state for one origin, anchored at its current head.
+# The identity digest an ISM pins: the last 32 bytes of its state, which the module checks
+# against the identity it stores.
+pinned_identity() {
+  "${A}" query teeism ism "$1" --node "${CELESTIA_RPC}" -o json 2>/dev/null | python3 -c '
+import base64, json, sys
+print(base64.b64decode(json.load(sys.stdin)["ism"]["state"])[-32:].hex())
+' 2>/dev/null
+}
+
+# The genesis state for one origin, anchored at its current head. The chain's endpoints come
+# from the coprocessor config, so there is one place they are set.
 #
 # ISM_GENESIS_<ORIGIN> overrides it, which is how a checkpoint from an earlier deployment is
-# re-used to recover messages it had already seen. `tee-hyperlane rotate-state` turns a live
-# ISM's state into one of these.
+# re-used to recover messages it had already seen: take the live ISM's state and splice the new
+# identity into its last 32 bytes (see "Keeping in-flight messages" in MAINTAIN.md).
 genesis_for() { # <origin> <family>
   local override
   override="$(eval "printf '%s' \"\${ISM_GENESIS_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_'):-}\"")"
@@ -70,45 +64,31 @@ genesis_for() { # <origin> <family>
     printf '%s' "${override}"
     return
   fi
-  local digest
-  digest="$(load "identity-digest-$2")"
-  case "$1" in
-    sepolia)
-      "${B}" bootstrap-ethereum --beacon "${SEPOLIA_BEACON}" --execution "${SEPOLIA_RPC}" \
-        --identity-digest "${digest}" 2>/dev/null | sed -n 's/^genesis state *//p' | tr -d ' ' ;;
-    arbitrum)
-      "${B}" bootstrap-l2 --rollup arbitrum --l2-archive "${ARBITRUM_ARCHIVE}" \
-        --anchor "${ARBITRUM_ANCHOR}" --identity-digest "${digest}" 2>/dev/null \
-        | sed -n 's/^genesis state *//p' | tr -d ' ' ;;
-    base)
-      "${B}" bootstrap-l2 --rollup base --l2-archive "${BASE_ARCHIVE}" \
-        --anchor "${BASE_ANCHOR}" --identity-digest "${digest}" 2>/dev/null \
-        | sed -n 's/^genesis state *//p' | tr -d ' ' ;;
-    eden)
-      # --out is not optional here. Eden's node serves eth_getProof for `latest` only, so the
-      # anchor's tree proof has to be captured at bootstrap and filed under its height; the
-      # route reads it back as the snapshot every attestation needs. Without it the ISM is
-      # created at a height nothing can ever prove, and the route asks to be re-bootstrapped
-      # for the rest of its life.
-      "${B}" bootstrap-eden --rpc "${MOCHA_RPC}" --identity-digest "${digest}" \
-        --out "${STATE_DIR}/proofs/eden-to-celestia/staging/bootstrap.json" 2>/dev/null \
-        | sed -n 's/^genesis state *//p' | tr -d ' ' ;;
-    *) return 1 ;;
-  esac
+  "${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" genesis --chain "$1" --identity "$(load "identity-digest-$2")"
 }
+
+write_config
 
 for row in ${ORIGINS}; do
   IFS=: read -r name domain family tree <<< "${row}"
   say "== ${name} (domain ${domain}, ${family} enclave)"
 
-  # Already created on this chain, so leave it alone. An origin whose bootstrap failed the
+  # Already created for this enclave, so leave it alone. An origin whose bootstrap failed the
   # first time is the normal reason to run this again - Eden's needs a synced DA node, which
   # can take half an hour - and without this the re-run mints a second ISM for every origin
-  # that already worked, and a second routing ISM over them. `make stop` clears .state, so a
-  # fresh chain starts from nothing and this never hides a stale id.
+  # that already worked. An ISM pinning an older identity is the other case: that is a
+  # rotation, and it gets a new ISM, which the routing step below swaps in.
   if has "ism-celestia-${name}"; then
-    say "  already created: $(load "ism-celestia-${name}")"
-    continue
+    existing="$(load "ism-celestia-${name}")"
+    pinned="$(pinned_identity "${existing}")"
+    # Unreadable is not the same as different: minting a replacement on a query hiccup would
+    # re-point the route for nothing.
+    [ -n "${pinned}" ] || die "could not read ${existing} from ${CELESTIA_RPC}"
+    if [ "${pinned}" = "$(load "identity-digest-${family}" | tr 'A-F' 'a-f' | sed 's/^0x//')" ]; then
+      say "  already created for this enclave: ${existing}"
+      continue
+    fi
+    say "  ${existing} pins an older enclave; creating a replacement"
   fi
 
   # `|| true` is load-bearing. lib.sh sets `-euo pipefail`, so a bootstrap that exits non-zero
@@ -180,6 +160,11 @@ for row in ${ORIGINS}; do
   IFS=: read -r name domain _ _ <<< "${row}"
   has "ism-celestia-${name}" || continue
   say "  domain ${domain} -> $(load "ism-celestia-${name}")"
+  # Remove, then set. On mocha-5 a set on a domain already present succeeded, emitted the
+  # event naming the new ISM, and changed nothing. The version pinned here overwrites, but a
+  # rotation has to hold on either, and removing an absent domain is a no-op.
+  settle "$("${A}" tx hyperlane ism remove-routing-ism-domain "${routing}" "${domain}" ${TX} 2>&1 \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
   settle "$("${A}" tx hyperlane ism set-routing-ism-domain "${routing}" "${domain}" \
     "$(load "ism-celestia-${name}")" ${TX} 2>&1 \
     | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
