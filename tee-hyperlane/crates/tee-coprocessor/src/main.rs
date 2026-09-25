@@ -39,7 +39,9 @@ enum Genesis {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Logs go to stderr: `genesis` prints the state on stdout, and the ISM scripts capture it.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )

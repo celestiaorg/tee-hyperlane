@@ -42,6 +42,19 @@ settle() {
   return 1
 }
 
+# send <what> <tx args...> - broadcast, wait, and stop with the node's own error on any failure,
+# so a failed step is never mistaken for a finished one.
+send() {
+  local what="$1" out hash result; shift
+  out="$("${A}" tx "$@" ${TX} 2>&1 || true)"
+  hash="$(printf '%s' "${out}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])' 2>/dev/null || true)"
+  [ -n "${hash}" ] || die "${what}: not broadcast: ${out}"
+  result="$(settle "${hash}" || true)"
+  [ -n "${result}" ] || die "${what}: ${hash} not included"
+  printf '%s' "${result}" | python3 -c 'import sys,json;d=json.load(sys.stdin);sys.exit(1 if d.get("code") else 0)' \
+    || die "${what}: failed: $(printf '%s' "${result}" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("raw_log",""))')"
+}
+
 # The identity digest an ISM pins: the last 32 bytes of its state, which the module checks
 # against the identity it stores.
 pinned_identity() {
@@ -51,26 +64,42 @@ print(base64.b64decode(json.load(sys.stdin)["ism"]["state"])[-32:].hex())
 ' 2>/dev/null
 }
 
-# The genesis state for one origin, anchored at its current head. The chain's endpoints come
-# from the coprocessor config, so there is one place they are set.
-#
-# ISM_GENESIS_<ORIGIN> overrides it, which is how a checkpoint from an earlier deployment is
-# re-used to recover messages it had already seen: take the live ISM's state and splice the new
-# identity into its last 32 bytes (see "Keeping in-flight messages" in MAINTAIN.md).
-genesis_for() { # <origin> <family>
-  local override
+# The full state of an ISM, as 0x-hex.
+ism_state() {
+  "${A}" query teeism ism "$1" --node "${CELESTIA_RPC}" -o json 2>/dev/null | python3 -c '
+import base64, json, sys
+print("0x" + base64.b64decode(json.load(sys.stdin)["ism"]["state"]).hex())
+' 2>/dev/null
+}
+
+# The genesis state for one origin. In order:
+#   - ISM_GENESIS_<ORIGIN> if set: exactly that state.
+#   - replacing a recorded ISM (<old id> given): that ISM's last state with only the identity,
+#     its last 32 bytes, swapped. The route resumes where the old one stopped, so nothing in
+#     flight is lost. An unreadable old state stops the script rather than fall back to the head.
+#   - otherwise (a first deploy): the origin's current head, from the coprocessor config.
+genesis_for() { # <origin> <family> [old ism id]
+  local override old digest
   override="$(eval "printf '%s' \"\${ISM_GENESIS_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_'):-}\"")"
   if [ -n "${override}" ]; then
     printf '%s' "${override}"
     return
   fi
-  "${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" genesis --chain "$1" --identity "$(load "identity-digest-$2")"
+  digest="$(load "identity-digest-$2" | sed 's/^0x//')"
+  if [ -n "${3:-}" ]; then
+    old="$(ism_state "$3")"
+    [ "${#old}" -eq 234 ] || die "could not read $3's state; refusing to anchor $1 at the head and lose messages"
+    printf '%s' "${old:0:170}${digest}"
+    return
+  fi
+  "${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" genesis --chain "$1" --identity "0x${digest}"
 }
 
 write_config
 
 for row in ${ORIGINS}; do
   IFS=: read -r name domain family tree <<< "${row}"
+  replacing=""
   say "== ${name} (domain ${domain}, ${family} enclave)"
 
   # Already created for this enclave, so leave it alone. An origin whose bootstrap failed the
@@ -88,7 +117,8 @@ for row in ${ORIGINS}; do
       say "  already created for this enclave: ${existing}"
       continue
     fi
-    say "  ${existing} pins an older enclave; creating a replacement"
+    say "  ${existing} pins an older enclave; creating a replacement from its last state"
+    replacing="${existing}"
   fi
 
   # `|| true` is load-bearing. lib.sh sets `-euo pipefail`, so a bootstrap that exits non-zero
@@ -96,8 +126,8 @@ for row in ${ORIGINS}; do
   # script at this assignment, before the guard on the next line can skip that origin. The
   # guard read as if it handled the case and never once ran: base took the run down with it
   # and Eden, the origin after it, was never attempted.
-  genesis="$(genesis_for "${name}" "${family}" || true)"
-  [ -n "${genesis}" ] || { warn "  could not anchor ${name}; skipping"; continue; }
+  genesis="$(genesis_for "${name}" "${family}" "${replacing}" || true)"
+  [ -n "${genesis}" ] || { warn "  could not anchor ${name}; skipping, its current ISM stays in place"; continue; }
 
   OUT_DIR="${OUT_DIR}" python3 - "${genesis}" "${tree}" "${name}" "${family}" <<'PY'
 import json, sys, os
@@ -108,10 +138,10 @@ json.dump({"state": state, "merkle_tree_address": tree,
           open(f"{out}/ism-{name}-origin.json", "w"), indent=2)
 PY
 
-  hash="$("${A}" tx teeism create "${OUT_DIR}/ism-${name}-origin.json" ${TX} 2>&1 \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])' 2>/dev/null)"
-  [ -n "${hash}" ] || { warn "  ${name}: broadcast failed"; continue; }
-  id="$(settle "${hash}" | python3 -c '
+  out="$("${A}" tx teeism create "${OUT_DIR}/ism-${name}-origin.json" ${TX} 2>&1 || true)"
+  hash="$(printf '%s' "${out}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])' 2>/dev/null || true)"
+  [ -n "${hash}" ] || { warn "  ${name}: broadcast failed: ${out}"; continue; }
+  id="$( (settle "${hash}" || true) | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 if d.get("code"):
@@ -122,8 +152,8 @@ for ev in d["events"]:
         for a in ev["attributes"]:
             if a["key"] == "id":
                 print(a["value"].strip(chr(34)))
-' 2>/dev/null)"
-  [ -n "${id}" ] || { warn "  ${name}: ISM not created"; continue; }
+' 2>/dev/null || true)"
+  [ -n "${id}" ] || { warn "  ${name}: ISM not created (tx ${hash})"; continue; }
   save "ism-celestia-${name}" "${id}"
   say "  ${id}"
 done
@@ -163,22 +193,17 @@ for row in ${ORIGINS}; do
   # Remove, then set. On mocha-5 a set on a domain already present succeeded, emitted the
   # event naming the new ISM, and changed nothing. The version pinned here overwrites, but a
   # rotation has to hold on either, and removing an absent domain is a no-op.
-  settle "$("${A}" tx hyperlane ism remove-routing-ism-domain "${routing}" "${domain}" ${TX} 2>&1 \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
-  settle "$("${A}" tx hyperlane ism set-routing-ism-domain "${routing}" "${domain}" \
-    "$(load "ism-celestia-${name}")" ${TX} 2>&1 \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
+  send "remove domain ${domain}" hyperlane ism remove-routing-ism-domain "${routing}" "${domain}"
+  send "set domain ${domain}" hyperlane ism set-routing-ism-domain "${routing}" "${domain}" "$(load "ism-celestia-${name}")"
 done
 
 say "== pointing the tokens and the mailbox at it"
 for key in celestia-token-id celestia-usdc-token-id; do
   has "${key}" || continue
-  settle "$("${A}" tx warp set-token "$(load "${key}")" --ism-id "${routing}" ${TX} 2>&1 \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
+  send "point ${key} at the routing ism" warp set-token "$(load "${key}")" --ism-id "${routing}"
   say "  $(load "${key}")"
 done
-settle "$("${A}" tx hyperlane mailbox set "$(load mailbox-id)" --default-ism "${routing}" ${TX} 2>&1 \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])')" >/dev/null
+send "point the mailbox at the routing ism" hyperlane mailbox set "$(load mailbox-id)" --default-ism "${routing}"
 say "  mailbox default"
 
 say "celestia ISMs ready"

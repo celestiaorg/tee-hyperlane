@@ -43,20 +43,12 @@ say "  identity      ${IDENTITY}"
 
 # ---------------------------------------------------------------- pin the local chain
 #
-# Normally the ISM is anchored at the chain's current head. A re-deployment therefore starts
-# from the head too, and any message dispatched but not yet delivered is below it and never
-# arrives. That is accepted: it is a testnet, and the alternative couples every deployment to
-# the last one.
-#
-# What is not accepted is having no way back. Set ISM_GENESIS to anchor at a checkpoint you
-# choose instead, which is how a message stranded by an earlier deployment is recovered:
-#
-#   old="$(cast call <old-ism> "state()(bytes)" --rpc-url <rpc>)"
-#   ISM_GENESIS="${old:0:170}${new_identity#0x}" ./scripts/80-evm-isms.sh
-#
-# That keeps the old state's root, height, timestamp and store commitment and swaps only the
-# identity in its last 32 bytes, so the new ISM resumes where the old one stopped and replays
-# the gap.
+# Where a new ISM starts:
+#   - replacing a recorded ISM: from that ISM's last state, with only the identity (its last 32
+#     bytes) swapped. The route resumes where the old one stopped, so nothing in flight is lost.
+#     If the old state cannot be read the script stops rather than fall back to the head.
+#   - no ISM recorded yet (a first deploy): at the chain's current head, computed here.
+#   - ISM_GENESIS set: exactly that state, for every chain in CHAINS.
 if [ -n "${ISM_GENESIS:-}" ]; then
   GENESIS="${ISM_GENESIS}"
   say "anchoring at the checkpoint in ISM_GENESIS, not at ${CHAINID}'s head"
@@ -92,8 +84,9 @@ while IFS=: read -r name chainid mailbox; do
   rpc="$(python3 -c "import json;print(json.load(open('${addr_file}'))['rpc'])")"
   entry="$(python3 -c "import json;print(json.load(open('${addr_file}'))['AttestationEntrypoint'])")"
 
-  # Skip a chain that already has an ISM pinning this enclave and this checkpoint. Without
-  # this, re-running the step silently abandons the previous deployment and pays for another.
+  # Skip a chain that already has an ISM pinning this enclave. Without this, re-running the
+  # step silently abandons the previous deployment and pays for another.
+  chain_genesis="${GENESIS}"
   if has "ism-${name}"; then
     existing="$(load "ism-${name}")"
     cur="$(cast call "${existing}" "enclaveMeasurements()(bytes32)" --rpc-url "${rpc}" 2>/dev/null || true)"
@@ -101,13 +94,19 @@ while IFS=: read -r name chainid mailbox; do
       say "${name} already has ${existing} pinning this enclave, skipping"
       continue
     fi
+    if [ -z "${ISM_GENESIS:-}" ]; then
+      old="$(cast call "${existing}" "state()(bytes)" --rpc-url "${rpc}" 2>/dev/null || true)"
+      [ "${#old}" -eq 234 ] || die "could not read ${existing}'s state on ${name}; refusing to anchor at the head and lose messages"
+      chain_genesis="${old:0:170}${IDENTITY#0x}"
+      say "${name}: resuming from ${existing}'s last state"
+    fi
   fi
 
   say "deploying TeeDcapIsm on ${name}"
   out="$(cd "${CONTRACTS}" && forge create src/TeeDcapIsm.sol:TeeDcapIsm \
     --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" --broadcast \
     --constructor-args "${entry}" "${MEASUREMENTS}" "${IDENTITY}" "${HOOK}" \
-                       "${mailbox}" "${GENESIS}" "${MAX_QUOTE_SKEW}" 2>&1)"
+                       "${mailbox}" "${chain_genesis}" "${MAX_QUOTE_SKEW}" 2>&1)"
   ism="$(printf '%s' "${out}" | grep -oE "Deployed to: 0x[0-9a-fA-F]{40}" | grep -oE "0x[0-9a-fA-F]{40}")"
   if [ -z "${ism}" ]; then
     printf '%s\n' "${out}" | tail -5 >&2
