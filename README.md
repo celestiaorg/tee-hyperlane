@@ -12,23 +12,12 @@ verifies the enclave's TDX quote directly. There is no zero-knowledge proof anyw
 
 ## How it works
 
-```
-enclave (Phala CVM, stateless)          coprocessor (untrusted)
-  verify the origin's consensus           gather what the enclave needs
-  derive its state root                   submitAttestation(quote, payload)
-  prove the Hyperlane tree under it       process(message) for each id
-  check the batch is exactly the new leaves
-  sign it all into one TDX quote
-```
+1. An enclave (a Phala TDX VM) verifies the origin chain, proves which messages were sent, and
+   signs that in a TDX quote.
+2. The relayer submits the quote to the destination's ISM, which checks it came from our
+   enclave, then delivers the messages.
 
-The destination checks Intel's signature chain, confirms the quote came from the enclave it
-pins, then advances its trusted state and authorises the batch in one transaction.
-- **EVM chains:** `TeeDcapIsm.sol` does this through our own Automata DCAP deployment.
-- **Celestia:** `x/teeism` does it in consensus with `go-tdx-guest`, using collateral the
-  transaction carries.
-
-The enclave keeps nothing. Its light-client state lives in the ISM's `state`, so the
-destination chain is its database and a restarted enclave loses nothing.
+The enclave stores nothing; its state lives in the ISM on chain.
 
 ## Layout
 
@@ -42,10 +31,8 @@ devnet/                                 scripts that deploy everything, and the 
 deploy/                                 the guides, the measured compose files, systemd units
 ```
 
-Both crates are laid out by chain. Everything about Base is in `ethereum/base.rs` in each:
-the enclave's copy verifies Base's root, and the coprocessor's copy fetches the proof. A chain
-sits under the chain its trust comes from (`ethereum/arbitrum.rs`, `celestia/eden.rs`). Each
-crate's `origin.rs` holds the one trait a chain implements.
+Both crates have one file per chain, in the same place: `ethereum/base.rs` is everything about
+Base. `origin.rs` in each holds the trait a chain implements.
 
 ## Deployments
 
@@ -70,10 +57,7 @@ compose_hash    c502ed6b59d5b9fbcf2898e986a8fdb2387043c5f3ed54d31c3f0f7b7101d6f7
 measurements    0x8ec698fab68fd8d049fd04c302ac33908dc019ece98c65a2ee4a814a81c08542 0x4d87b27e1795b4f0f90be32d912fa11ff3b16f53f31ca8f4096e4502c283daf3 0x3d66f22ffbffcaa2007a61f867e7d929184bf074ba62829804bde8f4faa32575
 ```
 
-The three share an OS, a KMS and `mr_td`, and differ in `compose_hash`, which covers the image
-digest. The EVM ISMs pin `measurements` = `keccak(mr_td ++ mr_config_id ++ rtmr0..2)`; rtmr3 is
-left out because it carries the per-CVM app id. `x/teeism` pins the five fields behind
-`identity` separately, so a rejection names the one that differs.
+The EVM ISMs pin `measurements`; the Celestia ISMs pin the fields behind `identity`.
 
 **Chain.** Our own devnet, not mocha, with pruning off.
 
@@ -138,55 +122,20 @@ teeism-gas-oracle  systemd  paymaster upkeep
 
 ## Design
 
-**One enclave per origin family.** An ISM pins the identity of the enclave that attests its
-origin, and that identity is immutable. With one image, a change to Eden would have meant new
-ISMs everywhere. `flake.nix` builds each family's image from a source tree without the
-other families' chain files, so a change to one chain moves one identity:
+- **One enclave per origin family.** A code change to one family only replaces that family's
+  ISMs: celestia → 4, ethereum → 3, evolve → 1. Shared code or `Cargo.lock` → all 8.
+- **Arbitrum and Base are slow on purpose.** A message waits until its rollup block is
+  confirmed on L1: ~1h40m for Arbitrum, 5 days for Base.
+- **Eden is re-executed.** The enclave replays Eden's blocks with ev-reth's own executor and
+  must reach the root the sequencer signed. The sequencer can reorder or stop, not invent state.
 
-| family changed | new ISMs |
-|---|---|
-| `celestia` | 4, the `TeeDcapIsm` on each EVM chain |
-| `ethereum` | 3, the Celestia-side ISMs for Sepolia, Arbitrum, Base |
-| `evolve` | 1, the Celestia-side ISM for Eden |
-| shared code (`attest.rs`, `origin.rs`, `evm.rs`) or `Cargo.lock` | all 8 |
+## Trust
 
-Editing the coprocessor, the gas oracle or a test never moves a digest.
-
-**L2 origins wait for their rollup.** Arbitrum and Base roots are read from the rollup's
-contracts on L1, so a message is attestable only once its block is confirmed there. Base
-Sepolia takes five days plus about three minutes. That is by design.
-
-**Eden's root is re-executed, not believed.** Eden has no consensus; its sequencer signs
-headers and posts them to Celestia. The enclave checks the post is in a verified Celestia
-block and signed by the pinned key, then re-executes the blocks that changed the state, from
-the root the ISM already trusts, and must arrive at the signed root. The sequencer can still
-order, censor or stop, but it cannot invent a state. Only state-changing blocks are sent; a
-missing one shows up as a root mismatch. The executor is ev-reth's own `ev-revm` (tag
-`v0.6.0`), running Osaka, so precompiles and Eden's fee rule come from the chain itself. Eden
-pays the base fee to the block beneficiary instead of burning it.
-
-## What is trusted
-
-- **Trusted:** Intel TDX and the DCAP PKI; the pinned enclave identity; each ISM's genesis
-  state (the light-client checkpoint, public at creation); on EVM chains, our Automata
-  deployment and the Intel collateral published into it.
-- **Not trusted:** every RPC; the coprocessor and relayer, which can stall but not forge;
-  Phala beyond liveness; the host clock, bounded by the attested head's timestamp; every field
-  of an attest request, since the endpoint is public. That last one is why anchor contracts,
-  storage slots and keys are compiled into the enclave, never taken from input.
-
-**Residual risks.**
-- A TDX break, or an unrevoked vulnerable TCB, forges any root.
-- Whoever operates the enclaves can withhold attestations. That stops the bridge but puts no
-  funds at risk.
-- Celestia does no freshness check of its own; the EVM side enforces `maxStateAge`.
-- Light clients hold under the usual assumption: a fork needs a third of the trusted
-  validator set or sync committee to equivocate.
-- ISM owners, router owners, and the Automata `owner`/`ATTESTER_ROLE` are one EOA, the same one
-  that pays gas. The Automata role can repoint the verifier router, the strongest privilege in
-  the EVM path.
-- A disagreement between Eden's executor and the chain halts Eden's routes. It never makes the
-  enclave accept a bad root.
+- **Trusted:** Intel TDX, the pinned enclave identity, each ISM's starting state, and on EVM
+  chains our Automata contracts.
+- **Not trusted:** RPCs, the relayer (it can stall, not forge), Phala beyond uptime, anything
+  sent to the enclave.
+- **Risks:** a TDX break forges anything; one EOA owns the ISMs, routers and Automata roles.
 
 ## Tests
 

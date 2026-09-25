@@ -7,8 +7,8 @@ light client running inside a TDX enclave. The destination verifies the enclave'
 directly. There is no zero-knowledge proof anywhere in this path. `README.md` has the
 architecture.
 
-**The SP1/Groth16 stack that used to sit at this path is gone.** It survives only as `main` on
-GitHub (`jonas089/tee-hyperlane`, commit `e2272a0`). If you find yourself reading about
+**The SP1/Groth16 stack that used to sit at this path is gone.** It survives only in `main`'s
+history on GitHub (`jonas089/tee-hyperlane`, commit `e2272a0`). If you find yourself reading about
 `tee-circuit/programs/state-transition`, SP1 vkeys, or a Groth16 verifier contract, you are
 looking at the old stack, not at what runs. The two differ in a way that matters: the old one
 ran DCAP inside the circuit, so nothing expired on chain; this one verifies DCAP on chain via
@@ -17,13 +17,13 @@ Celestia-destination routes carry fresh collateral in the transaction and do not
 
 ## Branch
 
-`jonas/tee-ism` is the live branch and the one to work on. `main` is the old ZK stack. Do not
-merge or push to `main` without asking.
+`main` is the live branch; ark runs it. Work on a branch and merge by PR. Do not merge or push
+to `main` without asking.
 
 ## What is deployed
 
-Server "ark", Zurich, `chef@178.199.12.26`, checkout at `~/tee-ism-nonzk`. It is an rsync of
-this tree with no `.git`, so nothing there is committable.
+Server "ark", Zurich, `chef@178.199.12.26`, checkout at `~/tee-ism-nonzk`, a git clone of `main`
+over HTTPS. Update it with `git pull`; `devnet/.env` and `devnet/.state/` there are gitignored.
 
 - systemd: `teeism-relayer` (every route, plus the dashboard and API on :3001) and
   `teeism-gas-oracle`. The gateway container serves the built `bridge-app/dist`. Until the

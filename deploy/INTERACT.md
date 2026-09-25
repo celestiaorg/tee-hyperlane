@@ -141,7 +141,7 @@ delivery, per message   124,000   0.000140   0.000001   0.000030
 
 On Celestia an attestation is 343,592 gas and a delivery 117,337. The enclaves cost
 $4.38/day for all three. Senders pay through the paymaster; the gas oracle at `:3002` shows the
-current quotes, and `gas-oracle --config .state/gas-oracle.toml --once` prints one round.
+current quotes, and `~/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle --config ~/tee-ism-nonzk/devnet/.state/gas-oracle.toml --once` prints one round.
 
 ## Running the UI locally
 
@@ -150,4 +150,4 @@ cd bridge-app && npm install && npm run dev     # http://localhost:5173
 ```
 
 It reads every address from `VITE_*` in `.env.local` ([DEPLOY step 11](DEPLOY.md#11-ui-and-gateway)).
-`make -C devnet start` writes one pointing at a local devnet.
+`make start` (in the repo root) writes one pointing at a local devnet.
