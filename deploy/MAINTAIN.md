@@ -28,7 +28,7 @@ For UI changes, also rebuild the UI ([DEPLOY step 11](DEPLOY.md#11-ui-and-gatewa
 
 ## Update: enclave code
 
-For changes to `crates/tee-node`, `hyperlane-types`, `tee-attestation` or `Cargo.lock`. Each
+For changes to `crates/tee-node`, `crates/hyperlane-types` or `Cargo.lock`. Each
 changed enclave needs new ISMs. The scripts only redo what changed.
 
 In-flight transfers are kept; see [No message is lost](#no-message-is-lost).
@@ -39,22 +39,26 @@ In-flight transfers are kept; see [No message is lost](#no-message-is-lost).
 cd ~/tee-ism-nonzk && git pull
 sudo systemctl stop teeism-relayer
 cp -a devnet/.state ~/teeism-state-$(date +%F)
-mv devnet/.state/proofs ~/teeism-proofs-$(date +%F)
 cd ~/tee-ism-nonzk/tee-hyperlane && cargo build --release -p tee-coprocessor -p gas-oracle
 ```
 
-**2. Images:** [DEPLOY step 4](DEPLOY.md#4-enclave-images).
+Leave `devnet/.state/proofs/` in place. It holds the hints (`chains/<chain>/`) that let each
+route rebuild its old ISM's light-client state and resume.
 
-**3. Enclaves:** [DEPLOY step 5](DEPLOY.md#5-enclaves). The old CVMs keep running.
+**2. Images:** [DEPLOY step 4](DEPLOY.md#4-enclave-images): build, pin, commit and push.
+
+**3. Enclaves:** [DEPLOY step 5](DEPLOY.md#5-enclaves). It refuses to run until step 2's pins
+match the code and are pushed. The old CVMs keep running.
 
 **4. ISMs and routers**
 
 ```sh
 cd ~/tee-ism-nonzk/devnet
-./scripts/80-evm-isms.sh && ./scripts/85-celestia-isms.sh && ./scripts/90-evm-warp.sh
+./scripts/75-dcap-verifiers.sh && ./scripts/80-evm-isms.sh && ./scripts/85-celestia-isms.sh && ./scripts/90-evm-warp.sh
 ```
 
-Each router should print `repointing`. **If one prints `deploying the collateral USDC router`,
+`80-evm-isms.sh` also replaces an EVM ISM whose contract `VERSION` is older than the source's,
+even when the enclave is unchanged. Each router should print `repointing`. **If one prints `deploying the collateral USDC router`,
 press Ctrl-C.** A new collateral router strands the USDC held in the old one.
 
 **5. Start**
@@ -74,7 +78,6 @@ curl -s localhost:3001/api/status | jq -r '.[] | "\(.name) \(.height)"'     # 8 
 
 ```sh
 phala cvms delete <old app id>        # ×3, ids in ~/teeism-state-*/out/enclave-app-id-*
-cd ~/tee-ism-nonzk && git commit deploy/docker-compose.*.yml -m "Pin new enclave images" && git push
 ```
 
 Then update the ids in `README.md`.
@@ -114,7 +117,7 @@ A Celestia → EVM route can resume only if its last state is under 14 days old.
 | route | normal wait |
 |---|---|
 | Celestia → any EVM | < 1 min |
-| Eden → Celestia | 1-2 min |
+| Eden → Celestia | 1-4 min, mostly waiting for Eden to post its headers to mocha |
 | Sepolia → Celestia | ~15 min |
 | Arbitrum → Celestia | ~1h 40m |
 | Base → Celestia | 5 days |
@@ -144,8 +147,19 @@ cast call 0x2fF5cC82dBf333Ea30D8ee462178ab1707315355 "getAnchorRoot()(bytes32,ui
 | every route backing off | an endpoint is rate-limited |
 | UI shows `Failed to fetch` | the UI was built with the wrong `.env.local`; rebuild on the host |
 | `discarding a batch` | nothing; it rebuilds by itself |
+| `carrying sync committee updates` every tick | nothing; the ISM is behind and catches up when a batch lands |
+| `error decoding response body` once | a flaky RPC; nothing, unless it repeats |
+| Eden: `no celestia header in the last 400 rebuilds this ISM's store` | the `da-heights` hint is gone; restore `.state/proofs/chains/eden/` from a backup |
+| Eden: `no celestia block … carries an eden header at a height we hold a proof for` | normal for a few minutes after a restart; if it persists, check that mocha-light is synced |
+| Arbitrum, Base: `no finalized checkpoint in the last 512 epochs rebuilds this ISM's store` | the `checkpoints` hint is gone; restore `.state/proofs/chains/<chain>/` from a backup |
 
 To decode a four-letter code: `cast call <ism> "describeQuoteError(bytes)(string)" $(cast from-utf8 TCBR)`.
+
+## Slack
+
+Set `SLACK_BOT_TOKEN` and `SLACK_CHANNEL` (and `EXPLORER_URL` for links) in `devnet/.env`, then
+restart the relayer. It posts on start, on every problem opening and resolving, and a status
+every 30 minutes. **No status post for over 30 minutes means the relayer is down.**
 
 ## Check what runs
 

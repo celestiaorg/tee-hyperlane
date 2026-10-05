@@ -1,14 +1,4 @@
-//! The coprocessor service: every route in the config, and the dashboard API.
-//!
-//! ```text
-//! tee-hyperlane --config coprocessor.toml
-//! ```
-//!
-//! One other mode, for creating an ISM, which needs a genesis state before any route exists:
-//!
-//! ```text
-//! tee-hyperlane --config coprocessor.toml genesis --chain sepolia --identity 0x... [--height N]
-//! ```
+//! Entry point: runs the relayer, or the `genesis` and `identity` setup commands.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -19,11 +9,11 @@ struct Cli {
     #[arg(long, default_value = "coprocessor.toml")]
     config: String,
     #[command(subcommand)]
-    genesis: Option<Genesis>,
+    mode: Option<Mode>,
 }
 
 #[derive(Subcommand)]
-enum Genesis {
+enum Mode {
     /// Print the genesis state for a new ISM whose origin is `chain`.
     Genesis {
         #[arg(long)]
@@ -35,22 +25,46 @@ enum Genesis {
         #[arg(long)]
         height: Option<u64>,
     },
+    /// Write the identity a new ISM pins for the enclave at `url`, read from its quote.
+    Identity {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        json: std::path::PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Logs go to stderr: `genesis` prints the state on stdout, and the ISM scripts capture it.
-    tracing_subscriber::fmt()
+    // Under systemd, journald stamps each line itself, so the time and colours are left out
+    // there; `RUST_LOG=debug` brings back every step of every pass.
+    use std::io::IsTerminal;
+    let terminal = std::io::stderr().is_terminal();
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let builder = tracing_subscriber::fmt()
+        .with_target(false)
+        .with_ansi(terminal)
         .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+        .with_env_filter(filter);
+    if terminal {
+        builder.init();
+    } else {
+        builder.without_time().init();
+    }
     let cli = Cli::parse();
+    if let Some(Mode::Identity { url, json }) = &cli.mode {
+        let identity = tee_coprocessor::identity::Identity::fetch(url).await?;
+        std::fs::write(json, serde_json::to_vec_pretty(&identity)?)?;
+        eprintln!("compose hash {} from {url}", identity.compose_hash);
+        return Ok(());
+    }
     let config = Config::load(&cli.config)?;
-    match cli.genesis {
+    match cli.mode {
         None => tee_coprocessor::route::serve(config).await,
-        Some(Genesis::Genesis {
+        Some(Mode::Identity { .. }) => unreachable!("handled above"),
+        Some(Mode::Genesis {
             chain,
             identity,
             height,
@@ -64,10 +78,7 @@ async fn main() -> Result<()> {
                 state.height,
                 hex::encode(state.state_root)
             );
-            println!(
-                "0x{}",
-                hex::encode(tee_attestation::encode_ism_state(&state))
-            );
+            println!("0x{}", hex::encode(state.encode()));
             Ok(())
         }
     }

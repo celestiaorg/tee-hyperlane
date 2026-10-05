@@ -1,21 +1,4 @@
-//! The coprocessor's one config file: chains declared once, routes naming them.
-//!
-//! ```toml
-//! [chains.sepolia]
-//! kind = "ethereum"
-//! domain = 11155111
-//! rpc = "..."
-//!
-//! [[routes]]
-//! name = "sepolia-to-celestia"
-//! from = "sepolia"
-//! to = "celestia"
-//! enclave = "https://..."
-//! ism = "0x..."
-//! ```
-//!
-//! Each chain's table is parsed by that chain's own `Config`, so the fields each kind takes
-//! are documented next to the code that reads them.
+//! Loads the coprocessor config: the chains, the routes between them, and their settings.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,8 +8,8 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::destination::{self, Destination};
+use crate::origin::{celestia, ethereum};
 use crate::origin::{Cache, Indexer};
-use crate::{celestia, ethereum};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +27,10 @@ pub struct Config {
     pub routes: Vec<Route>,
     /// Test TIA for anyone who asks, from a funded key on a Celestia chain. Off when absent.
     pub faucet: Option<crate::api::FaucetConfig>,
+    /// How often the tracker reads each origin for new transfers and checks each one's
+    /// progress.
+    #[serde(default = "default_track")]
+    pub track_secs: u64,
 }
 
 #[derive(Clone, Deserialize)]
@@ -61,10 +48,20 @@ pub struct Route {
     /// decides when a route works, never what it delivers: a batch always carries every leaf.
     #[serde(default)]
     pub routers: Vec<String>,
+    /// How long a transfer on this route may take before it is reported overdue. Defaults by
+    /// origin: see `tracker::expected_latency`.
+    pub expected_latency_secs: Option<u64>,
 }
 
 fn default_tick() -> u64 {
     60
+}
+/// Chain fields only the tracker and the explorer read, removed before a chain's own `Config`
+/// sees its table: `explorer` for links, and the gas wallet's token and warning level.
+pub const REPORTING_KEYS: &[&str] = &["explorer", "gas_symbol", "gas_decimals", "low_balance"];
+
+fn default_track() -> u64 {
+    15
 }
 fn default_api() -> String {
     "0.0.0.0:3001".into()
@@ -88,7 +85,7 @@ impl Config {
         }
     }
 
-    fn kind(&self, name: &str) -> Result<&str> {
+    pub fn kind(&self, name: &str) -> Result<&str> {
         self.chains
             .get(name)
             .with_context(|| format!("no chain `{name}` in the config"))?
@@ -104,7 +101,11 @@ impl Config {
             .get(name)
             .with_context(|| format!("no chain `{name}` in the config"))?
             .clone();
+        // Read by the tracker and the explorer, never by the chain's own `Config`.
         table.remove("kind");
+        for key in crate::config::REPORTING_KEYS {
+            table.remove(*key);
+        }
         table.try_into().with_context(|| format!("chain `{name}`"))
     }
 
@@ -156,8 +157,11 @@ impl Config {
             .chains
             .get(name)
             .with_context(|| format!("no chain `{name}` in the config"))?;
+        let mut table = table.clone();
+        for key in crate::config::REPORTING_KEYS {
+            table.remove(*key);
+        }
         let endpoint: Endpoint = table
-            .clone()
             .try_into()
             .with_context(|| format!("chain `{name}`"))?;
         let mailbox = endpoint
