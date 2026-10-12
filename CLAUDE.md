@@ -49,6 +49,7 @@ over HTTPS. Update it with `git pull`; `devnet/.env` and `devnet/.state/` there 
 | `README.md` | every live id and identity, the design, the trust model |
 | `deploy/DEPLOY.md` | standing up a whole bridge, step by step; adding an asset or a chain |
 | `deploy/MAINTAIN.md` | the monthly job, rolling out new code, waiting vs stuck, symptoms |
+| `deploy/ADMIN.md` | every owner control and its command, payload sources, what is fixable live when Intel breaks |
 | `deploy/INTERACT.md` | wallets, sending, checking arrival, latency and cost |
 | `deploy/API.md` | the relayer's `/api/v1`: endpoints, transfer statuses, notification kinds, and the venue under `/api/v1/trade` |
 | `mcp/` | the MCP server agents use for the venue; its docs are the Trade tab's Docs (Agents) |
@@ -109,6 +110,12 @@ endpoint is a free public one.
   chain makes their routers and keeps ownership, so `90-evm-warp.sh` re-points them on a rotation.
   The trade API lists a token once the hub shows it renounced and wired, and adds its routers to
   `.state/proofs/launched.json`, which `worth_attesting` and the tracker accept beside `routers`.
+- **The owner can override Intel on Celestia; nothing else can.** `x/teeism` ISMs carry
+  `verifier_overrides` (`tx teeism set-verifier-overrides`): extra Intel roots, a collateral
+  grace window (at most 30 days), and `skip_dcap`, under which only the owner may submit. They
+  change with `tx teeism update-owner` too. The rotation scripts re-pin only ISMs the relayer
+  (Celestia) or `EVM_PRIVATE_KEY` (EVM) owns and replace the rest, so after a transfer the new
+  owner re-pins first ([ADMIN.md](deploy/ADMIN.md)).
 - **Rotating the enclave identity re-points routers, never redeploys them.** Redeploying a
   router orphans what it holds or minted; that once stranded real USDC on Sepolia.
 

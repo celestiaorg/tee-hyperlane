@@ -62,7 +62,8 @@ cd ~/tee-ism-nonzk/devnet
 ```
 
 An ISM the relayer key owns (on Celestia, and on EVM from contract `VERSION` 3) is re-pinned in
-place and keeps its id; 90 then has nothing to re-point. `80-evm-isms.sh` replaces an EVM ISM
+place and keeps its id; 90 then has nothing to re-point. An ISM whose ownership moved to a
+multisig is replaced instead, so re-pin it from the multisig first ([ADMIN](ADMIN.md#re-pin-the-enclave-identity)). `80-evm-isms.sh` replaces an EVM ISM
 whose `VERSION` is older than the source's, even when the enclave is unchanged, and then each
 router should print `repointing`. **If one prints `deploying the synthetic ... router`,
 press Ctrl-C.** A new router orphans the tokens the old one minted.
@@ -206,3 +207,9 @@ expected.
 
 `devnet/.env`, `devnet/.state/` and `keys/` are gitignored. Run `deploy/check-secrets.sh`
 before committing. If a key reaches GitHub, rotate it.
+
+## Intel's side breaks
+
+A quote that Intel's checks reject (expired collateral during a PCS outage, a TCB recovery, a
+root rotation) is not fixed by a re-pin. What the owner can do on each chain, and what needs a
+release: [ADMIN.md](ADMIN.md#when-something-breaks-live).

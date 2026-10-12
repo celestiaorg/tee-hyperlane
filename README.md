@@ -9,6 +9,7 @@ enclave's TDX quote directly. There is no zero-knowledge proof anywhere.
 |---|---|
 | [deploy/DEPLOY.md](deploy/DEPLOY.md) | standing up the whole bridge, step by step |
 | [deploy/MAINTAIN.md](deploy/MAINTAIN.md) | the monthly job, rolling out new code, diagnosing a route |
+| [deploy/ADMIN.md](deploy/ADMIN.md) | every owner control with its command, where its inputs come from, and what to do when Intel's side breaks |
 | [deploy/INTERACT.md](deploy/INTERACT.md) | wallets, sending, checking arrival, latency and cost |
 
 ## How it works
@@ -155,6 +156,11 @@ teeism-gas-oracle  systemd  paymaster upkeep
   `tx teeism update-identity` on Celestia swap the pinned identity and the last 32 bytes of the
   state, keeping the ISM's address, root and height. A new image, a platform update under it
   or a replacement enclave is one transaction per ISM, and no router moves.
+- **The owner can override Intel on Celestia, and hand the ISMs over.** `tx teeism
+  set-verifier-overrides` trusts a new Intel root, accepts collateral that lapsed within a grace
+  window, or skips Intel's verdict entirely (break glass, owner-submitted only).
+  `tx teeism update-owner` moves an ISM to a multisig. On EVM the same controls sit with the
+  Automata deployment's owner. All of it, with commands: [ADMIN.md](deploy/ADMIN.md).
 - **Rollups are attested from what their sequencer signed.** Base's sequencer signs every
   block on the OP Stack p2p network, Arbitrum's every feed message (which commits to the block
   hash), Eden's every header it posts to Celestia. The enclave checks the signature against the
@@ -170,8 +176,9 @@ teeism-gas-oracle  systemd  paymaster upkeep
 - **Not trusted:** RPCs, the relayer (it can stall, not forge), Phala beyond uptime, anything
   sent to the enclave.
 - **Risks:** a TDX break forges anything; one EOA owns the ISMs, routers and Automata roles,
-  and can re-pin any ISM to an enclave of its choosing. That is deliberate emergency control
-  for the testnet; it moves to a multisig before mainnet.
+  and can re-pin any ISM to an enclave of its choosing, or set a Celestia ISM to accept what
+  Intel would reject. That is deliberate emergency control for the testnet; it moves to a
+  multisig before mainnet (`update-owner` on Celestia, `transferOwnership` on EVM).
 
 ## Tests
 
