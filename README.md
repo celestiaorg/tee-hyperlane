@@ -9,6 +9,7 @@ enclave's TDX quote directly. There is no zero-knowledge proof anywhere.
 |---|---|
 | [deploy/DEPLOY.md](deploy/DEPLOY.md) | standing up the whole bridge, step by step |
 | [deploy/MAINTAIN.md](deploy/MAINTAIN.md) | the monthly job, rolling out new code, diagnosing a route |
+| [deploy/ADMIN.md](deploy/ADMIN.md) | every owner control with its command, where its inputs come from, and what to do when Intel's side breaks |
 | [deploy/INTERACT.md](deploy/INTERACT.md) | wallets, sending, checking arrival, latency and cost |
 
 ## How it works
@@ -94,14 +95,24 @@ igp        0x726f757465725f706f73745f6469737061746368000000040000000000000002
 | Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b000000000000003f` |
 | routing ISM over all four | `0x726f757465725f69736d00000000000000000000000000010000000000000035` |
 
-**Tokens.** Each asset has its collateral on its home chain and is a synthetic elsewhere.
+**Tokens.** Both assets start on Celestia and are synthetic on every EVM chain.
 
 | | collateral | synthetic |
 |---|---|---|
 | TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x9822eE81C82138F88D759faef1AC168aDfEe1467`<br>Arbitrum `0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB`<br>Base `0xF50470146B36c638b981e437AB37DfEd9a02FAb3`<br>Eden `0xD2babc9BE1055551b7AB98c440222862a1646158` |
-| USDC | Sepolia `0xfb611B6f6CE92033960e99C2D65cee4237e64cDD` (Circle's `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`) | Celestia `0x726f757465725f61707000000000000000000000000000020000000000000001`<br>Arbitrum `0x8C87fd144006C651430450df8b61A15EeB3FF436`<br>Base `0x285b590ee43A1374AA131e7390D0CA687Be43DF9`<br>Eden `0xc09fbf8F17E96ce746D39f9d11a9dD1813F2d220` |
+| teeUSD | none: minted on Celestia, as the synthetic `0x726f757465725f61707000000000000000000000000000020000000000000002` (denom `hyperlane/<that id>`) | Sepolia `0x1be2055d49c0a350C137605a62861f58Aa750297`<br>Arbitrum `0xF699EB10087A1e01993ed628C198fe6e231830eD`<br>Base `0xa8cc6ec4855b1415c03f3aE51953a3643f7991a5`<br>Eden `0xa4697140E90F39D94F3C64D40175FA6F207bc8EC` |
 
 Every route runs through Celestia, so EVM to EVM is two hops.
+
+**Pools.** One Uniswap v3 pool of synthetic TIA against synthetic teeUSD per chain, fee 0.3%,
+full range, seeded with 1M TIA and 500k teeUSD (TIA at 0.5 teeUSD). The deployer
+`0x318d22faa1e0f29eac7Ef644A8FaC676F6688d1e` owns each position.
+
+| chain | pool |
+|---|---|
+| Sepolia | `0x52E470FBe0B120FAcb9a8B6Efbfe58a6263d909D` |
+| Base | `0x6E828f3B976d456fe673d26bC0CBEA45838dD018` |
+| Arbitrum | `0xe4d1fc54f8B8AfFcD7e2ffF7dC00d000A5CC4FbF` |
 
 **Eden.** An evolve-stack chain. It had no Hyperlane deployment, so the mailbox and hook are
 ours.
@@ -138,9 +149,18 @@ teeism-gas-oracle  systemd  paymaster upkeep
 ## Design
 
 - **One image per origin, one CVM for all of them.** The shared CVM has one identity, so a
-  code change to any image replaces all 8 ISMs. A chain moved to its own CVM
-  (`30-enclave-up.sh --<chain>`) gets its own identity, and a change to it then replaces only
+  code change to any image re-pins all 8 ISMs. A chain moved to its own CVM
+  (`30-enclave-up.sh --<chain>`) gets its own identity, and a change to it then re-pins only
   the ISMs that chain attests.
+- **The owner re-pins an ISM in place.** `TeeDcapIsm.setEnclave` on EVM (revision 3) and
+  `tx teeism update-identity` on Celestia swap the pinned identity and the last 32 bytes of the
+  state, keeping the ISM's address, root and height. A new image, a platform update under it
+  or a replacement enclave is one transaction per ISM, and no router moves.
+- **The owner can update Intel's root CA on Celestia, and hand the ISMs over.** `tx teeism
+  set-verifier-overrides` trusts a new Intel root when Intel rotates it. Nothing skips or relaxes
+  Intel's verification.
+  `tx teeism update-owner` moves an ISM to a multisig. On EVM the same controls sit with the
+  Automata deployment's owner. All of it, with commands: [ADMIN.md](deploy/ADMIN.md).
 - **Rollups are attested from what their sequencer signed.** Base's sequencer signs every
   block on the OP Stack p2p network, Arbitrum's every feed message (which commits to the block
   hash), Eden's every header it posts to Celestia. The enclave checks the signature against the
@@ -149,12 +169,16 @@ teeism-gas-oracle  systemd  paymaster upkeep
 
 ## Trust
 
-- **Trusted:** Intel TDX, the pinned enclave identity, each ISM's starting state, on EVM
+- **Trusted:** Intel TDX, the pinned enclave identity and the key that may re-pin it, each
+  ISM's starting state, on EVM
   chains our Automata contracts, and the Base, Arbitrum and Eden sequencer keys: a sequencer
   that signs a wrong state root, or a block it later reorgs away, is believed.
 - **Not trusted:** RPCs, the relayer (it can stall, not forge), Phala beyond uptime, anything
   sent to the enclave.
-- **Risks:** a TDX break forges anything; one EOA owns the ISMs, routers and Automata roles.
+- **Risks:** a TDX break forges anything; one EOA owns the ISMs, routers and Automata roles,
+  and can re-pin any ISM to an enclave of its choosing, or set a Celestia ISM to accept what
+  Intel would reject. That is deliberate emergency control for the testnet; it moves to a
+  multisig before mainnet (`update-owner` on Celestia, `transferOwnership` on EVM).
 
 ## Tests
 

@@ -1,4 +1,4 @@
-// The devnet faucet: a fixed grant of TIA, once per address.
+// The devnet faucet: a fixed grant of TIA and teeUSD, once per address.
 //
 // It asks the relayer API rather than signing anything here. The grant comes out of an
 // account on the deployment host, so the browser's only job is to name a recipient.
@@ -16,8 +16,9 @@ export function FaucetView({
   onFunded: () => void;
   onConnect: () => void;
 }) {
-  const [amount, setAmount] = useState<number | null>(null);
+  const [grants, setGrants] = useState<{ symbol: string; amount: number; decimals: number }[]>([]);
   const [enabled, setEnabled] = useState(true);
+  const [paused, setPaused] = useState<string | null>(null);
   const [claimed, setClaimed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
@@ -30,7 +31,12 @@ export function FaucetView({
       .then((d) => {
         if (!live) return;
         setEnabled(Boolean(d.enabled));
-        setAmount(Number(d.amountTia));
+        setPaused(d.paused ?? null);
+        setGrants(
+          Array.isArray(d.grants) && d.grants.length
+            ? d.grants
+            : [{ symbol: "TIA", amount: Number(d.amountTia ?? 1000) * 1e6, decimals: 6 }],
+        );
       })
       .catch(() => live && setEnabled(false));
     return () => {
@@ -77,7 +83,11 @@ export function FaucetView({
     }
   }, [address, onFunded]);
 
-  const grant = amount ?? 1000;
+  const shown = grants.map((g) => ({
+    symbol: g.symbol,
+    whole: (g.amount / 10 ** (g.decimals ?? 6)).toLocaleString(),
+  }));
+  const label = shown.map((g) => `${g.whole} ${g.symbol}`).join(" and ");
 
   return (
     <div className="faucet-grid">
@@ -87,12 +97,16 @@ export function FaucetView({
         </header>
         {!enabled ? (
           <p className="notice">The faucet is not configured on this deployment.</p>
+        ) : paused ? (
+          <p className="notice">{paused}</p>
         ) : (
           <>
-            <div className="grant">
-              <span className="grant-amount">{grant}</span>
-              <span className="grant-unit">TIA</span>
-            </div>
+            {shown.map((g) => (
+              <div className="grant" key={g.symbol}>
+                <span className="grant-amount">{g.whole}</span>
+                <span className="grant-unit">{g.symbol}</span>
+              </div>
+            ))}
             <p className="hint">On {CHAINS.celestia.name}, once per address.</p>
 
             <label className="recipient">
@@ -108,7 +122,7 @@ export function FaucetView({
               <p className="notice">This address has already claimed.</p>
             ) : (
               <button className="primary" disabled={busy || (claimed && !txHash)} onClick={claim}>
-                {busy ? "Sending…" : `Claim ${grant} TIA`}
+                {busy ? "Sending…" : `Claim ${label}`}
               </button>
             )}
 
@@ -132,7 +146,8 @@ export function FaucetView({
         </header>
         <p className="hint">
           Every route has {CHAINS.celestia.name} on one side. TIA leaves Celestia as collateral and arrives as a
-          synthetic on the other chain; sending it back burns the synthetic and releases the collateral.
+          synthetic on the other chain; sending it back burns the synthetic and releases the collateral. teeUSD
+          is what every pool in Trade is quoted in.
         </p>
         <ul className="route-list">
           {ALL_CHAINS.filter((c) => c !== "celestia").map((c) => (

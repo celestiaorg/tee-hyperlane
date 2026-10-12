@@ -29,7 +29,7 @@ For UI changes, also rebuild the UI ([DEPLOY step 11](DEPLOY.md#11-ui-and-gatewa
 ## Update: enclave code
 
 For changes to `crates/tee-node`, `crates/hyperlane-types` or `Cargo.lock`. A changed enclave
-gives its CVM a new identity, and every ISM that CVM attests needs replacing. With all five
+gives its CVM a new identity, and every ISM that CVM attests needs re-pinning. With all five
 chains in the shared CVM that is all 8 ISMs; a chain running in its own CVM (see
 [One chain in its own CVM](#one-chain-in-its-own-cvm)) only moves its own. The scripts only
 redo what changed.
@@ -61,9 +61,12 @@ cd ~/tee-ism-nonzk/devnet
 ./scripts/75-dcap-verifiers.sh && ./scripts/80-evm-isms.sh && ./scripts/85-celestia-isms.sh && ./scripts/90-evm-warp.sh
 ```
 
-`80-evm-isms.sh` also replaces an EVM ISM whose contract `VERSION` is older than the source's,
-even when the enclave is unchanged. Each router should print `repointing`. **If one prints `deploying the collateral USDC router`,
-press Ctrl-C.** A new collateral router strands the USDC held in the old one.
+An ISM the relayer key owns (on Celestia, and on EVM from contract `VERSION` 3) is re-pinned in
+place and keeps its id; 90 then has nothing to re-point. An ISM whose ownership moved to a
+multisig is replaced instead, so re-pin it from the multisig first ([ADMIN](ADMIN.md#re-pin-the-enclave-identity)). `80-evm-isms.sh` replaces an EVM ISM
+whose `VERSION` is older than the source's, even when the enclave is unchanged, and then each
+router should print `repointing`. **If one prints `deploying the synthetic ... router`,
+press Ctrl-C.** A new router orphans the tokens the old one minted.
 
 **5. Start**
 
@@ -125,7 +128,8 @@ shared CVM keeps serving the rest.
 
 ## No message is lost
 
-When a script replaces an ISM, the new one starts from the old one's last state, with only the
+A re-pin swaps only the identity in the ISM's state, so the route carries on from where it was.
+When a script replaces an ISM instead, the new one starts from the old one's last state, with only the
 enclave identity (its last 32 bytes) swapped. The route picks up exactly where it stopped, so
 every message in flight is still delivered. If the old state can't be read, the script stops
 instead of starting from the head.
@@ -156,7 +160,8 @@ from either that waits more than a few minutes is stuck: check the symptoms belo
 | `TCBR` right after the monthly job | Intel moved on; deploy a new versioned FMSPC DAO per chain |
 | `WrongEnclave`, `IdentityChanged` | a route points at the wrong enclave; check the urls from `write_config` |
 | `unknown command "teeism"` | the unit's PATH must start with `.state/bin` |
-| `eth_getProof` fails at an old height | use an archive endpoint ([DEPLOY D](DEPLOY.md#d-endpoints)) |
+| `eth_getProof` fails at an old height | use an archive endpoint ([DEPLOY E](DEPLOY.md#e-endpoints)) |
+| Sepolia: `eth_getProof` … `operation timed out` against `127.0.0.1:8545` | the trusted height drifted too far back for the full node, which rebuilds old state from the head. `max_lag` (from `write_config`) prevents it; to recover at once, point `SEPOLIA_RPC` at an archive for one pass |
 | a Celestia-origin ISM stuck, trusted commit missing | the chain was pruned; replace the ISM |
 | `no enrolled router found` | run `90-evm-warp.sh` |
 | random `nonce too low` | another relayer uses the same EVM key |
@@ -164,6 +169,10 @@ from either that waits more than a few minutes is stuck: check the symptoms belo
 | UI shows `Failed to fetch` | the UI was built with the wrong `.env.local`; rebuild on the host |
 | `discarding a batch` | nothing; it rebuilds by itself |
 | `carrying sync committee updates` every tick | nothing; the ISM is behind and catches up when a batch lands |
+| Sepolia: `GLOAS_FORK_VERSION missing` | the beacon node has no Gloas; point `SEPOLIA_BEACON` at Lodestar ([DEPLOY 6b](DEPLOY.md#6b-sepolia-node)) |
+| Sepolia: `no finalized checkpoint … rebuilds this ISM's light-client store` | the relayer keeps every store it makes in `.state/proofs/chains/sepolia/store-*.json` and rebuilds from those first; Lodestar serves a Gloas bootstrap only for its newest checkpoint. If that file is gone, re-anchor the Sepolia ISM |
+| Sepolia deliveries: `ClockBehindAttest` | the node deliveries are sent through trails the chain; `send_rpc` (`SEPOLIA_SEND_RPC`) has to be at the head |
+| Sepolia: `finality update rejected: invalid sync committee period` | a period boundary between the finalized header and its signature; the relayer carries the committee update for it since `7b51626`; before that it cleared within 20 minutes |
 | `error decoding response body` once | a flaky RPC; nothing, unless it repeats |
 | Eden: `no celestia header in the last 400 rebuilds this ISM's store` | the `da-heights` hint is gone; restore `.state/proofs/chains/eden/` from a backup |
 | Eden: `no celestia block … carries an eden header at a height we hold a proof for` | normal for a few minutes after a restart; if it persists, check that mocha-light is synced |
@@ -198,3 +207,9 @@ expected.
 
 `devnet/.env`, `devnet/.state/` and `keys/` are gitignored. Run `deploy/check-secrets.sh`
 before committing. If a key reaches GitHub, rotate it.
+
+## Intel's side breaks
+
+A quote that Intel's checks reject (expired collateral during a PCS outage, a TCB recovery, a
+root rotation) is not fixed by a re-pin. What the owner can do on each chain, and what needs a
+release: [ADMIN.md](ADMIN.md#when-something-breaks-live).

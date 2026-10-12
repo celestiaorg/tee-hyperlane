@@ -4,9 +4,11 @@ use alloy_primitives::{Address, B256};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use helios_consensus_core::types::{
-    Bootstrap, FinalityUpdate, Fork, Forks, LightClientStore, Update,
+    Bootstrap, FinalityUpdate, Fork, Forks, LightClientHeader, LightClientStore, Update,
 };
-use helios_consensus_core::{apply_bootstrap, verify_bootstrap};
+use helios_consensus_core::{
+    apply_bootstrap, apply_finality_update, apply_update, verify_bootstrap,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tee_node::chains::l1::ethereum::{EthereumStore, Spec, ETHEREUM, TREE_SLOT};
@@ -25,6 +27,9 @@ const SLOTS_PER_SYNC_PERIOD: u64 = 256 * SLOTS_PER_EPOCH;
 /// A recovery path, not the normal one: a healthy route finds its store from a hint in one
 /// request. 512 epochs is a bit over two days, which is how stale a stuck route may be.
 const MAX_CHECKPOINT_SEARCH_EPOCHS: u64 = 512;
+/// How many stores to keep on disk. Each is about 100 KB, and only the one the ISM is at is
+/// ever needed; a few more cover a step that was built but did not land.
+const STORES_KEPT: usize = 16;
 
 /// `[chains.<name>]` for an Ethereum chain.
 #[derive(Deserialize)]
@@ -88,6 +93,7 @@ impl Ethereum {
     pub async fn l1_step(&self, trusted: &IsmState) -> Result<Option<L1Step>> {
         let (store, used) = self.rebuild_store(trusted).await?;
         let finality = self.beacon.finality_update().await?;
+        let store_before = store.clone();
 
         // A light-client bootstrap exists only for a checkpoint on an epoch boundary. When that
         // slot is empty the finalized checkpoint keeps the root of the block before it, which no
@@ -107,8 +113,15 @@ impl Ethereum {
         // Committee updates bridge any sync-committee period boundary since the store's last
         // update. Without them the finality update is refused once a period has passed, which
         // wedged every Ethereum-backed route roughly daily before this was carried.
+        //
+        // Counted to the period the finality update is *signed* in, not the one it finalizes:
+        // the signature trails the finalized header by about two epochs, so for those minutes
+        // after a boundary it is already in the next period. A store rebuilt from a bootstrap
+        // does not know the next committee, and the enclave refused every such update as
+        // `invalid sync committee period` until the finalized header crossed too.
         let from = store.store.finalized_header.beacon().slot / SLOTS_PER_SYNC_PERIOD;
-        let to = slot / SLOTS_PER_SYNC_PERIOD;
+        let to =
+            (slot / SLOTS_PER_SYNC_PERIOD).max(*finality.signature_slot() / SLOTS_PER_SYNC_PERIOD);
         let committee_updates = if to > from {
             debug!(periods = to - from, "carrying sync committee updates");
             self.beacon.updates(from, to - from).await?
@@ -125,18 +138,71 @@ impl Ethereum {
         );
         self.remember(&[&next, &used]);
 
-        let execution = finality
-            .finalized_header()
-            .execution()
-            .map_err(|_| anyhow::anyhow!("finalized header has no execution payload"))?;
+        // The store the ISM moves to if this step lands, worked out here exactly as the enclave
+        // will and kept on disk. A beacon node cannot be relied on to rebuild it later: Lodestar
+        // serves a Gloas bootstrap for its newest finalized checkpoint only.
+        let mut next = store_before;
+        for update in &committee_updates {
+            apply_update::<Spec>(&mut next.store, update);
+        }
+        apply_finality_update::<Spec>(&mut next.store, &finality);
+        self.keep_store(&next, &trusted.lc_store_commit);
+
+        let (block, state_root, execution_header) =
+            self.execution_of(finality.finalized_header()).await?;
         Ok(Some(L1Step {
-            block: *execution.block_number(),
-            state_root: *execution.state_root(),
+            block,
+            state_root,
             input: json!({
                 "store": store,
                 "updates": { "committee_updates": committee_updates, "finality_update": finality },
+                "execution_header": execution_header,
             }),
         }))
+    }
+
+    /// The execution block a finalized beacon header lands on. Before Gloas the header carries
+    /// it; from Gloas it names it by hash, and the enclave needs the header RLP to check that.
+    async fn execution_of(
+        &self,
+        header: &LightClientHeader,
+    ) -> Result<(u64, B256, Option<String>)> {
+        if let LightClientHeader::Gloas(h) = header {
+            let (rlp, block) = self.rpc.header_rlp(h.execution_block_hash).await?;
+            let number = crate::origin::evm::quantity(&block["number"])?;
+            let state_root: B256 = block["stateRoot"].as_str().context("stateRoot")?.parse()?;
+            return Ok((number, state_root, Some(format!("0x{}", hex::encode(rlp)))));
+        }
+        let execution = header
+            .execution()
+            .map_err(|_| anyhow::anyhow!("finalized header has no execution payload"))?;
+        Ok((*execution.block_number(), *execution.state_root(), None))
+    }
+
+    /// Keep a store on disk under its commitment, for `rebuild_store` to find first. Older
+    /// ones are dropped, never the one the ISM is at (`current`): a quiet route sits on one
+    /// store for hours while a new candidate is kept every epoch, and dropping it by age once
+    /// left the route with nothing to rebuild from.
+    fn keep_store(&self, store: &EthereumStore, current: &[u8; 32]) {
+        let name = store_file(&store.commitment());
+        if self.cache.read(&name).is_none() {
+            let Ok(text) = serde_json::to_string(store) else {
+                return;
+            };
+            self.cache.write(&name, &text);
+        }
+        let index = self.cache.read("stores").unwrap_or_default();
+        let (kept, gone) = retain(index.lines(), &name, &store_file(current), STORES_KEPT);
+        for file in gone {
+            let _ = std::fs::remove_file(self.cache.path(&file));
+        }
+        self.cache.write("stores", &kept.join("\n"));
+    }
+
+    fn kept_store(&self, commitment: &[u8; 32]) -> Option<EthereumStore> {
+        let text = self.cache.read(&store_file(commitment))?;
+        let store: EthereumStore = serde_json::from_str(&text).ok()?;
+        (store.commitment() == *commitment).then_some(store)
     }
 
     fn remember(&self, checkpoints: &[&str]) {
@@ -158,6 +224,14 @@ impl Ethereum {
     /// checkpoints. Every candidate is checked against the commitment, so a wrong hint costs a
     /// request and nothing else.
     async fn rebuild_store(&self, trusted: &IsmState) -> Result<(EthereumStore, String)> {
+        // The store itself, kept when it was made, before any beacon request.
+        if let Some(store) = self.kept_store(&trusted.lc_store_commit) {
+            let root = format!(
+                "0x{}",
+                hex::encode(store.store.finalized_header.beacon().tree_hash_root())
+            );
+            return Ok((store, root));
+        }
         let mut hints: Vec<String> = self
             .cache
             .read("checkpoints")
@@ -169,8 +243,14 @@ impl Ethereum {
         if trusted.origin_domain == ETHEREUM.domain {
             let genesis = self.beacon.genesis().await?.0;
             let slot = trusted.timestamp.saturating_sub(genesis) / SECONDS_PER_SLOT;
-            if let Ok(root) = self.beacon.block_root(slot).await {
-                hints.push(root);
+            // Before Gloas the execution block is the checkpoint's own slot. From Gloas it is
+            // the last payload revealed before the checkpoint, so the checkpoint is the next
+            // epoch boundary after it.
+            let next = (slot / SLOTS_PER_EPOCH + 1) * SLOTS_PER_EPOCH;
+            for s in [slot, next] {
+                if let Ok(root) = self.beacon.block_root(s).await {
+                    hints.push(root);
+                }
             }
         }
         for checkpoint in &hints {
@@ -282,7 +362,14 @@ impl Indexer for Ethereum {
 
     async fn bootstrap(&self, identity: [u8; 32], _height: Option<u64>) -> Result<IsmState> {
         let store = self.genesis_store().await?;
-        let root = store.root()?;
+        // Kept now: the `genesis` command that anchors an ISM is the only time this store is
+        // built, and within an epoch no beacon node may serve its bootstrap again.
+        self.keep_store(&store, &store.commitment());
+        let (_, _, header) = self.execution_of(&store.store.finalized_header).await?;
+        let header = header
+            .map(|h| hex::decode(h.trim_start_matches("0x")))
+            .transpose()?;
+        let root = store.root(header.as_deref())?;
         Ok(IsmState {
             state_root: root.state_root.0,
             origin_domain: ETHEREUM.domain,
@@ -291,6 +378,55 @@ impl Indexer for Ethereum {
             lc_store_commit: store.commitment(),
             identity_digest: identity,
         })
+    }
+}
+
+fn store_file(commitment: &[u8; 32]) -> String {
+    format!("store-{}.json", hex::encode(commitment))
+}
+
+/// The store index after adding `newest`: newest first, `current` always kept, at most `limit`
+/// entries. Returns what stays and what to delete.
+fn retain<'a>(
+    index: impl Iterator<Item = &'a str>,
+    newest: &str,
+    current: &str,
+    limit: usize,
+) -> (Vec<String>, Vec<String>) {
+    let mut kept = vec![newest.to_string()];
+    if current != newest {
+        kept.push(current.to_string());
+    }
+    let mut gone = Vec::new();
+    for old in index.filter(|o| !o.is_empty() && *o != newest && *o != current) {
+        if kept.len() < limit {
+            kept.push(old.to_string());
+        } else {
+            gone.push(old.to_string());
+        }
+    }
+    (kept, gone)
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::retain;
+
+    /// Hours of new candidates never push out the store the ISM is at.
+    #[test]
+    fn the_current_store_outlives_any_number_of_newer_ones() {
+        let mut index: Vec<String> = vec!["anchor".into()];
+        for epoch in 0..100 {
+            let newest = format!("next-{epoch}");
+            let (kept, gone) = retain(index.iter().map(String::as_str), &newest, "anchor", 16);
+            assert!(kept.contains(&"anchor".to_string()));
+            assert!(!gone.contains(&"anchor".to_string()));
+            assert!(kept.len() <= 16);
+            index = kept;
+        }
+        // Once the ISM moves, the old anchor can go like any other.
+        let (kept, _) = retain(index.iter().map(String::as_str), "next-100", "next-99", 16);
+        assert!(kept.len() <= 16 && kept.contains(&"next-99".to_string()));
     }
 }
 
@@ -430,7 +566,76 @@ impl Beacon {
                 deneb: fork("DENEB")?,
                 electra: fork("ELECTRA")?,
                 fulu: fork("FULU")?,
+                // Gloas: only a beacon node with Gloas light-client support lists it; one
+                // without (lighthouse 8.3) fails here rather than serving updates we refuse.
+                gloas: fork("GLOAS")?,
             },
         ))
+    }
+}
+
+/// Against a Gloas beacon node and an execution node at the head, with no cache: anchor, rebuild
+/// from the ISM state alone, wait for finality to move, and run the enclave's check on the step.
+/// `BEACON=<lodestar> RPC=<sepolia> cargo test -p tee-coprocessor gloas_live -- --ignored --nocapture`
+#[cfg(test)]
+mod live {
+    use super::*;
+    use tee_node::origin::Origin;
+
+    #[tokio::test]
+    #[ignore]
+    async fn gloas_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            domain: ETHEREUM.domain,
+            rpc: std::env::var("RPC").unwrap(),
+            archive_rpc: None,
+            send_rpc: None,
+            beacon_rpc: Some(std::env::var("BEACON").unwrap()),
+            mailbox: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766"
+                .parse()
+                .unwrap(),
+            merkle_tree_hook: "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d"
+                .parse()
+                .unwrap(),
+            checkpoint: None,
+        };
+        let eth = Ethereum::new(config, Cache::new(dir.path().to_path_buf())).unwrap();
+        let trusted = eth.bootstrap([0; 32], None).await.unwrap();
+        println!(
+            "anchored at block {} ({})",
+            trusted.height, trusted.timestamp
+        );
+
+        let (_, checkpoint) = eth.rebuild_store(&trusted).await.unwrap();
+        println!("rebuilt from {checkpoint} with no cache");
+
+        for _ in 0..30 {
+            if let Some(step) = eth.l1_step(&trusted).await.unwrap() {
+                if step.block > trusted.height {
+                    let head = tee_node::chains::l1::ethereum::Ethereum
+                        .verify(step.input, &trusted)
+                        .unwrap();
+                    println!("enclave accepted block {} root {}", head.height, head.root);
+                    assert_eq!(head.height, step.block);
+                    assert_eq!(head.root, step.state_root);
+                    // Where the ISM now is: rebuilt from the kept store, since the beacon node
+                    // no longer serves a bootstrap for any Gloas checkpoint but its newest.
+                    let next = IsmState {
+                        state_root: head.root.0,
+                        height: head.height,
+                        timestamp: head.timestamp,
+                        lc_store_commit: head.store_commit,
+                        ..trusted
+                    };
+                    let (store, _) = eth.rebuild_store(&next).await.unwrap();
+                    assert_eq!(store.commitment(), head.store_commit);
+                    println!("rebuilt the advanced store from disk");
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+        panic!("finality did not move in 15 minutes");
     }
 }

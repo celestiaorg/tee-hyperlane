@@ -33,11 +33,12 @@ over HTTPS. Update it with `git pull`; `devnet/.env` and `devnet/.state/` there 
 - a mocha light node (`mocha-light`), which only the Eden origin needs
 - nginx gateway on `:3000` exposing `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`
 - eight routes: Celestia to and from each of Sepolia, Arbitrum, Base and Eden
-- two tokens: TIA (Celestia collateral, synthetic on EVM) and USDC (Sepolia collateral,
-  synthetic elsewhere)
+- two tokens: TIA (Celestia collateral, synthetic on EVM) and teeUSD (ours, a fixed 1B
+  minted on Celestia, synthetic everywhere), and a TIA/teeUSD Uniswap v3 pool on Sepolia,
+  Base and Arbitrum. The Trade tab and `/api/v1/trade` route swaps through them
 - **five images**, one per origin (`celestia`, `ethereum`, `base`, `arbitrum`, `eden`), all
   in **one shared CVM** by default, each on its own port (8080 to 8084). They share that CVM's
-  identity, so a change to any image replaces all 8 ISMs. `30-enclave-up.sh --<chain>` moves a
+  identity, so a change to any image re-pins all 8 ISMs. `30-enclave-up.sh --<chain>` moves a
   chain into its own CVM with its own identity. Until the rollout of the shared CVM, ark still
   runs the old three per-family CVMs (`celestia`, `ethereum`, `evolve`)
 
@@ -48,8 +49,10 @@ over HTTPS. Update it with `git pull`; `devnet/.env` and `devnet/.state/` there 
 | `README.md` | every live id and identity, the design, the trust model |
 | `deploy/DEPLOY.md` | standing up a whole bridge, step by step; adding an asset or a chain |
 | `deploy/MAINTAIN.md` | the monthly job, rolling out new code, waiting vs stuck, symptoms |
+| `deploy/ADMIN.md` | every owner control and its command, payload sources, what is fixable live when Intel breaks |
 | `deploy/INTERACT.md` | wallets, sending, checking arrival, latency and cost |
-| `deploy/API.md` | the relayer's `/api/v1`: endpoints, transfer statuses, notification kinds |
+| `deploy/API.md` | the relayer's `/api/v1`: endpoints, transfer statuses, notification kinds, and the venue under `/api/v1/trade` |
+| `mcp/` | the MCP server agents use for the venue; its docs are the Trade tab's Docs (Agents) |
 | `deploy/coprocessor.toml.example` | the deployed chains and routes, verbatim but for the one key |
 | `deploy/images.lock` | which Nix build each pinned image came from; `30-enclave-up.sh` refuses to deploy when it and the code disagree |
 | `deploy/verify-digest.sh` | compose file to `compose_hash` to `mr_config_id`, against the signed quote |
@@ -84,6 +87,11 @@ endpoint is a free public one.
 - **v5 quotes: EVM yes, Celestia not yet.** Phala emits v4 TDX quotes today. `TeeDcapIsm`
   (`VERSION` 2) and `75-dcap-verifiers.sh` accept v5 as well, but `x/teeism` still casts to
   `QuoteV4`, so a host switch to v5 would stop the four routes into Celestia until it changes.
+- **Sepolia is past Glamsterdam (Gloas), and its light client is ours.** From slot 11296768 a
+  beacon light-client header names its execution block only by hash, so the relayer sends that
+  header's RLP and the enclave checks its keccak. helios has no Gloas: it is vendored in
+  `crates/helios-consensus-core` with the changes marked `Gloas:`. Only Lodestar serves Gloas
+  light-client data, so ark's Sepolia beacon node is Lodestar, not lighthouse.
 - **Eden runs Osaka, not Prague.** Simple transfers execute the same under both, so the first
   fixtures passed on Prague and proved nothing; a DCAP verification does not, because P-256
   verification is an Osaka precompile. Under Prague it reverts with empty data.
@@ -92,12 +100,24 @@ endpoint is a free public one.
   alone; but the shared CVM's compose hash covers every digest, so its identity moves anyway.
   The split only saves ISMs for a chain deployed alone. `Cargo.lock` and the shared modules
   (`attest.rs`, `origin.rs`, `state.rs`, `evm.rs`) move every digest.
-- **A replacement ISM resumes, it never re-anchors.** `80-evm-isms.sh` and
-  `85-celestia-isms.sh` start a replacement from the old ISM's last state with only the identity
-  (last 32 bytes) swapped, so nothing in flight is lost, and stop rather than fall back to the
-  head. Only a first deploy anchors at the head.
+- **A rotation re-pins, it never re-anchors.** The owner key re-pins an ISM it owns in place
+  (`setEnclave` on EVM from revision 3, `tx teeism update-identity` on Celestia), swapping only
+  the identity and the state's last 32 bytes. `80-evm-isms.sh` and `85-celestia-isms.sh` do
+  that; only an ISM we do not own, or a contract revision change on EVM, gets a replacement,
+  which starts from the old ISM's last state and stops rather than fall back to the head.
+  Only a first deploy anchors at the head.
+- **Launched tokens are anyone's, and the relayer carries them.** A `TeeTokenFactory` per venue
+  chain makes their routers and keeps ownership, so `90-evm-warp.sh` re-points them on a rotation.
+  The trade API lists a token once the hub shows it renounced and wired, and adds its routers to
+  `.state/proofs/launched.json`, which `worth_attesting` and the tracker accept beside `routers`.
+- **The owner can update Intel's root CA on Celestia; nothing else can.** `x/teeism` ISMs carry
+  `verifier_overrides` (`tx teeism set-verifier-overrides --trusted-root-cert`). Nothing skips
+  or relaxes Intel's verification. They
+  change with `tx teeism update-owner` too. The rotation scripts re-pin only ISMs the relayer
+  (Celestia) or `EVM_PRIVATE_KEY` (EVM) owns and replace the rest, so after a transfer the new
+  owner re-pins first ([ADMIN.md](deploy/ADMIN.md)).
 - **Rotating the enclave identity re-points routers, never redeploys them.** Redeploying a
-  collateral router abandons its escrow; that stranded real USDC on Sepolia once.
+  router orphans what it holds or minted; that once stranded real USDC on Sepolia.
 
 ## Hard constraints
 
