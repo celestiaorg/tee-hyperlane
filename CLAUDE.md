@@ -110,9 +110,9 @@ endpoint is a free public one.
   chain makes their routers and keeps ownership, so `90-evm-warp.sh` re-points them on a rotation.
   The trade API lists a token once the hub shows it renounced and wired, and adds its routers to
   `.state/proofs/launched.json`, which `worth_attesting` and the tracker accept beside `routers`.
-- **The owner can override Intel on Celestia; nothing else can.** `x/teeism` ISMs carry
-  `verifier_overrides` (`tx teeism set-verifier-overrides`): extra Intel roots, a collateral
-  grace window (at most 30 days). Nothing skips Intel's verification. They
+- **The owner can update Intel's root CA on Celestia; nothing else can.** `x/teeism` ISMs carry
+  `verifier_overrides` (`tx teeism set-verifier-overrides --trusted-root-cert`). Nothing skips
+  or relaxes Intel's verification. They
   change with `tx teeism update-owner` too. The rotation scripts re-pin only ISMs the relayer
   (Celestia) or `EVM_PRIVATE_KEY` (EVM) owns and replace the rest, so after a transfer the new
   owner re-pins first ([ADMIN.md](deploy/ADMIN.md)).

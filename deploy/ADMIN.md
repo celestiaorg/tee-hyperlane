@@ -4,10 +4,10 @@ What the owner key can change on a live deployment, with the command for each an
 inputs come from. [MAINTAIN.md](MAINTAIN.md) covers routine rotations; this file is the reference
 for every owner control, and for what to do when something on Intel's side breaks.
 
-The owner is a trust root. Every control below lets it change what an ISM accepts, and the
-Intel-side overrides let it accept collateral Intel has let lapse or a root Intel has rotated.
-Nothing lets it skip Intel's verification: every attestation must carry a quote that verifies
-against a trusted root. Move ownership to a multisig before mainnet ([Celestia](#transfer-ownership), [EVM](#evm-transfer-ownership)).
+The owner is a trust root: it decides which enclave an ISM trusts and, on Celestia, which Intel
+root CA quotes must chain to. Nothing lets it skip or relax Intel's verification: every
+attestation must carry a quote that fully verifies, with unexpired collateral, against a trusted
+root. Move ownership to a multisig before mainnet ([Celestia](#transfer-ownership), [EVM](#evm-transfer-ownership)).
 
 ## Who the owner is
 
@@ -23,11 +23,10 @@ against a trusted root. Move ownership to a multisig before mainnet ([Celestia](
 | Re-pin the enclave identity (new image, platform update, replacement CVM) | `tx teeism update-identity` | `setEnclave` (ISM `VERSION` 3+) |
 | Transfer ownership | `tx teeism update-owner` | `transferOwnership` |
 | Trust a new Intel root CA | `set-verifier-overrides --trusted-root-cert` | new PCCS `PcsDao` (the root key hash is a constant in it) |
-| Accept collateral Intel has not refreshed in time | `set-verifier-overrides --collateral-grace` | none: `seed-evm-collateral.sh` needs Intel's fresh collateral |
 | Support a new quote version | needs a celestia-app upgrade | `setQuoteVerifier` (`75-dcap-verifiers.sh` adds v5) |
 | Stop an ISM accepting anything new | re-pin to an identity no enclave has | `setEnclave` to measurements no enclave has |
 
-Re-pinning is all a normal rotation needs. The overrides are for incidents.
+Re-pinning is all a normal rotation needs. Updating the root CA is for when Intel rotates it.
 
 ## Setup
 
@@ -69,7 +68,7 @@ $A tx teeism update-identity $ISM /tmp/identity.json --from relayer $TX
 
 ### Transfer ownership
 
-Hands every owner control (re-pinning, overrides) to the new owner. The old owner keeps none.
+Hands every owner control (re-pinning, the root CA) to the new owner. The old owner keeps none.
 There is no renouncing: an ISM always has an owner who can act in an emergency.
 
 ```sh
@@ -93,20 +92,10 @@ $A tx broadcast signed.json --node http://localhost:26657
 replacement ISM, owned by `relayer`, and re-points the route. After a transfer, re-pin from the
 multisig as above before running the script, so it finds the ISM already on the new identity.
 
-### Override Intel's side of verification
+### Update the Intel root CA
 
-One command sets all overrides at once; flags left out are switched off, and `--clear` switches
-everything off. Every change emits `EventSetVerifierOverrides` with the before and after.
-
-```sh
-$A tx teeism set-verifier-overrides $ISM --collateral-grace 72h --from relayer $TX
-$A tx teeism set-verifier-overrides $ISM --clear --from relayer $TX
-```
-
-**`--collateral-grace <duration>`**, at most `720h`. A quote that fails at block time is verified
-again as of that long ago, so collateral and certificates that lapsed within the window still
-pass. For an Intel PCS outage or a lag in publishing collateral. No payload. It also means a
-platform Intel revoked within the window is still accepted, so keep it as short as the outage.
+Each call replaces the previous setting, and `--clear` goes back to the root built into the
+verifier. Every change emits `EventSetVerifierOverrides` with the before and after.
 
 **`--trusted-root-cert <file>`**, repeatable, PEM or DER. Replaces the Intel SGX Root CA built
 into the verifier. For a root rotation where Intel keeps the root's name and key type
@@ -121,10 +110,11 @@ chain is URL-encoded PEM). Check the fingerprint against Intel's announcement be
 curl -sO https://certificates.trustedservices.intel.com/Intel_SGX_Provisioning_Certification_RootCA.cer
 openssl x509 -inform der -in Intel_SGX_Provisioning_Certification_RootCA.cer -noout -subject -fingerprint -sha256
 $A tx teeism set-verifier-overrides $ISM --trusted-root-cert Intel_SGX_Provisioning_Certification_RootCA.cer --from relayer $TX
+$A tx teeism set-verifier-overrides $ISM --clear --from relayer $TX     # back to the built-in root
 ```
 
-There is no override that skips Intel's verification. A platform Intel rates below `UpToDate`
-cannot be let through by the owner; see [TCB recovery](#tcb-recovery).
+Whoever holds the owner key could install a root of their own here, as they could re-pin to an
+enclave of their own. That is why the owner should be a multisig.
 
 ### Stop an ISM
 
@@ -220,11 +210,8 @@ do not change, so re-pinning does not help.
   On Celestia nothing else is needed. On EVM, the PCCS DAOs are bound to one evaluation number
   (`TCB_EVALUATION_NUMBER()`), so deploy the DAOs for the new number, register them on the
   `PCCSRouter` (owner only) and seed them.
-- **Celestia only, to buy time:** the ISM checks that Intel signed the TCB info, not which
-  number it is, and Intel keeps serving older numbers. A relayer that fetches the previous number
-  keeps verifying. `teeism-collateral` does not take a number yet.
-- **EVM:** no equivalent. The ISM verifies against Automata's standard number, chosen by block
-  time, so the routes stop until the host is patched and the new DAOs are wired.
+- Until then the routes stop on both chains. Ask Phala ahead of the date whether the hosts have
+  taken the recovery.
 
 ## When something breaks live
 
@@ -234,8 +221,8 @@ What can be fixed by the owner on a running deployment, and what needs a new rel
 |---|---|---|
 | New enclave image, OS or platform update, replacement CVM | re-pin | re-pin (`VERSION` 3+), else replace and re-point |
 | Intel publishes fresh collateral as usual | nothing to do: the relayer ships it with every submission | the monthly `seed-evm-collateral.sh` |
-| Intel's PCS is down or late, collateral expires | `--collateral-grace` (up to 30 days), then routes stop until Intel is back | routes stop 30 days after the last seed; seed once Intel is back |
-| A TCB recovery leaves the platform `OutOfDate` ([details](#tcb-recovery)) | routes stop until the host is patched; a relayer fetching the previous evaluation number bridges it | routes stop until the host is patched and the new DAOs are deployed and wired |
+| Intel's PCS is down or late, collateral expires | routes stop until Intel publishes again; then nothing to do | routes stop 30 days after the last seed; seed once Intel is back |
+| A TCB recovery leaves the platform `OutOfDate` ([details](#tcb-recovery)) | routes stop until the host is patched | routes stop until the host is patched and the new DAOs are deployed and wired |
 | The platform's PCK certificate is revoked | move the enclave to another machine (new CVM) and re-pin | same |
 | Intel rotates the root CA, same name and key type | `--trusted-root-cert` | new `PcsDao` with the new key hash, `grantDao` |
 | Intel's root or certificate names change otherwise | **routes stop until a celestia-app upgrade** (new go-tdx-guest) | new Automata verifier/DAOs |
