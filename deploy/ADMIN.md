@@ -5,8 +5,9 @@ inputs come from. [MAINTAIN.md](MAINTAIN.md) covers routine rotations; this file
 for every owner control, and for what to do when something on Intel's side breaks.
 
 The owner is a trust root. Every control below lets it change what an ISM accepts, and the
-Intel-side overrides let it accept attestations Intel would not vouch for. Move ownership to a
-multisig before mainnet ([Celestia](#transfer-ownership), [EVM](#evm-transfer-ownership)).
+Intel-side overrides let it accept collateral Intel has let lapse or a root Intel has rotated.
+Nothing lets it skip Intel's verification: every attestation must carry a quote that verifies
+against a trusted root. Move ownership to a multisig before mainnet ([Celestia](#transfer-ownership), [EVM](#evm-transfer-ownership)).
 
 ## Who the owner is
 
@@ -23,7 +24,6 @@ multisig before mainnet ([Celestia](#transfer-ownership), [EVM](#evm-transfer-ow
 | Transfer ownership | `tx teeism update-owner` | `transferOwnership` |
 | Trust a new Intel root CA | `set-verifier-overrides --trusted-root-cert` | new PCCS `PcsDao` (the root key hash is a constant in it) |
 | Accept collateral Intel has not refreshed in time | `set-verifier-overrides --collateral-grace` | none: `seed-evm-collateral.sh` needs Intel's fresh collateral |
-| Skip Intel's verdict entirely (break glass) | `set-verifier-overrides --skip-dcap` | entrypoint owner's `setQuoteVerifier` to a custom verifier (none written yet) |
 | Support a new quote version | needs a celestia-app upgrade | `setQuoteVerifier` (`75-dcap-verifiers.sh` adds v5) |
 | Stop an ISM accepting anything new | re-pin to an identity no enclave has | `setEnclave` to measurements no enclave has |
 
@@ -93,10 +93,6 @@ $A tx broadcast signed.json --node http://localhost:26657
 replacement ISM, owned by `relayer`, and re-points the route. After a transfer, re-pin from the
 multisig as above before running the script, so it finds the ISM already on the new identity.
 
-The same holds for the next section: with `--skip-dcap` set, only the owner may submit
-attestations, so a multisig-owned ISM in break glass needs its attestations submitted by the
-multisig, not the relayer.
-
 ### Override Intel's side of verification
 
 One command sets all overrides at once; flags left out are switched off, and `--clear` switches
@@ -127,16 +123,8 @@ openssl x509 -inform der -in Intel_SGX_Provisioning_Certification_RootCA.cer -no
 $A tx teeism set-verifier-overrides $ISM --trusted-root-cert Intel_SGX_Provisioning_Certification_RootCA.cer --from relayer $TX
 ```
 
-**`--skip-dcap`**, break glass. Intel's verdict on the quote is skipped: no signature chain, no
-CRLs, no TCB status, no collateral expiry. The quote must still parse as a v4 TDX quote, and the
-debug check, the pinned enclave identity, the payload and the state rules still apply. Only the
-owner may submit attestations while it is set, because anyone else could write a quote with the
-(public) pinned measurements around any payload. The owner vouches for every attestation in
-Intel's place. No payload.
-
-```sh
-$A tx teeism set-verifier-overrides $ISM --skip-dcap --from relayer $TX
-```
+There is no override that skips Intel's verification. A platform Intel rates below `UpToDate`
+cannot be let through by the owner; see [TCB recovery](#tcb-recovery).
 
 ### Stop an ISM
 
@@ -209,8 +197,34 @@ the Automata deployment controls it instead:
   (`setQuoteVerifier`, owner only). `75-dcap-verifiers.sh` does this for v5.
 - **A new Intel root key** cannot be upserted: `PcsDao` pins the root's public key hash as a
   constant. The storage owner deploys a `PcsDao` with the new hash and `grantDao`s it.
-- **Break glass** is the entrypoint owner pointing `setQuoteVerifier` at a verifier that applies
-  our own policy. No such verifier exists in this repo yet.
+- **TCB status**: `TeeDcapIsm` accepts `UpToDate` and `SWHardeningNeeded` only, as constants.
+  Accepting anything else needs a new ISM version.
+
+## <a name="tcb-recovery"></a>TCB recovery (Intel moves to a new evaluation number)
+
+Intel rates each platform against a numbered set of TCB requirements. A new number (a "TCB
+recovery") raises the bar; verifiers use the "standard" number, which moves to a new one 12 months
+after Intel releases it. Check where things stand:
+
+```sh
+curl -s https://api.trustedservices.intel.com/tdx/certification/v4/tcbevaluationdatanumbers \
+  | jq '.tcbEvaluationDataNumbers.tcbEvalNumbers[] | {n: .tcbEvaluationDataNumber, released: .tcbRecoveryEventDate}'
+curl -s "https://api.trustedservices.intel.com/tdx/certification/v4/tcb?fmspc=20a06f000000" | jq .tcbInfo.tcbEvaluationDataNumber   # standard today
+```
+
+When the standard number moves, a platform that has not taken the recovery's microcode and TDX
+module updates is rated `OutOfDate`, and both chains refuse its quotes. The enclave's measurements
+do not change, so re-pinning does not help.
+
+- **Fix:** the host is patched (Phala updates the machine, or the CVM moves to a patched one).
+  On Celestia nothing else is needed. On EVM, the PCCS DAOs are bound to one evaluation number
+  (`TCB_EVALUATION_NUMBER()`), so deploy the DAOs for the new number, register them on the
+  `PCCSRouter` (owner only) and seed them.
+- **Celestia only, to buy time:** the ISM checks that Intel signed the TCB info, not which
+  number it is, and Intel keeps serving older numbers. A relayer that fetches the previous number
+  keeps verifying. `teeism-collateral` does not take a number yet.
+- **EVM:** no equivalent. The ISM verifies against Automata's standard number, chosen by block
+  time, so the routes stop until the host is patched and the new DAOs are wired.
 
 ## When something breaks live
 
@@ -220,13 +234,13 @@ What can be fixed by the owner on a running deployment, and what needs a new rel
 |---|---|---|
 | New enclave image, OS or platform update, replacement CVM | re-pin | re-pin (`VERSION` 3+), else replace and re-point |
 | Intel publishes fresh collateral as usual | nothing to do: the relayer ships it with every submission | the monthly `seed-evm-collateral.sh` |
-| Intel's PCS is down or late, collateral expires | `--collateral-grace`, then `--skip-dcap` past 30 days | routes stop 30 days after the last seed; seed once Intel is back. Break glass needs a custom verifier |
-| A TCB recovery leaves the platform `OutOfDate` | `--skip-dcap` until the platform is updated (no status override) | custom verifier via `setQuoteVerifier`, or wait for the platform update |
+| Intel's PCS is down or late, collateral expires | `--collateral-grace` (up to 30 days), then routes stop until Intel is back | routes stop 30 days after the last seed; seed once Intel is back |
+| A TCB recovery leaves the platform `OutOfDate` ([details](#tcb-recovery)) | routes stop until the host is patched; a relayer fetching the previous evaluation number bridges it | routes stop until the host is patched and the new DAOs are deployed and wired |
 | The platform's PCK certificate is revoked | move the enclave to another machine (new CVM) and re-pin | same |
 | Intel rotates the root CA, same name and key type | `--trusted-root-cert` | new `PcsDao` with the new key hash, `grantDao` |
-| Intel's root or certificate names change otherwise | `--skip-dcap` until a celestia-app upgrade | custom verifier |
-| New collateral format (TCB info v4, QE identity v3) | `--skip-dcap` until a celestia-app upgrade | new Automata verifier/DAOs |
+| Intel's root or certificate names change otherwise | **routes stop until a celestia-app upgrade** (new go-tdx-guest) | new Automata verifier/DAOs |
+| New collateral format (TCB info v4, QE identity v3) | **routes stop until a celestia-app upgrade** (new go-tdx-guest) | new Automata verifier/DAOs |
 | Phala hosts switch to quote v5 | **not fixable live**: a celestia-app upgrade must parse v5 | `75-dcap-verifiers.sh` (v5 verifier) |
 | TDX itself is broken | stop the ISMs (re-pin to an unused identity) | stop the ISMs (`setEnclave` to unused measurements) |
 | The owner key is compromised | transfer ownership first, from the old key, if still possible | same |
-| The owner key is lost | not fixable: nothing can replace the owner | same |
+| The owner key is lost | the ISM can never be re-pinned again; create a new ISM and re-point the route to it (warp route owner) | same: deploy a new ISM, `setInterchainSecurityModule` on the routers |

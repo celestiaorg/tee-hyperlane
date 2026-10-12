@@ -157,8 +157,8 @@ teeism-gas-oracle  systemd  paymaster upkeep
   state, keeping the ISM's address, root and height. A new image, a platform update under it
   or a replacement enclave is one transaction per ISM, and no router moves.
 - **The owner can override Intel on Celestia, and hand the ISMs over.** `tx teeism
-  set-verifier-overrides` trusts a new Intel root, accepts collateral that lapsed within a grace
-  window, or skips Intel's verdict entirely (break glass, owner-submitted only).
+  set-verifier-overrides` trusts a new Intel root or accepts collateral that lapsed within a grace
+  window. Nothing skips Intel's verification.
   `tx teeism update-owner` moves an ISM to a multisig. On EVM the same controls sit with the
   Automata deployment's owner. All of it, with commands: [ADMIN.md](deploy/ADMIN.md).
 - **Rollups are attested from what their sequencer signed.** Base's sequencer signs every
