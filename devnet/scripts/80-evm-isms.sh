@@ -25,7 +25,8 @@ ENCLAVE="${ENCLAVE:-celestia}"
 has "enclave-url-${ENCLAVE}" \
   || die "no ${ENCLAVE} enclave; run 'make init' first"
 say "reading measurements from the devnet enclave"
-curl -sS -m 30 "$(load "enclave-url-${ENCLAVE}")/identity" -o "${STATE_DIR}/enclave-identity.json"
+curl -sS --fail -m 30 "$(load "enclave-url-${ENCLAVE}")/identity" -o "${STATE_DIR}/enclave-identity.json" \
+  || die "could not fetch the ${ENCLAVE} enclave's identity from $(load "enclave-url-${ENCLAVE}")/identity; is the CVM up? (phala cvms ls)"
 MEASUREMENTS="$(python3 - "${STATE_DIR}/enclave-identity.json" <<'PY'
 import json, subprocess, sys
 q = json.load(open(sys.argv[1]))["quote"]
@@ -60,7 +61,8 @@ if [ -n "${ISM_GENESIS:-}" ]; then
 else
   say "reading a trusted checkpoint from ${CHAINID}"
   write_config
-  GENESIS="$("${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" genesis --chain celestia --identity "${IDENTITY}")"
+  GENESIS="$("${COPROCESSOR_BIN}" --config "${COPROCESSOR_CONFIG}" genesis --chain celestia --identity "${IDENTITY}")" \
+    || die "the coprocessor could not bootstrap a checkpoint from ${CHAINID} (its error is above)"
 fi
 [ -n "${GENESIS}" ] || die "could not bootstrap from ${CHAINID}"
 HOOK="$(load merkle-hook-id)"
@@ -86,8 +88,8 @@ eden:3735928814:0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729}"
 while IFS=: read -r name chainid mailbox; do
   addr_file="${OUT_DIR}/pccs-${name}.json"
   [ -f "${addr_file}" ] || { incomplete "${name}: no PCCS record at ${addr_file}; no ISM deployed there"; continue; }
-  rpc="$(python3 -c "import json;print(json.load(open('${addr_file}'))['rpc'])")"
-  entry="$(python3 -c "import json;print(json.load(open('${addr_file}'))['AttestationEntrypoint'])")"
+  rpc="$(pccs_field "${name}" rpc)"
+  entry="$(pccs_field "${name}" AttestationEntrypoint)"
 
   # Skip a chain whose ISM already pins this enclave and runs this revision of the contract.
   # Without this, re-running the step silently abandons the previous deployment and pays for
@@ -116,7 +118,7 @@ while IFS=: read -r name chainid mailbox; do
         say "${name}: re-pinning ${existing} to this enclave"
         cast send "${existing}" "setEnclave(bytes32,bytes32)" "${MEASUREMENTS}" "${IDENTITY}" \
           --rpc-url "${rpc}" "${EVM_SIGN[@]}" >/dev/null \
-          || die "setEnclave failed on ${name}"
+          || die "setEnclave on ${existing} failed on ${name} (cast's error is above)"
         got="$(cast call "${existing}" "enclaveMeasurements()(bytes32)" --rpc-url "${rpc}" 2>/dev/null || true)"
         [ "${got}" = "${MEASUREMENTS}" ] || die "${existing} on ${name} pins '${got}' after the re-pin, expected ${MEASUREMENTS}"
         say "  ${existing} re-pinned"
@@ -137,7 +139,8 @@ while IFS=: read -r name chainid mailbox; do
   out="$(cd "${CONTRACTS}" && forge create src/TeeDcapIsm.sol:TeeDcapIsm \
     --rpc-url "${rpc}" "${EVM_SIGN[@]}" --broadcast \
     --constructor-args "${entry}" "${MEASUREMENTS}" "${IDENTITY}" "${HOOK}" \
-                       "${mailbox}" "${chain_genesis}" "${MAX_QUOTE_SKEW}" 2>&1)"
+                       "${mailbox}" "${chain_genesis}" "${MAX_QUOTE_SKEW}" 2>&1)" \
+    || { printf '%s\n' "${out}" | tail -8 >&2; die "TeeDcapIsm deployment failed on ${name} (forge's output is above)"; }
   ism="$(printf '%s' "${out}" | grep -oE "Deployed to: 0x[0-9a-fA-F]{40}" | grep -oE "0x[0-9a-fA-F]{40}")"
   if [ -z "${ism}" ]; then
     printf '%s\n' "${out}" | tail -5 >&2

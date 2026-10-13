@@ -39,8 +39,9 @@ prepare() {
 }
 
 send() { # <rpc> <to> <sig> <args...>
-  local rpc="$1"; shift
-  cast send "$@" --rpc-url "${rpc}" "${EVM_SIGN[@]}" >/dev/null
+  local rpc="$1" out; shift
+  out="$(cast send "$@" --rpc-url "${rpc}" "${EVM_SIGN[@]}" 2>&1)" \
+    || die "${c}: $2 on $1 failed: $(printf '%s' "${out}" | grep -v '^[[:space:]]*$' | tail -1)"
 }
 
 evm_signer
@@ -52,7 +53,8 @@ for c in ${CHAINS}; do
   entry="$(jq -r .AttestationEntrypoint "${f}")"
   router="$(jq -r .PCCSRouter "${f}")"
 
-  current="$(cast call "${entry}" 'quoteVerifiers(uint16)(address)' 5 --rpc-url "${rpc}")"
+  current="$(cast call "${entry}" 'quoteVerifiers(uint16)(address)' 5 --rpc-url "${rpc}" 2>&1)" \
+    || die "${c}: could not read the entrypoint ${entry}'s v5 verifier: $(printf '%s' "${current}" | tail -1)"
   if [ "${current}" != "${ZERO}" ]; then
     say "${c}: v5 verifier already registered at ${current}"
     jq --arg a "${current}" '.V5QuoteVerifier = $a' "${f}" > "${f}.new" && mv "${f}.new" "${f}"
@@ -61,7 +63,8 @@ for c in ${CHAINS}; do
 
   # The same P256 verifier the chain's v4 verifier uses. On all four chains today that is the
   # RIP-7212 precompile at 0x…0100.
-  p256="$(cast call "$(jq -r .V4QuoteVerifier "${f}")" 'P256_VERIFIER()(address)' --rpc-url "${rpc}")"
+  p256="$(cast call "$(jq -r .V4QuoteVerifier "${f}")" 'P256_VERIFIER()(address)' --rpc-url "${rpc}" 2>&1)" \
+    || die "${c}: could not read the v4 verifier's P256 verifier: $(printf '%s' "${p256}" | tail -1)"
   [ -n "${p256}" ] && [ "${p256}" != "${ZERO}" ] || die "${c}: could not read the v4 verifier's P256 verifier"
 
   prepare
@@ -80,7 +83,8 @@ for c in ${CHAINS}; do
   send "${rpc}" "${router}" 'setAuthorized(address,bool)' "${verifier}" true
   send "${rpc}" "${entry}" 'setQuoteVerifier(address)' "${verifier}"
 
-  registered="$(cast call "${entry}" 'quoteVerifiers(uint16)(address)' 5 --rpc-url "${rpc}")"
+  registered="$(cast call "${entry}" 'quoteVerifiers(uint16)(address)' 5 --rpc-url "${rpc}" 2>&1)" \
+    || die "${c}: could not read back the entrypoint's v5 verifier: $(printf '%s' "${registered}" | tail -1)"
   [ "$(printf '%s' "${registered}" | tr 'A-F' 'a-f')" = "$(printf '%s' "${verifier}" | tr 'A-F' 'a-f')" ] \
     || die "${c}: entrypoint reports ${registered} for v5, not ${verifier}"
   jq --arg a "${verifier}" '.V5QuoteVerifier = $a' "${f}" > "${f}.new" && mv "${f}.new" "${f}"

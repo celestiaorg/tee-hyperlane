@@ -17,7 +17,8 @@ ensure_image() {
   fi
   [ -d "${CELESTIA_APP_DIR}" ] || die "no celestia-app checkout at ${CELESTIA_APP_DIR}; set CELESTIA_APP_DIR"
   say "building ${CELESTIA_IMAGE} from ${CELESTIA_APP_DIR} (this takes a few minutes)"
-  docker build -t "${CELESTIA_IMAGE}" -f "${CELESTIA_APP_DIR}/docker/standalone.Dockerfile" "${CELESTIA_APP_DIR}"
+  docker build -t "${CELESTIA_IMAGE}" -f "${CELESTIA_APP_DIR}/docker/standalone.Dockerfile" "${CELESTIA_APP_DIR}" \
+    || die "building ${CELESTIA_IMAGE} from ${CELESTIA_APP_DIR} failed (docker's output is above); is docker running?"
 }
 
 ensure_image
@@ -29,7 +30,8 @@ mkdir -p "${STATE_DIR}/celestia"
 say "starting ${CELESTIA_CONTAINER}"
 STATE_DIR="${STATE_DIR}" CELESTIA_IMAGE="${CELESTIA_IMAGE}" CHAINID="${CHAINID}" \
   DEVNET_MNEMONIC="${DEVNET_MNEMONIC}" \
-  docker compose -f "${DEVNET_DIR}/celestia/docker-compose.yml" up -d
+  docker compose -f "${DEVNET_DIR}/celestia/docker-compose.yml" up -d \
+  || die "could not start ${CELESTIA_CONTAINER} (docker's output is above); 'docker logs ${CELESTIA_CONTAINER}' has the chain's own"
 
 wait_for_chain
 

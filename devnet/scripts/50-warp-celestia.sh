@@ -23,7 +23,8 @@ point_at_ism() {
   local token="$1"
   has routing-ism-id || return 0
   say "pointing ${token} at the routing ism"
-  tx relayer warp set-token "${token}" --ism-id "$(load routing-ism-id)" >/dev/null \
+  # A subshell, because tx stops the script on failure and this one is allowed to fail.
+  ( tx relayer warp set-token "${token}" --ism-id "$(load routing-ism-id)" >/dev/null ) \
     || incomplete "${token}: could not point it at the routing ism (the error is above); 85-celestia-isms.sh does it again"
 }
 
@@ -68,7 +69,8 @@ mint_enrolled() {
     '[.remote_routers[]? | select(.receiver_domain == $d)] | length > 0' >/dev/null
 }
 
-supply="$(q bank total-supply-of "${denom}" | jq -r '.amount.amount // .amount // "0"')"
+supply="$(q bank total-supply-of "${denom}" | jq -r '.amount.amount // .amount // "0"')" \
+  || die "could not read the ${denom} supply from ${CELESTIA_RPC}"
 if [ "${supply}" = 0 ]; then
   say "minting ${TEEUSD_SUPPLY} ${denom} to ${TEEUSD_HOLDER}"
   tx relayer warp set-token "${token}" --ism-id "$(load noop-ism-id)" >/dev/null

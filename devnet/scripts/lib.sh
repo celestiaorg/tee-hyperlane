@@ -164,16 +164,21 @@ ensure_binaries() {
   [ -d "${CELESTIA_APP_DIR}" ] || die "no celestia-app checkout at ${CELESTIA_APP_DIR}; set CELESTIA_APP_DIR"
   if [ ! -x "${APPD}" ]; then
     say "building celestia-appd for the host"
-    (cd "${CELESTIA_APP_DIR}" && go build -o "${APPD}" ./cmd/celestia-appd)
+    (cd "${CELESTIA_APP_DIR}" && go build -o "${APPD}" ./cmd/celestia-appd) \
+      || die "building celestia-appd from ${CELESTIA_APP_DIR} failed (the compiler output is above)"
   fi
   if [ ! -x "${COLLATERAL_BIN}" ]; then
     say "building teeism-collateral"
-    (cd "${CELESTIA_APP_DIR}" && go build -o "${COLLATERAL_BIN}" ./x/teeism/cmd/teeism-collateral)
+    (cd "${CELESTIA_APP_DIR}" && go build -o "${COLLATERAL_BIN}" ./x/teeism/cmd/teeism-collateral) \
+      || die "building teeism-collateral from ${CELESTIA_APP_DIR} failed (the compiler output is above)"
   fi
 }
 
 # addr <key> - the bech32 address of a devnet key.
-addr() { appd keys show "$1" -a --keyring-backend test; }
+addr() {
+  appd keys show "$1" -a --keyring-backend test 2>/dev/null \
+    || die "no '$1' key in the keyring at ${CELHOME}; 10-celestia-up.sh creates it with the chain"
+}
 
 # Queries need a node, not a home, but passing both is harmless and keeps one helper.
 q() { appd query "$@" --node "${CELESTIA_RPC}" -o json; }
@@ -183,14 +188,14 @@ q() { appd query "$@" --node "${CELESTIA_RPC}" -o json; }
 # discover the transaction never landed.
 tx() {
   local key="$1"; shift
-  local raw hash
+  local raw hash what="celestia tx '$*' from ${key}"
   raw="$(appd tx "$@" \
     --from "${key}" --keyring-backend test --chain-id "${CHAINID}" \
     --node "${CELESTIA_RPC}" \
     --fees "${TX_FEES}" --gas "${TX_GAS}" \
     --broadcast-mode sync --yes --output json 2>&1)" || {
       printf '%s\n' "${raw}" >&2
-      die "broadcast failed"
+      die "${what}: could not be broadcast (the node's answer is above)"
     }
 
   # The node echoes CheckTx first. A non-zero code here means it never entered a
@@ -199,31 +204,31 @@ tx() {
   code="$(printf '%s' "${raw}" | jq -r 'select(.code != null) | .code' 2>/dev/null | head -1)"
   if [ -n "${code}" ] && [ "${code}" != "0" ]; then
     printf '%s\n' "${raw}" >&2
-    die "transaction rejected at CheckTx with code ${code}"
+    die "${what}: rejected at CheckTx with code ${code} (the node's answer is above)"
   fi
 
   hash="$(printf '%s' "${raw}" | jq -r 'select(.txhash != null) | .txhash' 2>/dev/null | head -1)"
-  [ -n "${hash}" ] || { printf '%s\n' "${raw}" >&2; die "no tx hash in response"; }
+  [ -n "${hash}" ] || { printf '%s\n' "${raw}" >&2; die "${what}: the node returned no tx hash (its answer is above)"; }
 
-  wait_for_tx "${hash}"
+  wait_for_tx "${hash}" "${what}"
 }
 
 # wait_for_tx <hash> - poll until the transaction is in a block, then print it.
-wait_for_tx() {
-  local hash="$1" i result code
+wait_for_tx() { # <hash> [what it was]
+  local hash="$1" what="${2:-transaction}" i result code
   for i in $(seq 1 60); do
     if result="$(appd query tx "${hash}" --node "${CELESTIA_RPC}" --output json 2>/dev/null)"; then
       code="$(printf '%s' "${result}" | jq -r '.code // 0')"
       if [ "${code}" != "0" ]; then
         printf '%s\n' "$(printf '%s' "${result}" | jq -r '.raw_log // .rawLog // "no log"')" >&2
-        die "transaction ${hash} failed on chain with code ${code}"
+        die "${what}: ${hash} failed on chain with code ${code} (its log is above)"
       fi
       printf '%s' "${result}"
       return 0
     fi
     sleep 1
   done
-  die "timed out waiting for ${hash}"
+  die "${what}: ${hash} was not included within 60s; check 'celestia-appd query tx ${hash}'"
 }
 
 # ev <tx-json> <event-type> <attribute> - read one attribute out of a tx result.
@@ -250,6 +255,15 @@ load() {
 }
 
 has() { [ -f "${OUT_DIR}/$1" ]; }
+
+# pccs_field <chain> <key> - one address from .state/out/pccs-<chain>.json, or a clear stop.
+pccs_field() {
+  local f="${OUT_DIR}/pccs-$1.json" v
+  [ -f "${f}" ] || die "no PCCS record for $1 at ${f}"
+  v="$(jq -r --arg k "$2" '.[$k] // empty' "${f}" 2>/dev/null)" || die "${f} is not valid JSON"
+  [ -n "${v}" ] || die "${f} names no $2"
+  printf '%s' "${v}"
+}
 
 # pad32 <0x-address> - left-pad a 20-byte EVM address to the 32 bytes a Hyperlane message
 # carries. Lowercased, because the padded form is compared as bytes and a checksummed address

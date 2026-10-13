@@ -213,8 +213,9 @@ do not change, so re-pinning does not help.
 
 - **Fix:** the host is patched (Phala updates the machine, or the CVM moves to a patched one).
   On Celestia nothing else is needed. On EVM, the PCCS DAOs are bound to one evaluation number
-  (`TCB_EVALUATION_NUMBER()`), so deploy the DAOs for the new number, register them on the
-  `PCCSRouter` (owner only) and seed them.
+  (`TCB_EVALUATION_NUMBER()`), so the new number needs its own, registered on the `PCCSRouter`
+  and seeded, before the date: `./scripts/76-tcb-eval.sh <chain> <number>` (owner-signed),
+  then the monthly seed keeps both fresh ([MAINTAIN](MAINTAIN.md)).
 - Until then the routes stop on both chains. Ask Phala ahead of the date whether the hosts have
   taken the recovery.
 

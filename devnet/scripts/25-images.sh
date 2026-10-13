@@ -28,13 +28,16 @@ for c in ${CHAINS}; do
   fi
 
   say "${c}: building ${out##*/}"
-  (cd "${REPO_DIR}" && nix build ".#image-${c}" -o "result-${c}")
+  (cd "${REPO_DIR}" && nix build ".#image-${c}" -o "result-${c}") \
+    || die "${c}: nix build .#image-${c} failed (its output is above)"
   [ "$(readlink -f "${REPO_DIR}/result-${c}")" = "${out}" ] || die "${c}: nix built something other than ${out}"
-  docker load < "${REPO_DIR}/result-${c}" >/dev/null
+  docker load < "${REPO_DIR}/result-${c}" >/dev/null || die "${c}: docker could not load the image nix built"
   # The digest the registry assigns, read off the push itself: the one Phala pulls and the
   # compose hash covers.
-  digest="$(docker push "${IMAGE}:reproducible-${c}" | grep -oE 'digest: sha256:[0-9a-f]{64}' | cut -d' ' -f2 || true)"
-  [ -n "${digest}" ] || die "${c}: push did not report a digest"
+  pushed="$(docker push "${IMAGE}:reproducible-${c}" 2>&1)" \
+    || die "${c}: pushing ${IMAGE}:reproducible-${c} failed: $(printf '%s' "${pushed}" | tail -1). Logged in? docker login ghcr.io -u jonas089"
+  digest="$(printf '%s' "${pushed}" | grep -oE 'digest: sha256:[0-9a-f]{64}' | cut -d' ' -f2 || true)"
+  [ -n "${digest}" ] || die "${c}: the push succeeded but reported no digest: $(printf '%s' "${pushed}" | tail -1)"
 
   sed -i "s|tee-node@sha256:[0-9a-f]*|tee-node@${digest}|" "$(compose_file "${c}")"
   {

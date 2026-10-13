@@ -13,6 +13,27 @@ for c in sepolia arbitrum base eden; do ./scripts/seed-evm-collateral.sh $c; don
 Skip it and the Celestia → EVM routes stop after 30 days with `TCBR`. Routes into Celestia
 don't need it.
 
+It publishes every TCB evaluation number the chain's router has data contracts for, checks
+everything before sending anything, and lists what is missing (an unregistered number, a key
+without `ATTESTER_ROLE`) with the command that fixes it. `DRY_RUN=1` checks without sending.
+
+## Before each TCB recovery: the next evaluation number
+
+The verifiers read Intel's "standard" evaluation number, which moves to the next one 12 months
+after Intel releases it: **21 on about 10 Feb 2027, 22 on about 11 Aug 2027**. An EVM chain
+whose router has no data contracts for the new number stops verifying that day. Weeks before:
+
+```sh
+cd ~/tee-ism-nonzk/devnet
+for c in sepolia arbitrum base eden; do ./scripts/76-tcb-eval.sh $c 21; done   # owner-signed: EVM_SIGNER
+```
+
+It deploys the number's QE identity and TCB info contracts, lets the seeding key upload to
+them, registers them on the router and seeds. The monthly seed then keeps both numbers fresh.
+Also check that the enclaves' host passes the new number before the date, or ask Phala to patch
+it ([ADMIN](ADMIN.md#tcb-recovery)). Celestia needs nothing: the relayer always sends the
+current standard.
+
 ## Update: code only
 
 For changes to the coprocessor, gas oracle, UI or scripts.

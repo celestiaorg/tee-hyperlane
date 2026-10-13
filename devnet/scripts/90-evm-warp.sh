@@ -104,7 +104,7 @@ confirm_code() {
 while IFS=: read -r name chainid mailbox; do
   addr_file="${OUT_DIR}/pccs-${name}.json"
   [ -f "${addr_file}" ] || { incomplete "${name}: no PCCS record, so no ISM and no routers there"; continue; }
-  rpc="$(python3 -c "import json;print(json.load(open('${addr_file}'))['rpc'])")"
+  rpc="$(pccs_field "${name}" rpc)"
   has "ism-${name}" || { incomplete "${name}: no ISM recorded; run 80-evm-isms.sh first"; continue; }
   ism="$(load "ism-${name}")"
 
@@ -125,7 +125,8 @@ while IFS=: read -r name chainid mailbox; do
         ORIGIN_DOMAIN="${DOMAIN}" ORIGIN_ROUTER="${token}" \
         TOKEN_NAME="${tname}" TOKEN_SYMBOL="${tsymbol}" TOKEN_DECIMALS="${tdec}" \
         forge script script/DeployWarpSynthetic.s.sol:DeployWarpSynthetic \
-          --rpc-url "${rpc}" "${EVM_SCRIPT_SIGN[@]}" --broadcast --slow 2>&1)"
+          --rpc-url "${rpc}" "${EVM_SCRIPT_SIGN[@]}" --broadcast --slow 2>&1)" \
+        || { printf '%s\n' "${out}" | tail -20 >&2; die "${label} router deployment failed on ${name} (forge's output is above)"; }
       router="$(printf '%s' "${out}" | sed -n 's/.*HypERC20 *\(0x[0-9a-fA-F]\{40\}\).*/\1/p' | tail -1)"
       if [ -z "${router}" ]; then
         printf '%s\n' "${out}" | tail -20 >&2
@@ -182,7 +183,8 @@ while IFS=: read -r name chainid mailbox; do
     say "deploying the token factory on ${name}"
     out="$(cd "${CONTRACTS}" && forge create src/TeeTokenFactory.sol:TeeTokenFactory --broadcast \
       --rpc-url "${rpc}" "${EVM_SIGN[@]}" \
-      --constructor-args "${mailbox}" "${DOMAIN}" "${ism}" 2>&1)"
+      --constructor-args "${mailbox}" "${DOMAIN}" "${ism}" 2>&1)" \
+      || { printf '%s\n' "${out}" | tail -20 >&2; die "token factory deployment failed on ${name} (forge's output is above)"; }
     factory="$(printf '%s' "${out}" | sed -n 's/^Deployed to: \(0x[0-9a-fA-F]\{40\}\).*/\1/p')"
     [ -n "${factory}" ] || { printf '%s\n' "${out}" | tail -20 >&2; die "token factory deployment failed on ${name}"; }
     confirm_code "${factory}" "${rpc}" || die "no code at ${factory} on ${name}; the broadcast did not land"
@@ -219,8 +221,9 @@ enroll_from_celestia() {
   local router want got
   router="$(load "${key}")"
   want="0x000000000000000000000000$(printf '%s' "${router#0x}" | tr 'A-Z' 'a-z')"
-  got="$(appd query warp remote-routers "${token}" --node "${CELESTIA_RPC}" -o json 2>/dev/null \
-    | jq -r --argjson d "${domain}" '.remote_routers[]? | select(.receiver_domain == $d) | .receiver_contract' \
+  got="$(appd query warp remote-routers "${token}" --node "${CELESTIA_RPC}" -o json 2>&1)" \
+    || die "could not read the celestia ${label} token's remote routers from ${CELESTIA_RPC}: $(printf '%s' "${got}" | tail -1)"
+  got="$(printf '%s' "${got}" | jq -r --argjson d "${domain}" '.remote_routers[]? | select(.receiver_domain == $d) | .receiver_contract' \
     | tr 'A-Z' 'a-z')"
 
   if [ "${got}" = "${want}" ]; then
@@ -241,10 +244,11 @@ enroll_from_celestia() {
 while IFS=: read -r label token_key suffix tname tsymbol tdec; do
   has "${token_key}" || continue
   token="$(load "${token_key}")"
-  enroll_from_celestia "${token}" "${SEPOLIA_DOMAIN}"          sepolia  "${label}" "sepolia-${suffix}"
-  enroll_from_celestia "${token}" "${BASE_SEPOLIA_DOMAIN}"     base     "${label}" "base-${suffix}"
-  enroll_from_celestia "${token}" "${ARBITRUM_SEPOLIA_DOMAIN}" arbitrum "${label}" "arbitrum-${suffix}"
-  enroll_from_celestia "${token}" "${EDEN_DOMAIN}" eden "${label}" "eden-${suffix}"
+  # Only the chains this run covers: a subset deploy (CHAINS=eden:...) is not incomplete for
+  # the chains it left out on purpose. Each chain's Hyperlane domain is its chain id.
+  while IFS=: read -r name chainid _; do
+    enroll_from_celestia "${token}" "${chainid}" "${name}" "${label}" "${name}-${suffix}"
+  done <<< "${CHAINS}"
 done <<< "${TOKENS}"
 
 say "evm warp side ready"

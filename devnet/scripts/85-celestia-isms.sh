@@ -101,7 +101,7 @@ genesis_for() { # <origin> <enclave> [old ism id]
 }
 
 write_config
-RELAYER="$("${A}" keys show relayer -a --keyring-backend test --home "${CELHOME}")"
+RELAYER="$(addr relayer)"
 
 for row in ${ORIGINS}; do
   IFS=: read -r name domain enclave tree <<< "${row}"
@@ -145,6 +145,8 @@ for row in ${ORIGINS}; do
   genesis="$(genesis_for "${name}" "${enclave}" "${replacing}" || true)"
   [ -n "${genesis}" ] || { incomplete "${name}: could not build its genesis state (the reason is above); its current ISM stays in place"; continue; }
 
+  [ -f "${OUT_DIR}/identity-${enclave}.json" ] \
+    || die "no ${OUT_DIR}/identity-${enclave}.json; 30-enclave-up.sh writes it when it brings the ${enclave} enclave up"
   OUT_DIR="${OUT_DIR}" python3 - "${genesis}" "${tree}" "${name}" "${enclave}" <<'PY'
 import json, sys, os
 state, tree, name, enclave = sys.argv[1:5]
@@ -157,7 +159,11 @@ PY
   out="$("${A}" tx teeism create "${OUT_DIR}/ism-${name}-origin.json" ${TX} 2>&1 || true)"
   hash="$(printf '%s' "${out}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["txhash"])' 2>/dev/null || true)"
   [ -n "${hash}" ] || { incomplete "${name}: ISM create not broadcast: ${out}"; continue; }
-  id="$( (settle "${hash}" || true) | python3 -c '
+  result="$(settle "${hash}" || true)"
+  [ -n "${result}" ] || { incomplete "${name}: ISM create ${hash} was not included within 36s; check celestia-appd query tx ${hash}"; continue; }
+  failed="$(printf '%s' "${result}" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("raw_log","") if d.get("code") else "")' 2>/dev/null || true)"
+  [ -z "${failed}" ] || { incomplete "${name}: ISM create ${hash} failed on chain: ${failed}"; continue; }
+  id="$(printf '%s' "${result}" | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 if d.get("code"):

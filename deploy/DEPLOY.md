@@ -117,6 +117,9 @@ scp -P 50 chef@<old host>:tee-ism-nonzk/devnet/.state/out/pccs-*.json .state/out
 for c in sepolia arbitrum base eden; do ./scripts/seed-evm-collateral.sh $c; done
 ```
 
+A fresh Automata deployment has contracts for one evaluation number. Add the next one before
+Intel makes it standard (21 on about 10 Feb 2027): `./scripts/76-tcb-eval.sh <chain> 21`.
+
 These files hold the addresses of our Automata contracts. For a chain that has none yet, see
 [appendix D](#d-automata-on-a-new-evm-chain).
 

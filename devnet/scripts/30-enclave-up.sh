@@ -193,7 +193,10 @@ check_pins() {
   git -C "${REPO_DIR}" diff --quiet HEAD -- deploy/images.lock 'deploy/docker-compose.*.yml' \
     || die "deploy/images.lock or a compose file has uncommitted changes; commit and push them first"
   git -C "${REPO_DIR}" fetch -q \
-    && git -C "${REPO_DIR}" merge-base --is-ancestor HEAD '@{upstream}' \
+    || die "could not fetch from the remote to check this commit is pushed; is the network or the remote reachable?"
+  git -C "${REPO_DIR}" rev-parse -q --verify '@{upstream}' >/dev/null \
+    || die "this branch tracks no remote branch; push it with -u first, so the repo names what the enclaves run"
+  git -C "${REPO_DIR}" merge-base --is-ancestor HEAD '@{upstream}' \
     || die "this commit is not pushed; push it first, so the repo names what the enclaves run"
 }
 
@@ -205,13 +208,16 @@ done
 # Each ISM pins the identity of the enclave that attests its origin, so record them now rather
 # than re-reading them in every script that needs one. Read from the quote, and only after the
 # event log replays to the RTMRs the hardware signed. Chains sharing a CVM share an identity.
-(cd "${REPO_DIR}/tee-hyperlane" && cargo build --quiet --release -p tee-coprocessor)
+(cd "${REPO_DIR}/tee-hyperlane" && cargo build --quiet --release -p tee-coprocessor) \
+  || die "building the coprocessor failed (cargo's output is above); it reads each enclave's identity"
 for target in ${TARGETS}; do
   for chain in $(chains_in "${target}"); do
     url="$(load "enclave-url-${chain}")"
     "${COPROCESSOR_BIN}" identity --url "${url}" --json "${OUT_DIR}/identity-${chain}.json" \
       || die "could not read ${chain} identity from ${url}"
-    digest="$("${BIN_DIR}/teeism-identity" -identity "${OUT_DIR}/identity-${chain}.json")"
+    [ -x "${BIN_DIR}/teeism-identity" ] || die "no ${BIN_DIR}/teeism-identity; build it from celestia-app (DEPLOY step 2)"
+    digest="$("${BIN_DIR}/teeism-identity" -identity "${OUT_DIR}/identity-${chain}.json")" \
+      || die "teeism-identity could not digest ${OUT_DIR}/identity-${chain}.json"
     [ -n "${digest}" ] || die "no identity digest for ${chain}"
     save "identity-digest-${chain}" "${digest}"
     say "${chain} identity ${digest}"
