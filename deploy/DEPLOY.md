@@ -1,30 +1,19 @@
 # DEPLOY
 
-The whole bridge from nothing, on one Linux host, as `chef`. Every block starts with a `cd`,
-so paste it from anywhere. Every script is safe to re-run.
+One Linux host, as `chef`. Every block starts with a `cd`. Every script is safe to re-run.
 
-A script that fails stops with `error`, naming the step or the command. One that could only do
-part of its work (Eden before the mocha node has synced, say) exits 3 and lists what it left
-undone: fix that and run it again.
-
-Ids the scripts create go in `devnet/.state/out/`. List them with
-`cd ~/tee-ism-nonzk && make status`.
-
-On a laptop, `make init && make start` (in the repo root) runs the whole thing against a local
-chain. Without Nix there, set `FORCE_UNPINNED=1` to skip step 5's pin checks. `make stop` deletes the enclaves and `.state/`, so **never run it on ark**.
+- Exit 3: partial (e.g. Eden before mocha syncs). Fix, re-run.
+- Ids: `devnet/.state/out/`; `cd ~/tee-ism-nonzk && make status`.
+- Laptop: `make init && make start` (repo root). No Nix: `FORCE_UNPINNED=1` (skips step 5's pin checks).
+- **Never run `make stop` on ark**: it deletes the enclaves and `.state/`.
 
 ## 0. What you need
 
 - docker, go 1.26+, rust, foundry, node, python3, jq, curl, nix
-- the phala CLI, logged in
-- an EVM key used by nothing else, funded on Sepolia, Arbitrum Sepolia and Base Sepolia (ETH)
-  and on Eden (TIA). The relayer signs with it. With `EVM_SIGNER=ledger` (below) it deploys and
-  owns nothing, and the Ledger, funded on the same chains, deploys and owns the contracts
-- a Phala balance (the enclaves cost $4.38/day)
-- a free Alchemy key, for the Base and Arbitrum archives
-
-Only port 3000 needs to be public. The relayer also dials out to Base's p2p network (TCP, and
-UDP on 9222 for discovery); nothing needs to reach it from outside.
+- phala CLI, logged in; Phala balance ($4.38/day)
+- Alchemy key (free)
+- dedicated EVM key (relayer): ETH on Sepolia, Arbitrum Sepolia, Base Sepolia; TIA on Eden. With `EVM_SIGNER=ledger`, fund the Ledger too.
+- Inbound: port 3000 only. Outbound: Base p2p (TCP, UDP 9222).
 
 ## 1. Code and secrets
 
@@ -38,26 +27,20 @@ cp devnet/.env.example devnet/.env && chmod 600 devnet/.env
 $EDITOR devnet/.env      # set EVM_PRIVATE_KEY (with 0x) and ALCHEMY_KEY
 ```
 
-celestia-app: always the `jonas/tee-ism` branch, never `main`.
+celestia-app: always `jonas/tee-ism`, never `main`.
 
 ### Signing EVM transactions on a Ledger
 
-Set `EVM_SIGNER=ledger` in `devnet/.env` (and `EVM_LEDGER_PATH` for an account other than the
-first), with the Ledger plugged in, unlocked, the Ethereum app open and blind signing on. Then
-`75`, `80` and `90` ask the Ledger to confirm each deployment and owner transaction, and the
-Ledger owns everything they deploy. `EVM_PRIVATE_KEY` is still needed: the relayer signs its
-submissions with it, and it owns nothing.
-
-The commands below that sign by hand take `$SIGN`:
+1. `devnet/.env`: `EVM_SIGNER=ledger` (`EVM_LEDGER_PATH` for a non-first account). Keep `EVM_PRIVATE_KEY` (relayer).
+2. Ledger unlocked, Ethereum app open, blind signing on.
+3. Hand-signed commands take `$SIGN`:
 
 ```sh
 SIGN="--ledger --from $(cast wallet address --ledger)"   # or: SIGN="--private-key $EVM_PRIVATE_KEY"
 ```
 
-`forge script` takes `--ledger --sender <address>` instead of `--from`. The Automata tooling
-(appendix D) takes `LEDGER=true OWNER=<ledger address>` in place of `PRIVATE_KEY`.
-[Appendix E](#e-celestia-and-one-evm-chain-signed-on-a-ledger) walks a whole deployment
-this way, with Celestia and Eden only.
+- `forge script`: `--ledger --sender <address>`. Automata (appendix D): `LEDGER=true OWNER=<ledger address>` instead of `PRIVATE_KEY`.
+- Walkthrough: [Appendix E](#e-celestia-and-one-evm-chain-signed-on-a-ledger).
 
 ## 2. Build
 
@@ -88,11 +71,8 @@ cd ~/tee-ism-nonzk && git add deploy/images.lock deploy/docker-compose.*.yml
 git commit -m "Pin enclave images" && git push
 ```
 
-One image per origin chain: `celestia`, `ethereum`, `base`, `arbitrum`, `eden`.
-`25-images.sh` builds, pushes and pins only the chains whose code changed, records each in
-`deploy/images.lock`, and regenerates `deploy/docker-compose.all.yml` from the per-chain files.
-Step 5 refuses to run until those pins match the code and are pushed. Pushing from the server
-needs a GitHub token; otherwise copy the changed files off and commit them elsewhere.
+- Images: `celestia`, `ethereum`, `base`, `arbitrum`, `eden`.
+- Step 5 needs these pins pushed. No GitHub token on the server: commit the files elsewhere.
 
 ## 5. Enclaves
 
@@ -102,15 +82,10 @@ cd ~/tee-ism-nonzk/devnet
 TARGET=all ~/tee-ism-nonzk/deploy/verify-digest.sh "$(cat .state/out/enclave-app-id-all)"
 ```
 
-This deploys every chain's enclave into one CVM, each on its own port (8080 to 8084). To run a
-chain in its own CVM instead, name it: `./scripts/30-enclave-up.sh --base` (any of
-`--celestia --ethereum --base --arbitrum --eden`, several at once for several CVMs). That chain
-then has its own identity, and its routes point at its own CVM; check it with
-`TARGET=base verify-digest.sh <its app id>`.
-
-It stops first if a chain's code no longer matches its pin in `deploy/images.lock`, or the
-pins aren't committed and pushed. Every `verify-digest.sh` check must say `ok`. Never use
-`phala cvms upgrade`: it changes the enclave's identity.
+- Default: one CVM, ports 8080 to 8084.
+- Own CVM: `./scripts/30-enclave-up.sh --base` (any of `--celestia --ethereum --base --arbitrum --eden`). Verify: `TARGET=base verify-digest.sh <its app id>`.
+- Every check must say `ok`.
+- **Never use `phala cvms upgrade`: it changes the enclave identity.**
 
 ## 6. Intel collateral on the EVM chains
 
@@ -120,23 +95,18 @@ scp -P 50 chef@<old host>:tee-ism-nonzk/devnet/.state/out/pccs-*.json .state/out
 for c in sepolia arbitrum base eden; do ./scripts/seed-evm-collateral.sh $c; done
 ```
 
-A fresh Automata deployment has contracts for one evaluation number. Add the next one before
-Intel makes it standard (21 on about 10 Feb 2027): `./scripts/76-tcb-eval.sh <chain> 21`.
-
-These files hold the addresses of our Automata contracts. For a chain that has none yet, see
-[appendix D](#d-automata-on-a-new-evm-chain).
+- Before ~10 Feb 2027: `./scripts/76-tcb-eval.sh <chain> 21`.
+- No Automata contracts yet: [appendix D](#d-automata-on-a-new-evm-chain).
 
 ## 6b. Sepolia node
 
-The Sepolia routes read the host's own nodes: execution on `127.0.0.1:8545`, beacon on
-`127.0.0.1:9596` (`SEPOLIA_RPC`, `SEPOLIA_BEACON` to change).
+| | client | default (override) |
+|---|---|---|
+| execution | reth 2.7.0+ | `127.0.0.1:8545` (`SEPOLIA_RPC`) |
+| beacon | Lodestar v1.49.0+ | `127.0.0.1:9596` (`SEPOLIA_BEACON`) |
 
-- **Execution: reth 2.7.0 or later**, which knows Amsterdam. Keep about a day of history and an
-  `eth_getProof` window to match (`--rpc.eth-proof-window`); ark keeps 120k blocks of each.
-- **Beacon: Lodestar v1.49.0 or later.** Since Glamsterdam (Sepolia slot 11296768) a beacon
-  block carries a builder's bid instead of an execution payload, and only Lodestar serves Gloas
-  light-client data; lighthouse returns 404 for every post-fork bootstrap. Lodestar drives reth
-  over the engine API with the same JWT secret lighthouse used.
+- reth: ~1 day of history and `--rpc.eth-proof-window` (ark: 120k blocks).
+- Not lighthouse (404s after Glamsterdam). Lodestar uses the same JWT secret.
 
 ```sh
 curl -s localhost:9596/eth/v1/beacon/light_client/finality_update | jq -r .version   # gloas
@@ -156,7 +126,7 @@ docker run -d --name mocha-light --restart unless-stopped -p 127.0.0.1:26658:266
   celestia light start --p2p.network mocha --rpc.addr 0.0.0.0 --rpc.port 26658 --rpc.skip-auth
 ```
 
-It takes about 30 minutes to sync. Until it has, step 8 skips Eden; re-run step 8 afterwards.
+Syncs in ~30 min; re-run step 8 after for Eden.
 
 ## 8. Tokens, ISMs, warp routes
 
@@ -171,14 +141,9 @@ cd ~/tee-ism-nonzk/devnet
   printf '%-24s %s\n' $k "$(load $k 2>/dev/null)"; done
 ```
 
-`50-warp-celestia.sh` also creates teeUSD and mints its whole supply, 1B, to the `user` key
-(`TEEUSD_HOLDER` to change), then removes the only origin that could mint more.
-`90-evm-warp.sh` also deploys a `TeeTokenFactory` on Sepolia, Base and Arbitrum, where anyone
-launches a token through the Trade tab, and keeps it and its launches on the current ISM.
-
-Every line needs an id. **If `90-evm-warp.sh` prints `deploying the synthetic ... router` on
-a chain that already has one, press Ctrl-C.** A new router orphans the tokens the old one
-minted.
+- Every line must print an id.
+- teeUSD supply (1B) goes to the `user` key (`TEEUSD_HOLDER` to change).
+- **If `90-evm-warp.sh` prints `deploying the synthetic ... router` on a chain that already has one, press Ctrl-C**: it orphans existing tokens.
 
 ## 9. Paymaster and gas oracle
 
@@ -200,8 +165,7 @@ printf '%s' "$EVM_PRIVATE_KEY" > .state/evm-key && chmod 600 .state/evm-key
 ~/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle --config .state/gas-oracle.toml --once
 ```
 
-**EVM side, once per chain** (already done on Sepolia, Arbitrum and Base). Skipping it makes
-transfers revert with `no gas oracle for domain`.
+**EVM side, once per chain** (done on Sepolia, Arbitrum, Base). Else: `no gas oracle for domain`.
 
 ```sh
 cast send <igp> "setDestinationGasConfigs((uint32,(address,uint96))[])" \
@@ -214,19 +178,16 @@ cast send <igp> "setDestinationGasConfigs((uint32,(address,uint96))[])" \
 | Arbitrum | `0x0ee6374a92ba4E11F920A23c6dd271b594D69A9B` | `0xfA8036Cb092079B095ed60750d7b39c3C220F288` |
 | Base | `0x5591613C85E9bC95104980d4485c958ee80f6F76` | `0x7A7042C8784700618be87Aac7F9336620e216Bb9` |
 
-**Router hooks.** Check each new EVM router's hook:
+**Router hooks.** No hook means undeliverable messages.
 
-```sh
-cast call <router> 'hook()(address)' --rpc-url <rpc>
-```
-
-If it prints `0x000…`, point it at the hook that chain's TIA router uses:
-
-```sh
-cast send <router> "setHook(address)" <that hook> --rpc-url <rpc> $SIGN
-```
-
-A router with no hook sends messages that can never be delivered.
+1. Each new EVM router:
+   ```sh
+   cast call <router> 'hook()(address)' --rpc-url <rpc>
+   ```
+2. If `0x000…`, use that chain's TIA router hook:
+   ```sh
+   cast send <router> "setHook(address)" <that hook> --rpc-url <rpc> $SIGN
+   ```
 
 ## 10. Services
 
@@ -237,8 +198,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now teeism-relayer teeis
 curl -s localhost:3001/api/status | jq -r '.[] | "\(.name) \(.height)"'     # 8 routes
 ```
 
-`write_config` writes `.state/coprocessor.toml`; don't edit that file by hand. The faucet is
-part of the relayer and needs no setup.
+Never hand-edit `.state/coprocessor.toml`.
 
 ## 11. UI and gateway
 
@@ -271,7 +231,7 @@ grep -c 'localhost:26657' dist/assets/index-*.js      # must print 0
 cd ~/tee-ism-nonzk/devnet/gateway && UI_DIST=~/tee-ism-nonzk/bridge-app/dist docker compose up -d
 ```
 
-Always build the UI on the server itself: the build bakes `.env.local` in.
+Build the UI on the server (`.env.local` is baked in).
 
 ## 12. Check
 
@@ -292,53 +252,38 @@ Then send 0.1 TIA each way ([INTERACT.md](INTERACT.md)).
 
 No enclave or ISM changes.
 
-1. Add a row to `TOKENS` in `scripts/90-evm-warp.sh`, and the Celestia side to
-   `scripts/50-warp-celestia.sh`, as teeUSD does.
-2. Re-run both scripts, set the new routers' hooks (step 9), `write_config`, and restart the
-   relayer.
-3. Add the routers to `.env.local` (step 11), the asset to `[trade]` in `write_config`, and
-   rebuild the UI.
+1. Add it to `TOKENS` in `scripts/90-evm-warp.sh` and to `scripts/50-warp-celestia.sh` (like teeUSD).
+2. Re-run both, set router hooks (step 9), `write_config`, restart the relayer.
+3. Routers to `.env.local` (step 11), asset to `[trade]` in `write_config`; rebuild the UI.
 
 ### B. The venue
 
-The Trade tab and `/api/v1/trade` ([API.md](API.md)) need teeUSD, its
-pools, and the factories from `90-evm-warp.sh`. `write_config` then writes `[trade]` and the
-faucet's grants: 5k TIA and 20k teeUSD per address from the `user` key, paused while that key
-holds less than 500M TIA or 1B teeUSD. `FAUCET_TIA`, `FAUCET_TEEUSD`, `FAUCET_TIA_FLOOR`,
-`FAUCET_TEEUSD_FLOOR` (base units) and `FAUCET_KEY` change them. Uniswap's addresses per chain are `uniswap_for`
-in `scripts/lib.sh`.
+Needs teeUSD, its pools and `90-evm-warp.sh`'s factories ([API.md](API.md)).
+
+Faucet (base units): `FAUCET_TIA` 5k, `FAUCET_TEEUSD` 20k, pauses below `FAUCET_TIA_FLOOR` 500M / `FAUCET_TEEUSD_FLOOR` 1B, from `FAUCET_KEY` (`user`). Uniswap: `uniswap_for` in `scripts/lib.sh`.
 
 ### C. Adding a chain
 
-**As an origin**, one file per crate, named after the chain, under `l1/` for a chain verified
-by a light client or `l2/` for a rollup verified by its sequencer's signature:
+**Origin**: one file per crate, under `l1/` (light client) or `l2/` (rollup).
 
 | file | implement | returns |
 |---|---|---|
 | `tee-node/src/chains/l2/arbitrum.rs` | `origin::Origin` | `verify`: the verified state root. `merkle_tree`: the Hyperlane tree under it |
 | `tee-coprocessor/src/origin/l2/arbitrum.rs` | `origin::Indexer` | `gather`: the inputs for those two. `index`: messages between heights. `bootstrap`: a genesis state |
 
-A rollup whose sequencer signs blocks with a secp256k1 key can reuse
-`tee-node/src/chains/l2/sequencer.rs` for the check and `tee-coprocessor/src/origin/l2/sequenced.rs`
-for everything after the signed block (tree proofs, the archive snapshot, indexing).
+secp256k1 sequencer: reuse `tee-node/src/chains/l2/sequencer.rs` and `tee-coprocessor/src/origin/l2/sequenced.rs`.
 
-Then register it:
-- a cargo feature in `tee-node/Cargo.toml`, and the chain in `origin::chains()`
-- an image: the chain in `flake.nix` (`chains`, `chainFiles`, `keeps`), a
-  `deploy/docker-compose.<chain>.yml`, and a port in `enclave_port` and `ENCLAVE_CHAINS` in
-  `devnet/scripts/lib.sh`
-- a `kind` arm in `tee-coprocessor/src/config.rs`
-- its table in `write_config`, and a row in the ISM scripts
+Register it:
+1. cargo feature in `tee-node/Cargo.toml`; chain in `origin::chains()`
+2. image: chain in `flake.nix` (`chains`, `chainFiles`, `keeps`), a `deploy/docker-compose.<chain>.yml`, a port in `enclave_port` and `ENCLAVE_CHAINS` in `devnet/scripts/lib.sh`
+3. `kind` arm in `tee-coprocessor/src/config.rs`
+4. its table in `write_config`; a row in the ISM scripts
 
 Rules:
-- Contract addresses, storage slots and keys are constants in the chain's file, never inputs.
-- The time is never an input.
-- A new image changes `docker-compose.all.yml`, so it moves the shared CVM's identity and
-  every ISM attested from it.
+- Addresses, storage slots, keys: constants, never inputs. Time: never an input.
+- A new image changes the shared CVM's identity and every ISM attested from it.
 
-**As a destination**, an EVM chain reuses `tee-coprocessor/src/destination/evm.rs` and
-`TeeDcapIsm.sol` unchanged. Any other kind of chain needs an ISM that behaves like
-`TeeDcapIsm`, and a `destination/<kind>.rs` implementing `destination::Destination`.
+**Destination**: EVM reuses `tee-coprocessor/src/destination/evm.rs` and `TeeDcapIsm.sol`. Others need a `TeeDcapIsm`-like ISM and `destination/<kind>.rs` (`destination::Destination`).
 
 ### D. Automata on a new EVM chain
 
@@ -356,11 +301,7 @@ In `devnet/automata/`:
 8. `setCallerAuthorization(router, true)` on both storage contracts
 9. write `.state/out/pccs-<chain>.json`, then run `scripts/seed-evm-collateral.sh <chain>`
 
-With a Ledger, every step above signs on it: `make` and `deploy_versioned.sh` take
-`LEDGER=true OWNER=<ledger address>` in place of `PRIVATE_KEY`, step 2 takes
-`--ledger --sender <ledger address>`, and steps 4, 7 and 8 are `cast send … $SIGN`. In step 4
-grant the role to the key that will seed collateral each month (`EVM_PRIVATE_KEY`'s address, so
-`seed-evm-collateral.sh` runs without the Ledger). That role only uploads Intel-signed data.
+Ledger: `make`, `deploy_versioned.sh` take `LEDGER=true OWNER=<ledger address>`; step 2 `--ledger --sender <ledger address>`; steps 4, 7, 8 `cast send … $SIGN`. In step 4 grant `EVM_PRIVATE_KEY`'s address (monthly seeding).
 
 Pitfalls:
 - keep `Salt.sol` domain-separated
@@ -370,9 +311,7 @@ Pitfalls:
 - Eden accepts TCB info only in the V1 DAO
 - `openzeppelin-contracts` must be v5.0.2
 
-`75-dcap-verifiers.sh` adds the v5 verifier (`V5QuoteVerifier`, recorded in the same
-file) once per chain. The deployed addresses differ per chain. `devnet/.state/out/pccs-<chain>.json` is the record
-the scripts and ISMs read:
+Recorded in `devnet/.state/out/pccs-<chain>.json` (plus `V5QuoteVerifier` from `75-dcap-verifiers.sh`):
 
 | contract | Sepolia | Arbitrum | Base | Eden |
 |---|---|---|---|---|
@@ -386,11 +325,9 @@ the scripts and ISMs read:
 
 ### E. Celestia and one EVM chain, signed on a Ledger
 
-The whole bridge with a single EVM chain, here Eden, every EVM deployment and owner transaction
-confirmed on a Ledger. Everything is created fresh, including Hyperlane core on Eden, which has
-no canonical deployment. These are the main steps with these differences:
+Main steps, Eden only, with these differences:
 
-**Steps 0–1.** In `devnet/.env`, `EVM_PRIVATE_KEY` is the relayer's key (TIA on Eden) and:
+**Steps 0–1.** In `devnet/.env`:
 ```sh
 EVM_SIGNER=ledger
 ```
@@ -398,21 +335,20 @@ EVM_SIGNER=ledger
 LEDGER=$(cast wallet address --ledger); SIGN="--ledger --from $LEDGER"; EDEN=https://rpc.testnet.eden.gateway.fm/
 ```
 
-**Steps 4–5.** Build and run only the two enclaves:
+**Steps 4–5.** Only two enclaves:
 ```sh
 CHAINS="celestia eden" ./scripts/25-images.sh
 ./scripts/30-enclave-up.sh --celestia --eden
 ```
 
-**Step 6.** Automata on Eden per [appendix D](#d-automata-on-a-new-evm-chain), Ledger-signed,
-then:
+**Step 6.** [Appendix D](#d-automata-on-a-new-evm-chain) on Eden, then:
 ```sh
 ./scripts/seed-evm-collateral.sh eden          # the relayer's key, with ATTESTER_ROLE
 CHAINS=eden ./scripts/75-dcap-verifiers.sh     # Ledger
 ./scripts/76-tcb-eval.sh eden 21               # before 21 becomes standard (~10 Feb 2027)
 ```
 
-**Step 7.** The mocha light node, as written.
+**Step 7.** As written.
 
 **Hyperlane core on Eden**, before step 8:
 ```sh
@@ -423,7 +359,7 @@ echo "EDEN_MAILBOX=<Mailbox>" >> ~/tee-ism-nonzk/devnet/.env      # from the out
 echo "EDEN_HOOK=<MerkleTreeHook>" >> ~/tee-ism-nonzk/devnet/.env
 ```
 
-**Step 8**, for Eden only. The mailbox is initialized once its ISM exists:
+**Step 8**:
 ```sh
 cd ~/tee-ism-nonzk/devnet && set -a && . ./.env && set +a && . scripts/lib.sh
 ROW="eden:3735928814:$EDEN_MAILBOX"
@@ -435,17 +371,11 @@ CHAINS=$ROW ./scripts/80-evm-isms.sh
 ORIGINS="eden:3735928814:eden:$(pad32 $EDEN_HOOK)" ./scripts/85-celestia-isms.sh
 CHAINS=$ROW ./scripts/90-evm-warp.sh
 ```
-Eden's routers keep an empty hook: the mailbox's hooks are both the merkle tree hook.
+Leave Eden's router hooks empty.
 
-**Step 9.** The Celestia block as written. In `.state/gas-oracle.toml` keep only the `Eden`
-destination and remove every `evm_origins` entry: Eden has no paymaster of its own.
+**Step 9.** Celestia block only. `.state/gas-oracle.toml`: keep only the `Eden` destination, remove all `evm_origins`.
 
-**Steps 10–12.** As written; `curl …/api/status` lists 2 routes. Before building the UI, set
-Eden's `mailbox:` in `bridge-app/src/config.ts` to `$EDEN_MAILBOX` (it is not an env setting),
-and write `.env.local` with `for c in eden`.
-
-From then on the Ledger owns every Eden contract: re-pins and re-points run the same scripts
-with the same `.env`, and by hand `cast send … $SIGN` ([ADMIN](ADMIN.md)).
+**Steps 10–12.** 2 routes. Before the UI build: set Eden's `mailbox:` in `bridge-app/src/config.ts` to `$EDEN_MAILBOX`; use `for c in eden` in `.env.local`. Admin: [ADMIN](ADMIN.md).
 
 ### F. Endpoints
 
@@ -467,6 +397,4 @@ EDEN_RPC          https://rpc.testnet.eden.gateway.fm/
 EDEN_DA_RPC       http://localhost:26658
 ```
 
-Never use a metered key for logs: a large `eth_getLogs` sweep drains it and stalls every route.
-The Base and Arbitrum archives are read once per ISM advance (the tree at the trusted height);
-reads near the head go to the free endpoint.
+Never use a metered key for logs: `eth_getLogs` sweeps drain it and stall every route.

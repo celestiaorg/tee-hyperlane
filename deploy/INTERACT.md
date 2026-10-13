@@ -1,9 +1,6 @@
 # INTERACT
 
-Using a running bridge: wallets, test funds, sending, and checking arrival yourself. `B` is
-the gateway, e.g. `B=http://<host>:3000`; `celestia-appd` commands run on the host.
-
----
+`B` is the gateway, e.g. `B=http://<host>:3000`. `celestia-appd` commands run on the host.
 
 ## Endpoints
 
@@ -18,14 +15,12 @@ the gateway, e.g. `B=http://<host>:3000`; `celestia-appd` commands run on the ho
 
 ## Wallets
 
-- **Keplr.** Open the UI and connect; it registers `teeism-local` for you. Import
-  `CELESTIA_MNEMONIC` from `devnet/.env`. Account 0 is funded, and stays funded across chain
-  rebuilds.
-- **MetaMask.** Let the UI add the networks. It points them at `$B/evm/<chain>/`.
+- **Keplr:** connect in the UI, import `CELESTIA_MNEMONIC` from `devnet/.env`. Account 0 is funded.
+- **MetaMask:** let the UI add the networks.
 
 ## Test funds
 
-The **Faucet** tab gives 1000 TIA, once per address. From the command line:
+**Faucet** tab: 1000 TIA, once per address. CLI:
 
 ```sh
 curl -s $B/api/faucet                                   # {"enabled":true,"amountTia":1000}
@@ -33,13 +28,9 @@ curl -s -X POST $B/api/faucet -H 'content-type: application/json' \
   -d '{"address":"celestia1..."}'                       # {"tx_hash":"...","amount_tia":1000}
 ```
 
-A second claim returns 409. Claims are recorded on the host, so a new browser does not reset
-them.
-
 ## Sending
 
-**In the UI:** pick origin, destination, asset and amount. Every EVM token here is a
-synthetic, burned on send, so no `approve` is needed.
+**UI:** pick origin, destination, asset, amount. No `approve` needed.
 
 **From Celestia:**
 
@@ -50,8 +41,7 @@ celestia-appd tx warp transfer <celestia token id> <destination domain> \
   --gas auto --gas-adjustment 1.5 --gas-prices 0.002utia --max-hyperlane-fee 10000000utia -y
 ```
 
-`--gas auto` prints `gas estimate: <n>` before the JSON, so `-o json | jq` fails, and by then
-the transfer has already been broadcast. Read the `txhash` line instead of re-running.
+Don't re-run if `jq` fails: it's already broadcast. Read the `txhash` line.
 
 **From an EVM chain:**
 
@@ -63,7 +53,7 @@ cast send <router> "transferRemote(uint32,bytes32,uint256)(bytes32)" \
 ```
 
 Domains: Celestia `1297040299`, Sepolia `11155111`, Arbitrum `421614`, Base `84532`, Eden
-`3735928814`. Router and token addresses are in [README.md](../README.md#deployments).
+`3735928814`. Addresses: [README.md](../README.md#deployments).
 
 ## How long it takes
 
@@ -76,24 +66,17 @@ Arbitrum -> Celestia                  under 1 min the next block its sequencer s
 Base     -> Celestia                  under 1 min the next block its sequencer signs
 ```
 
-The slow ones are the origin's own finality; the bridge adds one transaction
-([MAINTAIN](MAINTAIN.md#waiting-or-stuck)).
+Slower than this: [MAINTAIN](MAINTAIN.md#waiting-or-stuck).
 
 ## Did it arrive
-
-The destination mailbox is the authority:
 
 ```sh
 cast call <mailbox> "delivered(bytes32)(bool)" <message id> --rpc-url <rpc>
 celestia-appd query hyperlane delivered <mailbox id> <message id> --node tcp://localhost:26657
 ```
 
-Ask Celestia only about messages *into* Celestia: it records its own outgoing ids in the same
-set, so an outbound id reads `true` as soon as it is sent.
-
-Or read the balance. On an EVM chain the router is the ERC20
-(`cast call <router> "balanceOf(address)(uint256)" <you> --rpc-url <rpc>`). On Celestia a
-synthetic is the bank denom `hyperlane/<token id>`.
+- Query the destination mailbox. On Celestia, only for messages *into* Celestia (outbound ids read `true`).
+- Or check the balance: EVM `cast call <router> "balanceOf(address)(uint256)" <you> --rpc-url <rpc>`; Celestia denom `hyperlane/<token id>`.
 
 ## Watching it
 
@@ -102,18 +85,13 @@ curl -s $B/api/status | jq '.[] | {name, height, timestamp, proving, blocked}'
 journalctl -u teeism-relayer -f | grep -E 'attesting|delivering|delivered|route failed'
 ```
 
-A healthy cycle:
+Healthy:
 
 ```
 route: attesting route=base-to-celestia from=46889663 to=46890863 leaves=2
 destination: delivering id=...
 route: batch delivered route=base-to-celestia height=46890863
 ```
-
-The UI shows four steps: **Dispatched**, **Attested by enclave**, **Authorised by ISM**,
-**Delivered**. Delivered comes from the destination mailbox, not from the relayer. Expanding a
-transfer shows its batch's attestation: the origin block, the state root, the enclave
-measurements and the quote.
 
 ## What an ISM trusts
 
@@ -127,11 +105,9 @@ celestia-appd query teeism ism <ism id> --node tcp://localhost:26657 -o json
 [ 44: 52] timestamp      [ 52: 84] lc_store_commit [ 84:116] identity_digest
 ```
 
-`height` and `timestamp` show how far the ISM has followed its origin.
-
 ## Cost
 
-One attestation covers a whole batch. At 1.1 gwei on Sepolia, 0.006 on Base, 0.25 on Arbitrum:
+At 1.1 gwei on Sepolia, 0.006 on Base, 0.25 on Arbitrum:
 
 ```
                       gas         sepolia    base       arbitrum    (ETH)
@@ -139,9 +115,8 @@ attestation           5,331,900   0.005900   0.000031   0.001330
 delivery, per message   124,000   0.000140   0.000001   0.000030
 ```
 
-On Celestia an attestation is 343,592 gas and a delivery 117,337. The enclaves cost
-$4.38/day for all three. Senders pay through the paymaster; the gas oracle at `:3002` shows the
-current quotes, and `~/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle --config ~/tee-ism-nonzk/devnet/.state/gas-oracle.toml --once` prints one round.
+Celestia: attestation 343,592 gas, delivery 117,337. Enclaves: $4.38/day. Current quotes: `:3002`, or one round:
+`~/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle --config ~/tee-ism-nonzk/devnet/.state/gas-oracle.toml --once`.
 
 ## Running the UI locally
 
@@ -149,5 +124,4 @@ current quotes, and `~/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle --c
 cd bridge-app && npm install && npm run dev     # http://localhost:5173
 ```
 
-It reads every address from `VITE_*` in `.env.local` ([DEPLOY step 11](DEPLOY.md#11-ui-and-gateway)).
-`make start` (in the repo root) writes one pointing at a local devnet.
+Reads `VITE_*` from `.env.local` ([DEPLOY step 11](DEPLOY.md#11-ui-and-gateway)). `make start` (repo root) writes one for a local devnet.

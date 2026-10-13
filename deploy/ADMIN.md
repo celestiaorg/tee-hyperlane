@@ -1,36 +1,27 @@
 # Admin controls
 
-What the owner key can change on a live deployment, with the command for each and where its
-inputs come from. [MAINTAIN.md](MAINTAIN.md) covers routine rotations; this file is the reference
-for every owner control, and for what to do when something on Intel's side breaks.
-
-The owner is a trust root: it decides which enclave an ISM trusts and, on Celestia, which Intel
-root CA quotes must chain to. Nothing lets it skip or relax Intel's verification: every
-attestation must carry a quote that fully verifies, with unexpired collateral, against a trusted
-root. Move ownership to a multisig before mainnet ([Celestia](#transfer-ownership), [EVM](#evm-transfer-ownership)).
+Rotations: [MAINTAIN.md](MAINTAIN.md). Multisig before mainnet ([Celestia](#transfer-ownership), [EVM](#evm-transfer-ownership)).
 
 ## Who the owner is
 
-| Where | Owner today | Key |
+| Where | Owner | Key |
 |---|---|---|
-| Celestia ISMs (`x/teeism`) | the `relayer` account | `.state/celestia` keyring, `--from relayer` |
-| EVM ISMs (`TeeDcapIsm`), Automata contracts | whoever deployed them | the Ledger with `EVM_SIGNER=ledger`, else `EVM_PRIVATE_KEY` |
+| Celestia ISMs (`x/teeism`) | `relayer` | `--from relayer` (`.state/celestia`) |
+| EVM ISMs (`TeeDcapIsm`), Automata | deployer | Ledger (`EVM_SIGNER=ledger`) or `EVM_PRIVATE_KEY` |
 
 ## What the owner controls
 
 | Control | Celestia | EVM |
 |---|---|---|
-| Re-pin the enclave identity (new image, platform update, replacement CVM) | `tx teeism update-identity` | `setEnclave` (ISM `VERSION` 3+) |
+| Re-pin identity | `tx teeism update-identity` | `setEnclave` (ISM `VERSION` 3+) |
 | Transfer ownership | `tx teeism update-owner` | `transferOwnership` |
-| Trust a new Intel root CA | `set-verifier-overrides --trusted-root-cert` | new PCCS `PcsDao` (the root key hash is a constant in it) |
-| Support a new quote version | v4 and v5 are verified; a later one needs a celestia-app upgrade | `setQuoteVerifier` (`75-dcap-verifiers.sh` adds v5) |
-| Stop an ISM accepting anything new | re-pin to an identity no enclave has | `setEnclave` to measurements no enclave has |
-
-Re-pinning is all a normal rotation needs. Updating the root CA is for when Intel rotates it.
+| New Intel root CA | `set-verifier-overrides --trusted-root-cert` | new PCCS `PcsDao` |
+| New quote version | v4, v5 built in; later: celestia-app upgrade | `setQuoteVerifier` (`75-dcap-verifiers.sh` adds v5) |
+| Stop an ISM | re-pin to unused identity | `setEnclave` to unused measurements |
 
 ## Setup
 
-Run on ark as `chef`, from the devnet directory:
+On ark as `chef`:
 
 ```sh
 cd ~/tee-ism-nonzk/devnet && . scripts/lib.sh
@@ -41,7 +32,7 @@ ENCLAVE=$ORIGIN                        # the enclave that attests it: ethereum f
 ISM=$(load ism-celestia-$ORIGIN)
 ```
 
-Read an ISM's owner, pinned identity and overrides at any time:
+Inspect:
 
 ```sh
 $A q teeism ism $ISM --node http://localhost:26657 -o json | jq '.ism | {owner, identity, verifier_overrides}'
@@ -51,14 +42,7 @@ $A q teeism ism $ISM --node http://localhost:26657 -o json | jq '.ism | {owner, 
 
 ### Re-pin the enclave identity
 
-For a new image, a platform update under the CVM, or a replacement enclave. The ISM keeps its id,
-root and height, so no route moves. `85-celestia-isms.sh` does this for every ISM the `relayer`
-key owns.
-
-**Payload:** the identity JSON of the enclave that attests the ISM's origin. `30-enclave-up.sh`
-writes it to `.state/out/identity-<enclave>.json` when it brings the enclave up. To read it from
-a running enclave instead, the enclave serves it at `<enclave-url>/identity` and the coprocessor
-turns that into the file:
+**Payload:** `.state/out/identity-<enclave>.json` (`30-enclave-up.sh`) or live enclave:
 
 ```sh
 ../tee-hyperlane/target/release/tee-hyperlane identity --url $(load enclave-url-$ENCLAVE) --json /tmp/identity.json
@@ -68,16 +52,12 @@ $A tx teeism update-identity $ISM /tmp/identity.json --from relayer $TX
 
 ### Transfer ownership
 
-Hands every owner control (re-pinning, the root CA) to the new owner. The old owner keeps none.
-There is no renouncing: an ISM always has an owner who can act in an emergency.
-
 ```sh
 NEW=celestia1...                       # a multisig, see below
 $A tx teeism update-owner $ISM $NEW --from relayer $TX
 ```
 
-A multisig owner is an ordinary multisig account. Create it from the signers' public keys,
-then each owner action is generated unsigned, signed by enough signers, and broadcast:
+Multisig owner:
 
 ```sh
 $A keys add admin --multisig signer1,signer2,signer3 --multisig-threshold 2 $H
@@ -87,24 +67,13 @@ $A tx multisign unsigned.json admin s1.json s2.json $TX > signed.json
 $A tx broadcast signed.json --node http://localhost:26657
 ```
 
-**Once the relayer no longer owns an ISM, the rotation scripts stop re-pinning it.**
-`85-celestia-isms.sh` re-pins only ISMs the `relayer` key owns; for any other it creates a
-replacement ISM, owned by `relayer`, and re-points the route. After a transfer, re-pin from the
-multisig as above before running the script, so it finds the ISM already on the new identity.
+**Warning:** `85-celestia-isms.sh` only re-pins `relayer`-owned ISMs. Re-pin from the new owner first.
 
 ### Update the Intel root CA
 
-Each call replaces the previous setting, and `--clear` goes back to the root built into the
-verifier. Every change emits `EventSetVerifierOverrides` with the before and after.
+`--trusted-root-cert`: repeatable, PEM/DER, replaces prior. Only `Intel SGX Root CA`, P-256.
 
-**`--trusted-root-cert <file>`**, repeatable, PEM or DER. Replaces the Intel SGX Root CA built
-into the verifier. For a root rotation where Intel keeps the root's name and key type
-(`Intel SGX Root CA`, P-256); the verifier still requires both.
-
-Payload: Intel publishes the root CA at
-<https://certificates.trustedservices.intel.com/Intel_SGX_Provisioning_Certification_RootCA.cer>
-(DER). It is also the last certificate of every issuer chain `teeism-collateral` returns (the
-chain is URL-encoded PEM). Check the fingerprint against Intel's announcement before trusting it:
+**Payload:** URL below, or last cert of a `teeism-collateral` issuer chain. Check fingerprint against Intel's announcement.
 
 ```sh
 curl -sO https://certificates.trustedservices.intel.com/Intel_SGX_Provisioning_Certification_RootCA.cer
@@ -113,14 +82,9 @@ $A tx teeism set-verifier-overrides $ISM --trusted-root-cert Intel_SGX_Provision
 $A tx teeism set-verifier-overrides $ISM --clear --from relayer $TX     # back to the built-in root
 ```
 
-Whoever holds the owner key could install a root of their own here, as they could re-pin to an
-enclave of their own. That is why the owner should be a multisig.
-
 ### Stop an ISM
 
-Re-pinning to an identity no enclave has makes every new attestation fail the identity check,
-which stops the ISM advancing. Messages it has already authorized stay deliverable. Re-pin back
-to resume.
+Re-pin back to resume.
 
 ```sh
 jq '.compose_hash = "0x" + ("00" * 32)' /tmp/identity.json > /tmp/stopped.json
@@ -129,9 +93,7 @@ $A tx teeism update-identity $ISM /tmp/stopped.json --from relayer $TX
 
 ## EVM
 
-Every EVM owner transaction below signs with `$SIGN`: the Ledger when it owns the contracts
-(the deployment used `EVM_SIGNER=ledger`), else the deploy key. The scripts pick the same
-signer from `devnet/.env`, so with a Ledger, `80` and `90` re-pin and re-point through it.
+Scripts `80`/`90` sign likewise (`devnet/.env`).
 
 ```sh
 SIGN="--ledger --from $(cast wallet address --ledger)"   # or: SIGN="--private-key $EVM_PRIVATE_KEY"
@@ -143,13 +105,9 @@ cast call $ISM "VERSION()(uint8)" --rpc-url $RPC      # reverts on revision 1
 
 ### Re-pin the enclave identity
 
-`setEnclave` exists from `VERSION` 3. An older ISM cannot be re-pinned; `80-evm-isms.sh`
-replaces it, carrying its state over, and `90-evm-warp.sh` re-points the routers.
+`VERSION` < 3: `80-evm-isms.sh` replaces, `90-evm-warp.sh` re-points.
 
-**Payload:** two values from the Celestia enclave, which attests every EVM ISM's origin. The
-measurements are `keccak256(mr_td ++ mr_config_id ++ rtmr0 ++ rtmr1 ++ rtmr2)` cut from the quote
-its `/identity` endpoint returns (rtmr3 is left out because it differs per CVM); the identity
-digest is the same kind the Celestia ISMs pin.
+**Payload:** Celestia enclave `/identity`: `keccak256(mr_td ++ mr_config_id ++ rtmr0 ++ rtmr1 ++ rtmr2)`, identity digest.
 
 ```sh
 URL=$(load enclave-url-celestia)
@@ -169,39 +127,20 @@ cast send $ISM "setEnclave(bytes32,bytes32)" $MEASUREMENTS $IDENTITY --rpc-url $
 
 ### <a name="evm-transfer-ownership"></a>Transfer ownership
 
-Every contract the owner holds is `Ownable`: the ISMs, the token factory, the warp routers and
-the Automata entrypoint and PCCS storage.
+Also: factory, routers, Automata entrypoint, PCCS storage.
 
 ```sh
 cast send $ISM "transferOwnership(address)" $SAFE --rpc-url $RPC $SIGN
 ```
 
-As on Celestia, `80-evm-isms.sh` re-pins only ISMs its signer owns and replaces the rest, so
-re-pin from the Safe first.
+**Warning:** `80-evm-isms.sh` only re-pins ISMs its signer owns. Re-pin from the Safe first.
 
 ### Intel's side on EVM
 
-Verification runs through the Automata contracts. There is no per-ISM override; the owner of
-the Automata deployment controls it instead:
-
-- **Fresh collateral** (CRLs, TCB info, QE identity) goes in through the PCCS `upsert*`
-  functions, which reject anything Intel did not sign. Certificates and CRLs are open to anyone;
-  TCB info, QE identity and the evaluation-number list only to keys the owner granted
-  `ATTESTER_ROLE` (`grantRoles(<key>, 1)` on each versioned DAO and the TcbEvalDao).
-  `seed-evm-collateral.sh` does it each month ([MAINTAIN](MAINTAIN.md#monthly-intel-collateral)); without it the
-  Celestia → EVM routes stop 30 days after the last seed.
-- **A new quote version** needs a verifier for it registered on the entrypoint
-  (`setQuoteVerifier`, owner only). `75-dcap-verifiers.sh` does this for v5.
-- **A new Intel root key** cannot be upserted: `PcsDao` pins the root's public key hash as a
-  constant. The storage owner deploys a `PcsDao` with the new hash and `grantDao`s it.
-- **TCB status**: `TeeDcapIsm` accepts `UpToDate` and `SWHardeningNeeded` only, as constants.
-  Accepting anything else needs a new ISM version.
+- **Collateral:** PCCS `upsert*`, monthly ([MAINTAIN](MAINTAIN.md#monthly-intel-collateral)). Needs `ATTESTER_ROLE`: `grantRoles(<key>, 1)` on each versioned DAO and TcbEvalDao.
+- **TCB status:** only `UpToDate`, `SWHardeningNeeded`; else new ISM version.
 
 ## <a name="tcb-recovery"></a>TCB recovery (Intel moves to a new evaluation number)
-
-Intel rates each platform against a numbered set of TCB requirements. A new number (a "TCB
-recovery") raises the bar; verifiers use the "standard" number, which moves to a new one 12 months
-after Intel releases it. Check where things stand:
 
 ```sh
 curl -s https://api.trustedservices.intel.com/tdx/certification/v4/tcbevaluationdatanumbers \
@@ -209,34 +148,24 @@ curl -s https://api.trustedservices.intel.com/tdx/certification/v4/tcbevaluation
 curl -s "https://api.trustedservices.intel.com/tdx/certification/v4/tcb?fmspc=20a06f000000" | jq .tcbInfo.tcbEvaluationDataNumber   # standard today
 ```
 
-When the standard number moves, a platform that has not taken the recovery's microcode and TDX
-module updates is rated `OutOfDate`, and both chains refuse its quotes. The enclave's measurements
-do not change, so re-pinning does not help.
+Unpatched hosts go `OutOfDate`, routes stop. Re-pin won't help.
 
-- **Fix:** the host is patched (Phala updates the machine, or the CVM moves to a patched one).
-  On Celestia nothing else is needed. On EVM, the PCCS DAOs are bound to one evaluation number
-  (`TCB_EVALUATION_NUMBER()`), so the new number needs its own, registered on the `PCCSRouter`
-  and seeded, before the date: `./scripts/76-tcb-eval.sh <chain> <number>` (owner-signed),
-  then the monthly seed keeps both fresh ([MAINTAIN](MAINTAIN.md)).
-- Until then the routes stop on both chains. Ask Phala ahead of the date whether the hosts have
-  taken the recovery.
+- **Both:** Phala patches the host, or move CVM. Ask early.
+- **EVM, beforehand:** `./scripts/76-tcb-eval.sh <chain> <number>` (owner), then monthly seed ([MAINTAIN](MAINTAIN.md)).
 
 ## When something breaks live
 
-What can be fixed by the owner on a running deployment, and what needs a new release.
-
 | What happens | Celestia | EVM |
 |---|---|---|
-| New enclave image, OS or platform update, replacement CVM | re-pin | re-pin (`VERSION` 3+), else replace and re-point |
-| Intel publishes fresh collateral as usual | nothing to do: the relayer ships it with every submission | the monthly `seed-evm-collateral.sh` |
-| Intel's PCS is down or late, collateral expires | routes stop until Intel publishes again; then nothing to do | routes stop 30 days after the last seed; seed once Intel is back |
-| A TCB recovery leaves the platform `OutOfDate` ([details](#tcb-recovery)) | routes stop until the host is patched | routes stop until the host is patched and the new DAOs are deployed and wired |
-| The platform's PCK certificate is revoked | move the enclave to another machine (new CVM) and re-pin | same |
-| Intel rotates the root CA, same name and key type | `--trusted-root-cert` | new `PcsDao` with the new key hash, `grantDao` |
-| Intel's root or certificate names change otherwise | **routes stop until a celestia-app upgrade** (new go-tdx-guest) | new Automata verifier/DAOs |
-| New collateral format (TCB info v4, QE identity v3) | **routes stop until a celestia-app upgrade** (new go-tdx-guest) | new Automata verifier/DAOs |
-| Phala hosts switch to quote v5 | nothing to do: `x/teeism` verifies v5 | `75-dcap-verifiers.sh` (v5 verifier) |
-| A quote version after v5 | **not fixable live**: a celestia-app upgrade (newer go-tdx-guest) | a verifier for it via `setQuoteVerifier` |
-| TDX itself is broken | stop the ISMs (re-pin to an unused identity) | stop the ISMs (`setEnclave` to unused measurements) |
-| The owner key is compromised | transfer ownership first, from the old key, if still possible | same |
-| The owner key is lost | the ISM can never be re-pinned again; create a new ISM and re-point the route to it (warp route owner) | same: deploy a new ISM, `setInterchainSecurityModule` on the routers |
+| New image, platform update, new CVM | re-pin | re-pin (replace if `VERSION` < 3) |
+| Fresh collateral | nothing | monthly `seed-evm-collateral.sh` |
+| PCS down, collateral expires | routes stop until Intel publishes again | routes stop 30 days after the last seed; seed when back |
+| [TCB recovery](#tcb-recovery) | patch host | patch host, new DAOs |
+| PCK certificate revoked | new CVM, re-pin | same |
+| Root CA rotated, same name/key type | `--trusted-root-cert` | new `PcsDao` with new key hash, `grantDao` |
+| Other root/name change; new collateral format (TCB info v4, QE identity v3) | **not fixable live:** celestia-app upgrade | new Automata verifier/DAOs |
+| Quote v5 | nothing | `75-dcap-verifiers.sh` |
+| Quote after v5 | **not fixable live:** celestia-app upgrade | `setQuoteVerifier` |
+| TDX broken | stop the ISMs | same |
+| Owner key compromised | transfer ownership | same |
+| Owner key lost (unrecoverable) | new ISM, re-point route | new ISM, `setInterchainSecurityModule` |
