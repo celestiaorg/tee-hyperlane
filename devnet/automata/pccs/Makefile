@@ -6,6 +6,8 @@ SIMULATED ?=
 KEYSTORE_PATH ?= keystore/dcap_prod
 PRIVATE_KEY ?=
 UNLOCKED ?=
+LEDGER ?=
+LEDGER_PATH ?=
 GAS_LIMIT ?=
 GAS_BUFFER ?= 10
 SKIP_ESTIMATE ?=
@@ -39,6 +41,9 @@ endif
 
 # Get the Owner's Wallet Address from private key or keystore
 get_owner:
+ifdef LEDGER
+	$(eval OWNER := $(or $(OWNER),$(shell cast wallet address --ledger $(if $(LEDGER_PATH),--mnemonic-derivation-path "$(LEDGER_PATH)"))))
+else
 ifdef UNLOCKED
 ifndef OWNER
 	$(error OWNER is not set. Please set OWNER when UNLOCKED=true)
@@ -50,6 +55,7 @@ else
 	$(eval KEYSTORE_PASSWORD := $(shell read -s -p "Enter keystore password: " pwd; echo $$pwd))
 	$(eval OWNER := $(shell cast wallet address --keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD) \
 		|| (echo "Improper wallet configuration"; exit 1)))
+endif
 endif
 endif
 	@echo "\nWallet Owner: $(OWNER)"
@@ -77,9 +83,10 @@ endif
 	@OWNER=$(OWNER) \
 		forge script script/helper/DeployHelpers.s.sol:DeployHelpers \
 		--rpc-url $(RPC_URL) \
+		$(if $(LEDGER), --ledger --sender $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-paths "$(LEDGER_PATH)"), \
 		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
 		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 		$(if $(SIMULATED),, --broadcast --skip-simulation) \
 		$(if $(LEGACY), --legacy) \
 		-vv
@@ -104,9 +111,10 @@ endif
 	@OWNER=$(OWNER) \
 		forge script script/automata/DeployAutomataDao.s.sol:DeployAutomataDao \
 		--rpc-url $(RPC_URL) \
+		$(if $(LEDGER), --ledger --sender $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-paths "$(LEDGER_PATH)"), \
 		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
 		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 		$(if $(SIMULATED),, --broadcast --skip-simulation) \
 		$(if $(LEGACY), --legacy) \
 		-vv

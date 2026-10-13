@@ -14,7 +14,7 @@ root. Move ownership to a multisig before mainnet ([Celestia](#transfer-ownershi
 | Where | Owner today | Key |
 |---|---|---|
 | Celestia ISMs (`x/teeism`) | the `relayer` account | `.state/celestia` keyring, `--from relayer` |
-| EVM ISMs (`TeeDcapIsm`), Automata contracts | one EOA | `EVM_PRIVATE_KEY` |
+| EVM ISMs (`TeeDcapIsm`), Automata contracts | whoever deployed them | the Ledger with `EVM_SIGNER=ledger`, else `EVM_PRIVATE_KEY` |
 
 ## What the owner controls
 
@@ -129,7 +129,12 @@ $A tx teeism update-identity $ISM /tmp/stopped.json --from relayer $TX
 
 ## EVM
 
+Every EVM owner transaction below signs with `$SIGN`: the Ledger when it owns the contracts
+(the deployment used `EVM_SIGNER=ledger`), else the deploy key. The scripts pick the same
+signer from `devnet/.env`, so with a Ledger, `80` and `90` re-pin and re-point through it.
+
 ```sh
+SIGN="--ledger --from $(cast wallet address --ledger)"   # or: SIGN="--private-key $EVM_PRIVATE_KEY"
 rpc() { python3 -c "import json;print(json.load(open('.state/out/pccs-$1.json'))['rpc'])"; }
 ISM=$(load ism-base); RPC=$(rpc base)     # any of arbitrum, base, sepolia, eden
 cast call $ISM "owner()(address)" --rpc-url $RPC
@@ -159,7 +164,7 @@ PY
 )
 ../tee-hyperlane/target/release/tee-hyperlane identity --url $URL --json /tmp/identity.json
 IDENTITY=$(.state/bin/teeism-identity -identity /tmp/identity.json)
-cast send $ISM "setEnclave(bytes32,bytes32)" $MEASUREMENTS $IDENTITY --rpc-url $RPC --private-key $EVM_PRIVATE_KEY
+cast send $ISM "setEnclave(bytes32,bytes32)" $MEASUREMENTS $IDENTITY --rpc-url $RPC $SIGN
 ```
 
 ### <a name="evm-transfer-ownership"></a>Transfer ownership
@@ -168,11 +173,11 @@ Every contract the owner holds is `Ownable`: the ISMs, the token factory, the wa
 the Automata entrypoint and PCCS storage.
 
 ```sh
-cast send $ISM "transferOwnership(address)" $SAFE --rpc-url $RPC --private-key $EVM_PRIVATE_KEY
+cast send $ISM "transferOwnership(address)" $SAFE --rpc-url $RPC $SIGN
 ```
 
-As on Celestia, `80-evm-isms.sh` re-pins only ISMs the `EVM_PRIVATE_KEY` owns and replaces the
-rest, so re-pin from the Safe first.
+As on Celestia, `80-evm-isms.sh` re-pins only ISMs its signer owns and replaces the rest, so
+re-pin from the Safe first.
 
 ### Intel's side on EVM
 

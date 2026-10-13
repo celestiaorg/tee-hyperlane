@@ -123,6 +123,36 @@ if [ -n "${EVM_PRIVATE_KEY:-}" ]; then
   export EVM_PRIVATE_KEY
 fi
 
+# Who signs EVM deployments and owner transactions. EVM_SIGNER=ledger confirms each one on a
+# Ledger (Ethereum app open, blind signing on; EVM_LEDGER_PATH picks an account other than the
+# first). Otherwise EVM_PRIVATE_KEY signs. The relayer always signs with EVM_PRIVATE_KEY, so
+# with a Ledger that key owns nothing and only pays for deliveries.
+#
+# `evm_signer` fills EVM_SIGN (for cast send and forge create) and EVM_SCRIPT_SIGN (for forge
+# script). It is a function rather than set here because a Ledger has to be plugged in to
+# answer, and most scripts never sign on an EVM chain.
+evm_signer() {
+  case "${EVM_SIGNER:-key}" in
+    ledger)
+      local path=()
+      [ -n "${EVM_LEDGER_PATH:-}" ] && path=(--mnemonic-derivation-path "${EVM_LEDGER_PATH}")
+      EVM_ADDRESS="${EVM_ADDRESS:-$(cast wallet address --ledger ${path[@]+"${path[@]}"})}" \
+        || die "could not read the Ledger's address; is it unlocked with the Ethereum app open?"
+      EVM_SIGN=(--ledger --from "${EVM_ADDRESS}" ${path[@]+"${path[@]}"})
+      EVM_SCRIPT_SIGN=(--ledger --sender "${EVM_ADDRESS}")
+      [ -n "${EVM_LEDGER_PATH:-}" ] && EVM_SCRIPT_SIGN+=(--mnemonic-derivation-paths "${EVM_LEDGER_PATH}")
+      ;;
+    key)
+      : "${EVM_PRIVATE_KEY:?set EVM_PRIVATE_KEY, or EVM_SIGNER=ledger}"
+      EVM_ADDRESS="$(cast wallet address --private-key "${EVM_PRIVATE_KEY}")"
+      EVM_SIGN=(--private-key "${EVM_PRIVATE_KEY}")
+      EVM_SCRIPT_SIGN=(--private-key "${EVM_PRIVATE_KEY}")
+      ;;
+    *) die "EVM_SIGNER must be key or ledger, not ${EVM_SIGNER}" ;;
+  esac
+  say "EVM transactions signed by ${EVM_ADDRESS} (${EVM_SIGNER:-key})"
+}
+
 # The chain's home directory is a bind mount, so a host-side binary shares the container's
 # keyring and can sign without shelling into it. That keeps file paths host paths, which
 # matters because the submit step hands the node a file it just wrote.

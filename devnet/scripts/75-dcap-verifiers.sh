@@ -40,8 +40,10 @@ prepare() {
 
 send() { # <rpc> <to> <sig> <args...>
   local rpc="$1"; shift
-  cast send "$@" --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null
+  cast send "$@" --rpc-url "${rpc}" "${EVM_SIGN[@]}" >/dev/null
 }
+
+evm_signer
 
 for c in ${CHAINS}; do
   f="${OUT_DIR}/pccs-${c}.json"
@@ -67,7 +69,7 @@ for c in ${CHAINS}; do
   # --constructor-args last: it takes every argument after it, so a key placed after it never
   # reaches forge as the signer.
   out="$(cd "${EVM}" && forge create contracts/verifiers/V5QuoteVerifier.sol:V5QuoteVerifier \
-    --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" --broadcast \
+    --rpc-url "${rpc}" "${EVM_SIGN[@]}" --broadcast \
     --constructor-args "${p256}" "${router}" 2>&1)" \
     || { printf '%s\n' "${out}" | tail -5 >&2; die "${c}: V5QuoteVerifier deployment failed"; }
   verifier="$(printf '%s' "${out}" | grep -oE 'Deployed to: 0x[0-9a-fA-F]{40}' | grep -oE '0x[0-9a-fA-F]{40}')"

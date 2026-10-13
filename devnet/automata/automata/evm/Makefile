@@ -5,6 +5,8 @@ SIMULATED ?=
 KEYSTORE_PATH ?= keystores/dcap_prod
 PRIVATE_KEY ?=
 UNLOCKED ?=
+LEDGER ?=
+LEDGER_PATH ?=
 QUOTE_VERIFIER_VERSION ?=
 DEPLOYMENT_DIR ?= ../rust-crates/libraries/network-registry/deployment/current
 
@@ -23,6 +25,9 @@ endif
 
 # Get the Owner's Wallet Address
 get_owner:
+ifdef LEDGER
+	$(eval OWNER := $(or $(OWNER),$(shell cast wallet address --ledger $(if $(LEDGER_PATH),--mnemonic-derivation-path "$(LEDGER_PATH)"))))
+else
 ifdef UNLOCKED
 ifndef OWNER
 	$(error OWNER is not set. Please set OWNER when UNLOCKED=true)
@@ -34,6 +39,7 @@ else
 	$(eval $(if $(KEYSTORE_PASSWORD),,KEYSTORE_PASSWORD := $(shell read -s -p "Enter keystore password: " pwd; echo $$pwd)))
 	$(eval OWNER := $(shell cast wallet address --keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD) \
 		|| (echo "Improper wallet configuration"; exit 1)))
+endif
 endif
 endif
 	@echo "\nWallet Owner: $(OWNER)"
@@ -52,9 +58,10 @@ deploy-router: check_env get_owner
 	@OWNER=$(OWNER) \
 		forge script DeployRouter \
 		$(if $(MULTICHAIN),,--rpc-url $(RPC_URL)) \
+		$(if $(LEDGER), --ledger --sender $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-paths "$(LEDGER_PATH)"), \
 		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
 		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 		$(if $(SIMULATED),, --broadcast) \
 		$(if $(filter true,$(SIMULATED)),,--skip-simulation) \
 		$(if $(LEGACY), --legacy) \
@@ -70,9 +77,10 @@ ifndef SIMULATED
 		echo "Granting PCCSRouter authorization to call PCCS Storage..."; \
 		cast send $$storageaddr \
 			--rpc-url $(RPC_URL) \
+			$(if $(LEDGER), --ledger --from $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-path "$(LEDGER_PATH)"), \
 			$(if $(UNLOCKED), --unlocked --from $(OWNER), \
 			$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-			--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+			--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 			"setCallerAuthorization(address,bool)" \
 			$$routeraddr \
 			true; \
@@ -81,9 +89,10 @@ ifndef SIMULATED
 		echo "Granting PCCSRouter authorization to call PCCS Storage V2..."; \
 		cast send $$storagev2addr \
 			--rpc-url $(RPC_URL) \
+			$(if $(LEDGER), --ledger --from $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-path "$(LEDGER_PATH)"), \
 			$(if $(UNLOCKED), --unlocked --from $(OWNER), \
 			$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-			--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+			--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 			"setCallerAuthorization(address,bool)" \
 			$$routeraddr \
 			true; \
@@ -98,9 +107,10 @@ deploy-attestation: check_env get_owner
 		forge script AttestationScript \
 		--sig "deployEntrypoint()" \
 		$(if $(MULTICHAIN),,--rpc-url $(RPC_URL)) \
+		$(if $(LEDGER), --ledger --sender $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-paths "$(LEDGER_PATH)"), \
 		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
 		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 		$(if $(SIMULATED),, --broadcast) \
 		$(if $(filter true,$(SIMULATED)),,--skip-simulation) \
 		$(if $(LEGACY), --legacy) \
@@ -115,9 +125,10 @@ else
 	@OWNER=$(OWNER) QUOTE_VERIFIER_VERSION=$(QUOTE_VERIFIER_VERSION) \
 		forge script DeployVerifier \
 		$(if $(MULTICHAIN),,--rpc-url $(RPC_URL)) \
+		$(if $(LEDGER), --ledger --sender $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-paths "$(LEDGER_PATH)"), \
 		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
 		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 		$(if $(SIMULATED),, --broadcast) \
 		$(if $(filter true,$(SIMULATED)),,--skip-simulation) \
 		$(if $(LEGACY), --legacy) \
@@ -131,7 +142,7 @@ deploy-all-verifiers: check_env get_owner
 	echo "Deploying verifiers for versions: $$SUPPORTED_VERSIONS"; \
 	for version in $$SUPPORTED_VERSIONS; do \
 		echo "=== Deploying V$$version QuoteVerifier ==="; \
-		make deploy-verifier QUOTE_VERIFIER_VERSION=$$version OWNER=$(OWNER) ETHERSCAN_API_KEY=$(ETHERSCAN_API_KEY) RPC_URL=$(RPC_URL) PRIVATE_KEY=$(PRIVATE_KEY) KEYSTORE_PATH=$(KEYSTORE_PATH) KEYSTORE_PASSWORD=$(KEYSTORE_PASSWORD) SIMULATED=$(SIMULATED) LEGACY=$(LEGACY) || exit 1; \
+		make deploy-verifier QUOTE_VERIFIER_VERSION=$$version OWNER=$(OWNER) ETHERSCAN_API_KEY=$(ETHERSCAN_API_KEY) RPC_URL=$(RPC_URL) PRIVATE_KEY=$(PRIVATE_KEY) LEDGER=$(LEDGER) LEDGER_PATH="$(LEDGER_PATH)" KEYSTORE_PATH=$(KEYSTORE_PATH) KEYSTORE_PASSWORD=$(KEYSTORE_PASSWORD) SIMULATED=$(SIMULATED) LEGACY=$(LEGACY) || exit 1; \
 	done
 
 deploy-all: deploy-router setup-router deploy-attestation deploy-all-verifiers
@@ -187,9 +198,10 @@ config-zk: check_env get_owner
 	@OWNER=$(OWNER) \
 		forge script AttestationScript \
 		$(if $(MULTICHAIN),,--rpc-url $(RPC_URL)) \
+		$(if $(LEDGER), --ledger --sender $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-paths "$(LEDGER_PATH)"), \
 		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
 		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 		$(if $(SIMULATED),, --broadcast) \
 		$(if $(filter true,$(SIMULATED)),,--skip-simulation) \
 		$(if $(LEGACY), --legacy) \
@@ -203,9 +215,10 @@ config-verifier: check_env get_owner
 	@OWNER=$(OWNER) \
 		forge script AttestationScript \
 		$(if $(MULTICHAIN),,--rpc-url $(RPC_URL)) \
+		$(if $(LEDGER), --ledger --sender $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-paths "$(LEDGER_PATH)"), \
 		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
 		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 		$(if $(SIMULATED),, --broadcast) \
 		$(if $(filter true,$(SIMULATED)),,--skip-simulation) \
 		$(if $(LEGACY), --legacy) \
@@ -217,9 +230,10 @@ config-router: check_env get_owner
 	@OWNER=$(OWNER) \
 		forge script DeployRouter \
 		$(if $(MULTICHAIN),,--rpc-url $(RPC_URL)) \
+		$(if $(LEDGER), --ledger --sender $(OWNER) $(if $(LEDGER_PATH),--mnemonic-derivation-paths "$(LEDGER_PATH)"), \
 		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
 		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
+		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)))) \
 		$(if $(SIMULATED),, --broadcast) \
 		$(if $(filter true,$(SIMULATED)),,--skip-simulation) \
 		$(if $(LEGACY), --legacy) \

@@ -12,7 +12,7 @@ need forge
 
 CONTRACTS="${REPO_DIR}/tee-hyperlane/contracts"
 MAX_QUOTE_SKEW="${MAX_QUOTE_SKEW:-86400}"
-: "${EVM_PRIVATE_KEY:?set EVM_PRIVATE_KEY}"
+evm_signer
 
 has merkle-hook-id || die "no local hyperlane deployment; run 'make init' first"
 
@@ -111,11 +111,11 @@ while IFS=: read -r name chainid mailbox; do
     if [ "${rev}" = "${ISM_REVISION}" ] && [ "${ISM_REVISION}" -ge 3 ]; then
       owner="$(cast call "${existing}" "owner()(address)" --rpc-url "${rpc}" 2>&1)" \
         || die "could not read ${existing}'s owner on ${name}: ${owner}"
-      me="$(cast wallet address --private-key "${EVM_PRIVATE_KEY}")"
+      me="${EVM_ADDRESS}"
       if [ "$(printf %s "${owner}" | tr A-F a-f)" = "$(printf %s "${me}" | tr A-F a-f)" ]; then
         say "${name}: re-pinning ${existing} to this enclave"
         cast send "${existing}" "setEnclave(bytes32,bytes32)" "${MEASUREMENTS}" "${IDENTITY}" \
-          --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null \
+          --rpc-url "${rpc}" "${EVM_SIGN[@]}" >/dev/null \
           || die "setEnclave failed on ${name}"
         got="$(cast call "${existing}" "enclaveMeasurements()(bytes32)" --rpc-url "${rpc}" 2>/dev/null || true)"
         [ "${got}" = "${MEASUREMENTS}" ] || die "${existing} on ${name} pins '${got}' after the re-pin, expected ${MEASUREMENTS}"
@@ -135,7 +135,7 @@ while IFS=: read -r name chainid mailbox; do
 
   say "deploying TeeDcapIsm on ${name}"
   out="$(cd "${CONTRACTS}" && forge create src/TeeDcapIsm.sol:TeeDcapIsm \
-    --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" --broadcast \
+    --rpc-url "${rpc}" "${EVM_SIGN[@]}" --broadcast \
     --constructor-args "${entry}" "${MEASUREMENTS}" "${IDENTITY}" "${HOOK}" \
                        "${mailbox}" "${chain_genesis}" "${MAX_QUOTE_SKEW}" 2>&1)"
   ism="$(printf '%s' "${out}" | grep -oE "Deployed to: 0x[0-9a-fA-F]{40}" | grep -oE "0x[0-9a-fA-F]{40}")"

@@ -23,7 +23,7 @@ need cast
 need forge
 
 CONTRACTS="${REPO_DIR}/tee-hyperlane/contracts"
-: "${EVM_PRIVATE_KEY:?set EVM_PRIVATE_KEY}"
+evm_signer
 
 # Destination gas for a warp delivery. Quoted by the origin hook, which is the noop hook on
 # this devnet, so the value is recorded but never charged.
@@ -73,12 +73,12 @@ reusable() { # <router> <rpc> <ism>: 0 reused or repointed, 1 no code there; die
   [ "$(lower "${cur}")" = "$(lower "${ism}")" ] && return 0
   owner="$(cast call "${cand}" "owner()(address)" --rpc-url "${rpc}" 2>&1)" \
     || die "could not read ${cand}'s owner: ${owner}"
-  me="$(cast wallet address --private-key "${EVM_PRIVATE_KEY}")"
+  me="${EVM_ADDRESS}"
   [ "$(lower "${owner}")" = "$(lower "${me}")" ] \
     || die "${cand} is owned by ${owner}, not ${me}; its owner has to point it at ${ism}. Not deploying a replacement."
   say "repointing ${cand} at ${ism}"
   out="$(cast send "${cand}" "setInterchainSecurityModule(address)" "${ism}" \
-    --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" 2>&1)" \
+    --rpc-url "${rpc}" "${EVM_SIGN[@]}" 2>&1)" \
     || die "repointing ${cand} failed: $(printf '%s' "${out}" | tail -3)"
   sleep 4
   cur="$(cast call "${cand}" "interchainSecurityModule()(address)" --rpc-url "${rpc}" 2>&1)" \
@@ -125,7 +125,7 @@ while IFS=: read -r name chainid mailbox; do
         ORIGIN_DOMAIN="${DOMAIN}" ORIGIN_ROUTER="${token}" \
         TOKEN_NAME="${tname}" TOKEN_SYMBOL="${tsymbol}" TOKEN_DECIMALS="${tdec}" \
         forge script script/DeployWarpSynthetic.s.sol:DeployWarpSynthetic \
-          --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" --broadcast --slow 2>&1)"
+          --rpc-url "${rpc}" "${EVM_SCRIPT_SIGN[@]}" --broadcast --slow 2>&1)"
       router="$(printf '%s' "${out}" | sed -n 's/.*HypERC20 *\(0x[0-9a-fA-F]\{40\}\).*/\1/p' | tail -1)"
       if [ -z "${router}" ]; then
         printf '%s\n' "${out}" | tail -20 >&2
@@ -147,7 +147,7 @@ while IFS=: read -r name chainid mailbox; do
       # like a rejected enrolment rather than a collision.
       for attempt in 1 2 3; do
         if out="$(cast send "${router}" "enrollRemoteRouter(uint32,bytes32)" "${DOMAIN}" "${token}" \
-             --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" 2>&1)"; then
+             --rpc-url "${rpc}" "${EVM_SIGN[@]}" 2>&1)"; then
           break
         fi
         [ "${attempt}" = 3 ] && die "enrollRemoteRouter failed for ${label} on ${name}: $(printf '%s' "${out}" | tail -3)"
@@ -167,7 +167,7 @@ while IFS=: read -r name chainid mailbox; do
       if [ "${want}" != 0x0000000000000000000000000000000000000000 ]; then
         say "setting the ${label} router's hook to ${want}"
         cast send "${router}" "setHook(address)" "${want}" \
-          --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null
+          --rpc-url "${rpc}" "${EVM_SIGN[@]}" >/dev/null
         sleep 4
       fi
     fi
@@ -181,7 +181,7 @@ while IFS=: read -r name chainid mailbox; do
   if ! has "${key}" || [ "$(cast code "$(load "${key}")" --rpc-url "${rpc}")" = 0x ]; then
     say "deploying the token factory on ${name}"
     out="$(cd "${CONTRACTS}" && forge create src/TeeTokenFactory.sol:TeeTokenFactory --broadcast \
-      --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" \
+      --rpc-url "${rpc}" "${EVM_SIGN[@]}" \
       --constructor-args "${mailbox}" "${DOMAIN}" "${ism}" 2>&1)"
     factory="$(printf '%s' "${out}" | sed -n 's/^Deployed to: \(0x[0-9a-fA-F]\{40\}\).*/\1/p')"
     [ -n "${factory}" ] || { printf '%s\n' "${out}" | tail -20 >&2; die "token factory deployment failed on ${name}"; }
@@ -192,7 +192,7 @@ while IFS=: read -r name chainid mailbox; do
   factory="$(load "${key}")"
   if [ "$(lower "$(cast call "${factory}" "ism()(address)" --rpc-url "${rpc}")")" != "$(lower "${ism}")" ]; then
     say "pointing the token factory and its launches at ${ism}"
-    cast send "${factory}" "setIsm(address)" "${ism}" --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null
+    cast send "${factory}" "setIsm(address)" "${ism}" --rpc-url "${rpc}" "${EVM_SIGN[@]}" >/dev/null
     sleep 4
     REPOINT=1
   fi
@@ -201,7 +201,7 @@ while IFS=: read -r name chainid mailbox; do
   if [ "${REPOINT:-}" = 1 ]; then
     for ((i = 0; i < count; i += 100)); do
       cast send "${factory}" "repoint(uint256,uint256)" "${i}" "$((i + 100))" \
-        --rpc-url "${rpc}" --private-key "${EVM_PRIVATE_KEY}" >/dev/null
+        --rpc-url "${rpc}" "${EVM_SIGN[@]}" >/dev/null
       sleep 4
     done
   fi

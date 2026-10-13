@@ -39,6 +39,23 @@ $EDITOR devnet/.env      # set EVM_PRIVATE_KEY (with 0x) and ALCHEMY_KEY
 
 celestia-app: always the `jonas/tee-ism` branch, never `main`.
 
+### Signing EVM transactions on a Ledger
+
+Set `EVM_SIGNER=ledger` in `devnet/.env` (and `EVM_LEDGER_PATH` for an account other than the
+first), with the Ledger plugged in, unlocked, the Ethereum app open and blind signing on. Then
+`75`, `80` and `90` ask the Ledger to confirm each deployment and owner transaction, and the
+Ledger owns everything they deploy. `EVM_PRIVATE_KEY` is still needed: the relayer signs its
+submissions with it, and it owns nothing.
+
+The commands below that sign by hand take `$SIGN`:
+
+```sh
+SIGN="--ledger --from $(cast wallet address --ledger)"   # or: SIGN="--private-key $EVM_PRIVATE_KEY"
+```
+
+`forge script` takes `--ledger --sender <address>` instead of `--from`. The Automata tooling
+(appendix D) takes `LEDGER=true OWNER=<ledger address>` in place of `PRIVATE_KEY`.
+
 ## 2. Build
 
 ```sh
@@ -182,7 +199,7 @@ transfers revert with `no gas oracle for domain`.
 
 ```sh
 cast send <igp> "setDestinationGasConfigs((uint32,(address,uint96))[])" \
-  "[(1297040299,(<oracle>,150000))]" --rpc-url <rpc> --private-key $EVM_PRIVATE_KEY
+  "[(1297040299,(<oracle>,150000))]" --rpc-url <rpc> $SIGN
 ```
 
 | chain | igp | oracle |
@@ -200,7 +217,7 @@ cast call <router> 'hook()(address)' --rpc-url <rpc>
 If it prints `0x000…`, point it at the hook that chain's TIA router uses:
 
 ```sh
-cast send <router> "setHook(address)" <that hook> --rpc-url <rpc> --private-key $EVM_PRIVATE_KEY
+cast send <router> "setHook(address)" <that hook> --rpc-url <rpc> $SIGN
 ```
 
 A router with no hook sends messages that can never be delivered.
@@ -332,6 +349,12 @@ In `devnet/automata/`:
 7. on the router: `setQeIdDaoVersionedAddr(20, …)`, `setFmspcTcbDaoVersionedAddr(20, …)`
 8. `setCallerAuthorization(router, true)` on both storage contracts
 9. write `.state/out/pccs-<chain>.json`, then run `scripts/seed-evm-collateral.sh <chain>`
+
+With a Ledger, every step above signs on it: `make` and `deploy_versioned.sh` take
+`LEDGER=true OWNER=<ledger address>` in place of `PRIVATE_KEY`, step 2 takes
+`--ledger --sender <ledger address>`, and steps 4, 7 and 8 are `cast send … $SIGN`. In step 4
+grant the role to the key that will seed collateral each month (`EVM_PRIVATE_KEY`'s address, so
+`seed-evm-collateral.sh` runs without the Ledger). That role only uploads Intel-signed data.
 
 Pitfalls:
 - keep `Salt.sol` domain-separated
