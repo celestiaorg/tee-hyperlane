@@ -83,9 +83,9 @@ endpoint is a free public one.
   tree size.
 - **The `routers` list is a trigger filter**, affecting latency rather than delivery, because
   merkle tree replay forces batch completeness.
-- **v5 quotes: EVM yes, Celestia not yet.** Phala emits v4 TDX quotes today. `TeeDcapIsm`
-  (`VERSION` 2) and `75-dcap-verifiers.sh` accept v5 as well, but `x/teeism` still casts to
-  `QuoteV4`, so a host switch to v5 would stop the four routes into Celestia until it changes.
+- **v5 quotes: both chains.** Phala emits v4 TDX quotes today. `TeeDcapIsm` (`VERSION` 2) and
+  `75-dcap-verifiers.sh` accept v5 on EVM, and `x/teeism` verifies v4 and v5 (go-tdx-guest
+  pinned to main, `b0a2dd8`). A later quote version needs a celestia-app upgrade.
 - **Sepolia is past Glamsterdam (Gloas), and its light client is ours.** From slot 11296768 a
   beacon light-client header names its execution block only by hash, so the relayer sends that
   header's RLP and the enclave checks its keccak. helios has no Gloas: it is vendored in
@@ -113,7 +113,7 @@ endpoint is a free public one.
   `verifier_overrides` (`tx teeism set-verifier-overrides --trusted-root-cert`). Nothing skips
   or relaxes Intel's verification. They
   change with `tx teeism update-owner` too. The rotation scripts re-pin only ISMs the relayer
-  (Celestia) or `EVM_PRIVATE_KEY` (EVM) owns and replace the rest, so after a transfer the new
+  (Celestia) or the EVM signer (`EVM_SIGNER`: a Ledger, or `EVM_PRIVATE_KEY`) owns and replace the rest, so after a transfer the new
   owner re-pins first ([ADMIN.md](deploy/ADMIN.md)).
 - **Rotating the enclave identity re-points routers, never redeploys them.** Redeploying a
   router orphans what it holds or minted; that once stranded real USDC on Sepolia.

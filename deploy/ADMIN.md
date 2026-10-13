@@ -23,7 +23,7 @@ root. Move ownership to a multisig before mainnet ([Celestia](#transfer-ownershi
 | Re-pin the enclave identity (new image, platform update, replacement CVM) | `tx teeism update-identity` | `setEnclave` (ISM `VERSION` 3+) |
 | Transfer ownership | `tx teeism update-owner` | `transferOwnership` |
 | Trust a new Intel root CA | `set-verifier-overrides --trusted-root-cert` | new PCCS `PcsDao` (the root key hash is a constant in it) |
-| Support a new quote version | needs a celestia-app upgrade | `setQuoteVerifier` (`75-dcap-verifiers.sh` adds v5) |
+| Support a new quote version | v4 and v5 are verified; a later one needs a celestia-app upgrade | `setQuoteVerifier` (`75-dcap-verifiers.sh` adds v5) |
 | Stop an ISM accepting anything new | re-pin to an identity no enclave has | `setEnclave` to measurements no enclave has |
 
 Re-pinning is all a normal rotation needs. Updating the root CA is for when Intel rotates it.
@@ -185,8 +185,10 @@ Verification runs through the Automata contracts. There is no per-ISM override; 
 the Automata deployment controls it instead:
 
 - **Fresh collateral** (CRLs, TCB info, QE identity) goes in through the PCCS `upsert*`
-  functions, which check Intel's signatures rather than the caller. `seed-evm-collateral.sh`
-  does it each month ([MAINTAIN](MAINTAIN.md#monthly-intel-collateral)); without it the
+  functions, which reject anything Intel did not sign. Certificates and CRLs are open to anyone;
+  TCB info, QE identity and the evaluation-number list only to keys the owner granted
+  `ATTESTER_ROLE` (`grantRoles(<key>, 1)` on each versioned DAO and the TcbEvalDao).
+  `seed-evm-collateral.sh` does it each month ([MAINTAIN](MAINTAIN.md#monthly-intel-collateral)); without it the
   Celestia → EVM routes stop 30 days after the last seed.
 - **A new quote version** needs a verifier for it registered on the entrypoint
   (`setQuoteVerifier`, owner only). `75-dcap-verifiers.sh` does this for v5.
@@ -233,7 +235,8 @@ What can be fixed by the owner on a running deployment, and what needs a new rel
 | Intel rotates the root CA, same name and key type | `--trusted-root-cert` | new `PcsDao` with the new key hash, `grantDao` |
 | Intel's root or certificate names change otherwise | **routes stop until a celestia-app upgrade** (new go-tdx-guest) | new Automata verifier/DAOs |
 | New collateral format (TCB info v4, QE identity v3) | **routes stop until a celestia-app upgrade** (new go-tdx-guest) | new Automata verifier/DAOs |
-| Phala hosts switch to quote v5 | **not fixable live**: a celestia-app upgrade must parse v5 | `75-dcap-verifiers.sh` (v5 verifier) |
+| Phala hosts switch to quote v5 | nothing to do: `x/teeism` verifies v5 | `75-dcap-verifiers.sh` (v5 verifier) |
+| A quote version after v5 | **not fixable live**: a celestia-app upgrade (newer go-tdx-guest) | a verifier for it via `setQuoteVerifier` |
 | TDX itself is broken | stop the ISMs (re-pin to an unused identity) | stop the ISMs (`setEnclave` to unused measurements) |
 | The owner key is compromised | transfer ownership first, from the old key, if still possible | same |
 | The owner key is lost | the ISM can never be re-pinned again; create a new ISM and re-point the route to it (warp route owner) | same: deploy a new ISM, `setInterchainSecurityModule` on the routers |

@@ -181,7 +181,7 @@ from either that waits more than a few minutes is stuck: check the symptoms belo
 | `TCBR` right after the monthly job | Intel moved on; deploy a new versioned FMSPC DAO per chain |
 | `WrongEnclave`, `IdentityChanged` | a route points at the wrong enclave; check the urls from `write_config` |
 | `unknown command "teeism"` | the unit's PATH must start with `.state/bin` |
-| `eth_getProof` fails at an old height | use an archive endpoint ([DEPLOY E](DEPLOY.md#e-endpoints)) |
+| `eth_getProof` fails at an old height | use an archive endpoint ([DEPLOY F](DEPLOY.md#f-endpoints)) |
 | Sepolia: `eth_getProof` … `operation timed out` against `127.0.0.1:8545` | the trusted height drifted too far back for the full node, which rebuilds old state from the head. `max_lag` (from `write_config`) prevents it; to recover at once, point `SEPOLIA_RPC` at an archive for one pass |
 | a Celestia-origin ISM stuck, trusted commit missing | the chain was pruned; replace the ISM |
 | `no enrolled router found` | run `90-evm-warp.sh` |

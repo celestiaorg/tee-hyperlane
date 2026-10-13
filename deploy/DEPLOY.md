@@ -18,7 +18,8 @@ chain. Without Nix there, set `FORCE_UNPINNED=1` to skip step 5's pin checks. `m
 - docker, go 1.26+, rust, foundry, node, python3, jq, curl, nix
 - the phala CLI, logged in
 - an EVM key used by nothing else, funded on Sepolia, Arbitrum Sepolia and Base Sepolia (ETH)
-  and on Eden (TIA)
+  and on Eden (TIA). The relayer signs with it. With `EVM_SIGNER=ledger` (below) it deploys and
+  owns nothing, and the Ledger, funded on the same chains, deploys and owns the contracts
 - a Phala balance (the enclaves cost $4.38/day)
 - a free Alchemy key, for the Base and Arbitrum archives
 
@@ -55,6 +56,8 @@ SIGN="--ledger --from $(cast wallet address --ledger)"   # or: SIGN="--private-k
 
 `forge script` takes `--ledger --sender <address>` instead of `--from`. The Automata tooling
 (appendix D) takes `LEDGER=true OWNER=<ledger address>` in place of `PRIVATE_KEY`.
+[Appendix E](#e-celestia-and-one-evm-chain-signed-on-a-ledger) walks a whole deployment
+this way, with Celestia and Eden only.
 
 ## 2. Build
 
@@ -381,7 +384,70 @@ the scripts and ISMs read:
 | FmspcTcbDaoVersioned | `0x7BDA83918CAAD9b5EC7F88A24660167E90053690` | `0xe08E2eE491666702312Fc71566420e2C221DdeC3` | `0x06D080A8642803465500D6C9004Cc9CF48094EeD` | `0x61F9E7c62B7c3ade50aeD35065Ea7a8733417471` (V1) |
 | TcbEvalDao | `0x03b1B658C34Bb7919A9cA2067d0055f7dD5C5495` | same | same | `0xDd0F2b5B38391f1Bdf47c670aA161d5Aed7310d7` |
 
-### E. Endpoints
+### E. Celestia and one EVM chain, signed on a Ledger
+
+The whole bridge with a single EVM chain, here Eden, every EVM deployment and owner transaction
+confirmed on a Ledger. Everything is created fresh, including Hyperlane core on Eden, which has
+no canonical deployment. These are the main steps with these differences:
+
+**Steps 0–1.** In `devnet/.env`, `EVM_PRIVATE_KEY` is the relayer's key (TIA on Eden) and:
+```sh
+EVM_SIGNER=ledger
+```
+```sh
+LEDGER=$(cast wallet address --ledger); SIGN="--ledger --from $LEDGER"; EDEN=https://rpc.testnet.eden.gateway.fm/
+```
+
+**Steps 4–5.** Build and run only the two enclaves:
+```sh
+CHAINS="celestia eden" ./scripts/25-images.sh
+./scripts/30-enclave-up.sh --celestia --eden
+```
+
+**Step 6.** Automata on Eden per [appendix D](#d-automata-on-a-new-evm-chain), Ledger-signed,
+then:
+```sh
+./scripts/seed-evm-collateral.sh eden          # the relayer's key, with ATTESTER_ROLE
+CHAINS=eden ./scripts/75-dcap-verifiers.sh     # Ledger
+./scripts/76-tcb-eval.sh eden 21               # before 21 becomes standard (~10 Feb 2027)
+```
+
+**Step 7.** The mocha light node, as written.
+
+**Hyperlane core on Eden**, before step 8:
+```sh
+cd ~/tee-ism-nonzk/tee-hyperlane/contracts
+LOCAL_DOMAIN=3735928814 OWNER=$LEDGER forge script script/DeployHyperlaneCore.s.sol:DeployHyperlaneCore \
+  --rpc-url $EDEN --ledger --sender $LEDGER --broadcast
+echo "EDEN_MAILBOX=<Mailbox>" >> ~/tee-ism-nonzk/devnet/.env      # from the output
+echo "EDEN_HOOK=<MerkleTreeHook>" >> ~/tee-ism-nonzk/devnet/.env
+```
+
+**Step 8**, for Eden only. The mailbox is initialized once its ISM exists:
+```sh
+cd ~/tee-ism-nonzk/devnet && set -a && . ./.env && set +a && . scripts/lib.sh
+ROW="eden:3735928814:$EDEN_MAILBOX"
+./scripts/50-warp-celestia.sh
+CHAINS=$ROW ./scripts/80-evm-isms.sh
+(cd ../tee-hyperlane/contracts && MAILBOX=$EDEN_MAILBOX MERKLE_TREE_HOOK=$EDEN_HOOK DEFAULT_ISM=$(load ism-eden) \
+  OWNER=$LEDGER forge script script/DeployHyperlaneCore.s.sol:InitHyperlaneCore \
+  --rpc-url $EDEN --ledger --sender $LEDGER --broadcast)
+ORIGINS="eden:3735928814:eden:$(pad32 $EDEN_HOOK)" ./scripts/85-celestia-isms.sh
+CHAINS=$ROW ./scripts/90-evm-warp.sh
+```
+Eden's routers keep an empty hook: the mailbox's hooks are both the merkle tree hook.
+
+**Step 9.** The Celestia block as written. In `.state/gas-oracle.toml` keep only the `Eden`
+destination and remove every `evm_origins` entry: Eden has no paymaster of its own.
+
+**Steps 10–12.** As written; `curl …/api/status` lists 2 routes. Before building the UI, set
+Eden's `mailbox:` in `bridge-app/src/config.ts` to `$EDEN_MAILBOX` (it is not an env setting),
+and write `.env.local` with `for c in eden`.
+
+From then on the Ledger owns every Eden contract: re-pins and re-points run the same scripts
+with the same `.env`, and by hand `cast send … $SIGN` ([ADMIN](ADMIN.md)).
+
+### F. Endpoints
 
 Defaults, each overridable in `devnet/.env`:
 
