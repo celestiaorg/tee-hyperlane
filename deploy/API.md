@@ -2,7 +2,7 @@
 
 The relayer's API: every transfer on our routes, every route, and every open problem, which the
 explorer page on `:3001` is built on; and the venue under `/api/v1/trade`, which the Trade tab
-and the MCP server in `mcp/` are built on.
+is built on.
 
 ```
 B=http://<host>:3001          # direct

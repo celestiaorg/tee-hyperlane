@@ -52,7 +52,6 @@ over HTTPS. Update it with `git pull`; `devnet/.env` and `devnet/.state/` there 
 | `deploy/ADMIN.md` | every owner control and its command, payload sources, what is fixable live when Intel breaks |
 | `deploy/INTERACT.md` | wallets, sending, checking arrival, latency and cost |
 | `deploy/API.md` | the relayer's `/api/v1`: endpoints, transfer statuses, notification kinds, and the venue under `/api/v1/trade` |
-| `mcp/` | the MCP server agents use for the venue; its docs are the Trade tab's Docs (Agents) |
 | `deploy/coprocessor.toml.example` | the deployed chains and routes, verbatim but for the one key |
 | `deploy/images.lock` | which Nix build each pinned image came from; `30-enclave-up.sh` refuses to deploy when it and the code disagree |
 | `deploy/verify-digest.sh` | compose file to `compose_hash` to `mr_config_id`, against the signed quote |

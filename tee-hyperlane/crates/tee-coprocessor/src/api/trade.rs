@@ -2108,7 +2108,7 @@ mod fork {
     }
 }
 
-/// The trade API alone, for working on the UI or the MCP server against the live chains:
+/// The trade API alone, for working on the UI against the live chains:
 /// `HUB_REST=http://<gateway>/rest cargo test -p tee-coprocessor serve_trade_api -- --ignored`
 /// serves it on :3101 until stopped.
 #[cfg(test)]

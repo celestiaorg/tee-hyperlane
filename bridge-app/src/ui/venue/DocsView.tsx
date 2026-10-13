@@ -1,11 +1,10 @@
-// Docs (Agents): how an agent connects to the venue, by MCP or straight over HTTP.
+// Docs (Agents): how an agent uses the venue over HTTP.
 
 import { Copy } from "../shared";
 import { RELAYER_API } from "../../config";
 
 const SECTIONS = [
   ["start", "Connect an agent"],
-  ["tools", "MCP tools"],
   ["http", "HTTP API"],
   ["trade", "Trading"],
   ["launch", "Launching a token"],
@@ -16,24 +15,6 @@ const SECTIONS = [
 export function DocsView() {
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const api = RELAYER_API.startsWith("http") ? RELAYER_API : `${origin}${RELAYER_API}`;
-  const mcpConfig = `{
-  "mcpServers": {
-    "teeism": {
-      "command": "node",
-      "args": ["/path/to/tee-hyperlane/mcp/server.mjs"],
-      "env": {
-        "TEEISM_URL": "${origin}",
-        "EVM_PRIVATE_KEY": "0x…",
-        "CELESTIA_MNEMONIC": "word word …"
-      }
-    }
-  }
-}`;
-  const local = `git clone https://github.com/jonas089/tee-hyperlane
-cd tee-hyperlane/mcp && npm install
-claude mcp add teeism -e TEEISM_URL=${origin} \\
-  -e EVM_PRIVATE_KEY=0x… -e CELESTIA_MNEMONIC="word word …" \\
-  -- node $PWD/server.mjs`;
 
   return (
     <div className="docs">
@@ -60,58 +41,28 @@ claude mcp add teeism -e TEEISM_URL=${origin} \\
         <section id="docs-start">
           <h2>Connect an agent</h2>
           <p>
-            The quickest way is the MCP server. It gives any MCP client, such as Claude, tools to quote, trade, launch
-            and add liquidity. With keys it signs and sends; without them it quotes and returns unsigned
-            transactions.
+            An agent uses the HTTP API below: it quotes, then asks for the unsigned transactions of each step and signs
+            and sends them with its own keys. Nothing it calls ever holds a key.
           </p>
           <ol className="docs-steps">
-            <li>
-              <strong>Get the server</strong>, a small Node program in this repository, and add it to Claude Code:
-              <Code text={local} />
-              Any other MCP client takes the same in its config:
-              <Code text={mcpConfig} />
-            </li>
             <li>
               <strong>Fund its accounts.</strong> An EVM account with a little ETH on each chain it uses, and a Celestia
               account. The <a href="#faucet">Faucet</a> gives every Celestia address TIA and teeUSD once.
             </li>
             <li>
-              <strong>Ask.</strong> "What can I trade?", "Buy 50 teeUSD worth of TIA on Base", "Launch MOON with a
-              1B supply at 0.001 teeUSD and 5% pools on Base and Arbitrum".
+              <strong>Quote and build.</strong> <code>GET /v1/trade/quote</code>, then <code>POST /v1/trade/build</code>{" "}
+              for each step, as described under Trading.
             </li>
           </ol>
           <p className="note">
-            Use keys made for the agent and fund them with what you are willing to let it spend. They stay in the MCP
-            process on your machine and are never sent anywhere.
+            Use keys made for the agent and fund them with what you are willing to let it spend.
           </p>
-        </section>
-
-        <section id="docs-tools">
-          <h2>MCP tools</h2>
-          <dl className="docs-defs">
-            <dt>venue_info</dt>
-            <dd>Every listed asset with its id, chains and pools. Call it first.</dd>
-            <dt>quote</dt>
-            <dd>The price and steps for a trade. Amounts are whole units, such as 12.5.</dd>
-            <dt>balances</dt>
-            <dd>What an account holds of every asset, per chain.</dd>
-            <dt>trade</dt>
-            <dd>Runs a quoted route with the server's keys. Returns a job id.</dd>
-            <dt>launch</dt>
-            <dd>Launches a token and seeds its pools. Returns a job id.</dd>
-            <dt>add_liquidity</dt>
-            <dd>Adds to a pool, or creates it.</dd>
-            <dt>job_status</dt>
-            <dd>Progress of a trade or launch. Trades take one to fifteen minutes.</dd>
-            <dt>build_step</dt>
-            <dd>Unsigned transactions for one step, for an agent that signs elsewhere.</dd>
-          </dl>
         </section>
 
         <section id="docs-http">
           <h2>HTTP API</h2>
           <p>
-            Everything the MCP server does goes through these endpoints, under <code>{api}/v1/trade</code>. Amounts are
+            Everything an agent does goes through these endpoints, under <code>{api}/v1/trade</code>. Amounts are
             base units as strings; every asset has 6 decimals. Nothing here signs: each endpoint returns unsigned
             transactions to send in order.
           </p>
