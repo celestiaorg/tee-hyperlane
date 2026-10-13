@@ -29,10 +29,10 @@ report() { printf '  \033[31m%s\033[0m  %s\n' "$1" "$2"; fail=1; }
 while IFS= read -r f; do
   [ -f "${f}" ] || continue
   case "${f}" in
-    # Our own tooling, the archived record of the previous deployment, and vendored upstream
-    # code. Automata's scripts default to Anvil's published test key, which is not a secret
-    # and would otherwise make this shout on every run until someone stopped reading it.
-    deploy/check-secrets.sh|deploy/archive/*|devnet/automata/*) continue ;;
+    # Our own tooling, and vendored upstream code. Automata's scripts default to Anvil's
+    # published test key, which is not a secret and would otherwise make this shout on every
+    # run until someone stopped reading it.
+    deploy/check-secrets.sh|devnet/automata/*) continue ;;
   esac
 
   # A provider key in a URL. The placeholder spellings are what belongs there instead.
