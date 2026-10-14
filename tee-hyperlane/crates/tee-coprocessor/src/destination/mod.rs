@@ -12,7 +12,7 @@ pub trait Destination: Send + Sync {
     async fn state(&self) -> Result<IsmState>;
     /// Land the batch's attestation if the ISM is not already past it, then deliver every
     /// message for this destination.
-    async fn submit(&self, batch: &Batch) -> Result<Vec<Delivery>>;
+    async fn submit(&self, batch: &Batch) -> Result<Submitted>;
     /// Deliver one message the ISM already covers.
     async fn deliver(&self, message: &[u8]) -> Result<Outcome>;
     /// Whether the mailbox has processed message `id` (hex, no prefix), by anyone.
@@ -26,6 +26,15 @@ pub trait Destination: Send + Sync {
 pub struct Wallet {
     pub address: String,
     pub balance: u128,
+}
+
+/// What submitting a batch did.
+#[derive(Debug, Clone)]
+pub struct Submitted {
+    /// The attestation's own transaction. `None` when the ISM was already past the batch, as
+    /// when a restart finds an attestation that landed before the process stopped.
+    pub attestation_tx: Option<String>,
+    pub deliveries: Vec<Delivery>,
 }
 
 /// What became of one message of a batch.

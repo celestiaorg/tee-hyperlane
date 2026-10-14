@@ -71,6 +71,13 @@ th.num { text-align: right; }
 .s-down, .s-critical, .s-failed, .s-overdue { background: var(--bad-bg); color: var(--bad); }
 .s-resolved, .s-unknown { background: var(--line); color: var(--muted); }
 .s-low { background: var(--warn-bg); color: var(--warn); }
+.s-idle, .s-waiting, .s-heartbeat { background: var(--line); color: var(--muted); }
+.s-attesting, .s-submitting, .s-batch { background: var(--info-bg); color: var(--info); }
+.s-advanced { background: var(--ok-bg); color: var(--ok); }
+.now { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; }
+.now .what { flex: 1; min-width: 0; }
+.now .what b { display: block; margin-bottom: 2px; }
+.sub { color: var(--muted); font-size: 12px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-size: 12px; color: var(--muted); font-weight: 600; }
@@ -154,6 +161,25 @@ function ago(t) {
 const when = (t) => t ? `<span title="${esc(new Date(t * 1000).toLocaleString())}">${esc(ago(t))}</span>` : `<span class="muted">not yet</span>`;
 const pill = (s) => `<span class="pill s-${esc(s)}">${esc(s)}</span>`;
 const txLink = (hash, url) => hash ? (url ? `<a class="mono" href="${esc(url)}" target="_blank" rel="noopener">${esc(short(hash))}</a>` : `<span class="mono" title="${esc(hash)}">${esc(short(hash))}</span>`) : `<span class="muted">none</span>`;
+// How far an ISM trails its origin, in blocks and in the origin's own time.
+const behind = (r) => r.originHead && r.ismReading.height != null ? Math.max(0, r.originHead.height - r.ismReading.height) : null;
+const stateAge = (r) => r.ismReading.timestamp ? `state ${ago(r.ismReading.timestamp).replace(" ago", "")} old` : "";
+const kind = (a) => a.heartbeat ? pill("heartbeat") : `<span class="pill s-batch">${esc(a.messages)} msg${a.messages === 1 ? "" : "s"}</span>`;
+const heights = (a) => a.fromHeight != null ? `${esc(a.fromHeight)} to ${esc(a.height)}` : `to ${esc(a.height)}`;
+function lastAttestation(r) {
+  const a = r.attestations[0];
+  if (!a) return `<span class="muted">none yet</span>`;
+  return `${kind(a)} ${when(a.submittedAt)}<div class="sub">${txLink(a.tx, a.txUrl)}</div>`;
+}
+function heartbeatIn(r) {
+  if (!r.nextHeartbeatAt) return `<span class="muted">unknown</span>`;
+  return r.nextHeartbeatAt <= Date.now() / 1000 ? `<b>due</b>` : when(r.nextHeartbeatAt);
+}
+function nowCell(r) {
+  if (r.failing) return `<span class="pill s-failed">failing</span><div class="sub">${esc(r.failing.consecutiveFailures)}x since ${ago(r.failing.since)}</div>`;
+  if (!r.activity) return `<span class="muted">not reported</span>`;
+  return `${pill(r.activity.phase)}<div class="sub">for ${esc(ago(r.activity.since).replace(" ago", ""))}</div>`;
+}
 const subjectLink = (n) => ({ message: `#/message/${n.subjectId}`, route: `#/route/${n.subjectId}`, chain: `#/chain/${n.subjectId}`, monitor: "#/inbox" }[n.subject] || "#/inbox");
 
 function store(key, fallback) {
@@ -315,16 +341,17 @@ async function chainsPage() {
       <td>${watchCell}</td></tr>`;
   }).join("");
   const routeRows = routes.map((r) => {
-    const c = r.counts, stuck = c.failed + c.overdue;
+    const c = r.counts, stuck = c.failed + c.overdue, gap = behind(r);
     return `<tr class="click" data-href="#/route/${esc(r.name)}">
-      <td><a href="#/route/${esc(r.name)}">${esc(r.from.name)} to ${esc(r.to.name)}</a></td>
-      <td>${pill(r.status)}</td>
-      <td class="num">${esc(r.ismReading.height ?? "unread")}</td>
-      <td class="num">${r.originHead ? esc(r.originHead.height) : ""}</td>
+      <td><a href="#/route/${esc(r.name)}">${esc(r.from.name)} to ${esc(r.to.name)}</a><div>${pill(r.status)}</div></td>
+      <td>${nowCell(r)}</td>
+      <td class="num">${esc(r.ismReading.height ?? "unread")}<div class="sub">${esc(stateAge(r))}</div></td>
+      <td class="num">${gap == null ? "" : esc(gap)}<div class="sub">${r.originHead ? `head ${esc(r.originHead.height)}` : ""}</div></td>
+      <td>${lastAttestation(r)}</td>
+      <td>${heartbeatIn(r)}</td>
       <td class="num">${c.pending + c.verified}</td>
       <td class="num">${stuck ? `<b class="bad-text">${stuck}</b>` : "0"}</td>
-      <td class="num">${c.delivered}</td>
-      <td>${r.failing ? `<span class="bad-text">failing ${esc(r.failing.consecutiveFailures)}x since ${when(r.failing.since)}</span>` : `<span class="muted">healthy</span>`}</td></tr>`;
+      <td class="num">${c.delivered}</td></tr>`;
   }).join("");
   return `${summaryBanner(open)}
     <h2>Chains</h2>
@@ -332,9 +359,11 @@ async function chainsPage() {
       <th class="num">Gas balance</th><th class="num">Lasts</th><th>Watching transfers</th></tr></thead>
       <tbody>${chainRows}</tbody></table></div>
     <h2>Routes</h2>
-    <div class="panel scroll"><table><thead><tr><th>Route</th><th>Status</th><th class="num">ISM height</th>
-      <th class="num">Origin head</th><th class="num">In flight</th><th class="num">Stuck</th><th class="num">Delivered</th><th>Loop</th></tr></thead>
-      <tbody>${routeRows}</tbody></table></div>`;
+    <div class="panel scroll"><table><thead><tr><th>Route</th><th>Now</th><th class="num">ISM at</th>
+      <th class="num">Blocks behind</th><th>Last attestation</th><th>Next heartbeat</th>
+      <th class="num">In flight</th><th class="num">Stuck</th><th class="num">Delivered</th></tr></thead>
+      <tbody>${routeRows}</tbody></table></div>
+    <p class="sub">A route attests when a transfer for it is dispatched, and otherwise once an hour with no messages (a heartbeat), so its ISM never trails its origin by much more than that.</p>`;
 }
 
 const PAGE = 100;
@@ -421,23 +450,39 @@ async function routeView(name) {
   catch (e) { if (e.status === 404) return `<h1>No route ${esc(name)}</h1>`; throw e; }
   const page = await get(`/messages?route=${encodeURIComponent(name)}&limit=100`);
   markSeen(r.notifications);
+  const a = r.activity, gap = behind(r);
+  const now = r.failing
+    ? `<div class="now"><span class="pill s-failed">failing</span><div class="what"><b>Failing ${esc(r.failing.consecutiveFailures)}x since ${when(r.failing.since)}</b>${esc(r.failing.error)}</div></div>`
+    : a ? `<div class="now">${pill(a.phase)}<div class="what"><b>${esc(a.detail.charAt(0).toUpperCase() + a.detail.slice(1))}</b><span class="sub">for ${esc(ago(a.since).replace(" ago", ""))}, last checked ${ago(a.at)}</span></div></div>`
+    : `<div class="now"><span class="muted">The loop has not reported yet.</span></div>`;
+  const rows = r.attestations.map((x) => `<tr>
+      <td>${when(x.submittedAt)}</td>
+      <td>${kind(x)}</td>
+      <td class="num">${heights(x)}</td>
+      <td>${x.attestedAt ? when(x.attestedAt) : `<span class="muted">unknown</span>`}</td>
+      <td>${txLink(x.tx, x.txUrl)}</td>
+      <td class="mono hide-sm" title="${esc(x.stateRoot)}">${esc(short(x.stateRoot))}</td></tr>`).join("");
   return `<h1>${esc(r.from.name)} to ${esc(r.to.name)} ${pill(r.status)}</h1>
     ${r.notifications.length ? inboxList(r.notifications, "") : ""}
+    <h2>Now</h2><div class="panel">${now}</div>
     <div class="two" style="margin-top:12px">
       <div class="panel pad"><dl class="kv">
-        <dt>Route</dt><dd>${esc(r.name)}</dd><dt>ISM</dt><dd class="mono">${esc(r.ism)}</dd>
-        <dt>ISM height</dt><dd>${esc(r.ismReading.height ?? "unread")} ${r.ismReading.readAt ? `(read ${when(r.ismReading.readAt)})` : ""}</dd>
-        ${r.ismReading.error ? `<dt>ISM read error</dt><dd style="color:var(--bad)">${esc(r.ismReading.error)}</dd>` : ""}
-        <dt>Origin head</dt><dd>${r.originHead ? `${esc(r.originHead.height)} (${when(r.originHead.reportedAt)})` : "not reported"}</dd>
-        <dt>Normal latency</dt><dd>up to ${esc(Math.round(r.expectedLatencySecs / 60))} minutes</dd>
+        <dt>ISM at height</dt><dd><b>${esc(r.ismReading.height ?? "unread")}</b> ${r.ismReading.timestamp ? `(origin time ${when(r.ismReading.timestamp)})` : ""}</dd>
+        <dt>Origin head</dt><dd>${r.originHead ? `${esc(r.originHead.height)} (seen ${when(r.originHead.reportedAt)})` : "not reported"}</dd>
+        <dt>Behind</dt><dd>${gap == null ? "unknown" : `${esc(gap)} blocks`}</dd>
+        <dt>Next heartbeat</dt><dd>${heartbeatIn(r)} <span class="sub">if nothing is dispatched before then</span></dd>
+        <dt>Staged</dt><dd>${r.staged ? `${esc(r.staged.messages)} messages to height ${esc(r.staged.height ?? "?")}, since ${when(r.staged.since)}` : "nothing"}</dd>
       </dl></div>
       <div class="panel pad"><dl class="kv">
-        <dt>Loop</dt><dd>${r.failing ? `<span style="color:var(--bad)">failing ${esc(r.failing.consecutiveFailures)}x since ${when(r.failing.since)}</span>` : "healthy"}</dd>
-        ${r.failing ? `<dt>Last error</dt><dd>${esc(r.failing.error)}</dd>` : ""}
-        <dt>Staged batch</dt><dd>${r.staged ? `${esc(r.staged.messages)} leaves to height ${esc(r.staged.height ?? "?")}, since ${when(r.staged.since)}` : "none"}</dd>
+        <dt>Route</dt><dd>${esc(r.name)}</dd>
+        <dt>ISM</dt><dd class="mono">${esc(r.ism)}</dd>
+        ${r.ismReading.error ? `<dt>ISM read error</dt><dd class="bad-text">${esc(r.ismReading.error)}</dd>` : ""}
+        <dt>Normal latency</dt><dd>up to ${esc(Math.round(r.expectedLatencySecs / 60))} minutes</dd>
         <dt>Transfers</dt><dd>${esc(r.counts.pending)} pending, ${esc(r.counts.verified)} verified, ${esc(r.counts.delivered)} delivered, ${esc(r.counts.failed)} failed, ${esc(r.counts.overdue)} overdue</dd>
       </dl></div>
     </div>
+    <h2>Attestations (latest ${r.attestations.length})</h2>
+    ${rows ? `<div class="panel scroll"><table><thead><tr><th>Submitted</th><th>Kind</th><th class="num">Heights</th><th>Origin time attested</th><th>Transaction</th><th class="hide-sm">State root</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="panel empty">No attestation landed on this route since this relayer started keeping them.</div>`}
     <h2>Transfers (${page.total})</h2>${messageRows(page.messages, false)}`;
 }
 

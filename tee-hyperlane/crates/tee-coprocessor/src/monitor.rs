@@ -575,7 +575,7 @@ mod tests {
         async fn submit(
             &self,
             _: &crate::destination::Batch,
-        ) -> anyhow::Result<Vec<crate::destination::Delivery>> {
+        ) -> anyhow::Result<crate::destination::Submitted> {
             anyhow::bail!("unused")
         }
         async fn deliver(&self, _: &[u8]) -> anyhow::Result<crate::destination::Outcome> {

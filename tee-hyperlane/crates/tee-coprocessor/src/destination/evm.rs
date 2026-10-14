@@ -6,7 +6,7 @@ use serde_json::Value;
 use tee_node::state::IsmState;
 use tracing::debug;
 
-use super::{run, Batch, Delivery, Destination, Outcome, Wallet};
+use super::{run, Batch, Delivery, Destination, Outcome, Wallet, Submitted};
 
 /// An EVM chain: `TeeDcapIsm.submitAttestation`, then `Mailbox.process` per message.
 pub struct Evm {
@@ -162,7 +162,7 @@ impl Destination for Evm {
         )?)?)
     }
 
-    async fn submit(&self, batch: &Batch) -> Result<Vec<Delivery>> {
+    async fn submit(&self, batch: &Batch) -> Result<Submitted> {
         let state = run(
             "cast",
             &["call", &self.ism, "state()(bytes)", "--rpc-url", &self.rpc],
@@ -256,7 +256,10 @@ impl Destination for Evm {
                 outcome,
             });
         }
-        Ok(out)
+        Ok(Submitted {
+            attestation_tx: attestation,
+            deliveries: out,
+        })
     }
 
     async fn deliver(&self, message: &[u8]) -> Result<Outcome> {

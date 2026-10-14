@@ -17,7 +17,7 @@ use crate::origin::{Indexer, Message};
 /// its RPCs will serve: four days of that stopped every Celestia route once. Twice the interval
 /// the enclave and both ISMs require between empty batches
 /// (`tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS`), so the origin's clock always clears it.
-const HEARTBEAT: Duration = Duration::from_secs(60 * 60);
+pub const HEARTBEAT: Duration = Duration::from_secs(60 * 60);
 /// A staged batch older than this is rebuilt rather than retried. Both kinds of ISM refuse an
 /// attestation older than 24h, so past that it could never land, and retrying it forever would
 /// stall the route long after whatever delayed it had passed.
@@ -148,11 +148,19 @@ impl Route {
         // An idle step carries no proofs: the origin has not moved past the trusted height.
         if step.chain.is_empty() {
             debug!(route = %self.config.name, head = step.head, "idle");
+            self.record_activity(
+                "idle",
+                format!("the origin has not moved past the ISM's height {}", trusted.height),
+            );
             return Ok(None);
         }
         let heartbeat = heartbeat_due(trusted.timestamp, now());
         if step.leaves.is_empty() && !heartbeat {
             debug!(route = %self.config.name, head = step.head, "nothing dispatched");
+            self.record_activity(
+                "waiting",
+                format!("nothing dispatched between heights {} and {}", trusted.height, step.head),
+            );
             return Ok(None);
         }
 
@@ -175,12 +183,33 @@ impl Route {
             && !lagging
         {
             debug!(route = %self.config.name, leaves = messages.len(), "nothing for our routes");
+            self.record_activity(
+                "waiting",
+                format!(
+                    "{} new leaves since height {}, none for our routers",
+                    messages.len(),
+                    trusted.height
+                ),
+            );
             return Ok(None);
         }
 
         if messages.is_empty() {
             info!(route = %self.config.name, from = trusted.height, to = step.head, "heartbeat: advancing with no messages");
         }
+        self.record_activity(
+            "attesting",
+            if messages.is_empty() {
+                format!("heartbeat: asking the enclave to attest heights {} to {} with no messages", trusted.height, step.head)
+            } else {
+                format!(
+                    "asking the enclave to attest heights {} to {} with {} messages",
+                    trusted.height,
+                    step.head,
+                    messages.len()
+                )
+            },
+        );
         debug!(route = %self.config.name, from = trusted.height, to = step.head, leaves = messages.len(), "attesting");
         let request = json!({
             "protocol": tee_node::attest::PROTOCOL_VERSION,
@@ -238,12 +267,22 @@ impl Route {
                 .filter_map(|m| hex::decode(m.as_str()?).ok())
                 .collect(),
         };
+        let update = tee_node::state::AttestedUpdate::decode(&batch.payload)?;
+        self.record_activity(
+            "submitting",
+            format!(
+                "submitting the attestation for heights {} to {} ({} messages) and delivering",
+                update.prev_state.height,
+                update.new_state.height,
+                update.message_ids.len()
+            ),
+        );
         if age > STAGED_BATCH_MAX_AGE {
             warn!(route = %self.config.name, age_secs = age.as_secs(), "discarding a staged batch too old to be accepted; rebuilding");
             self.discard(&batch, &path).await?;
             return Ok(None);
         }
-        let deliveries = match self.destination.submit(&batch).await {
+        let submitted = match self.destination.submit(&batch).await {
             Ok(d) => d,
             // The ISM moved past this batch's start, so no retry can land it. The next pass
             // builds from where the ISM actually is, which skips nothing.
@@ -254,12 +293,17 @@ impl Route {
             }
             Err(e) => return Err(e),
         };
-        for d in deliveries {
+        for d in submitted.deliveries {
             self.settle(d);
         }
 
-        let update = tee_node::state::AttestedUpdate::decode(&batch.payload)?;
         let height = update.new_state.height;
+        // What the dashboard lists for each attestation.
+        record["from_height"] = update.prev_state.height.into();
+        record["attested_at"] = update.attested_at.into();
+        record["submitted_at"] = now().into();
+        record["attestation_tx"] = submitted.attestation_tx.clone().into();
+        record["heartbeat"] = update.message_ids.is_empty().into();
         record["height"] = height.into();
         record["state_root"] = format!("0x{}", hex::encode(update.new_state.state_root)).into();
         record["quote"] = batch.quote.clone().into();
@@ -276,6 +320,18 @@ impl Route {
             serde_json::to_vec_pretty(&record)?,
         )?;
         std::fs::remove_file(&path)?;
+        self.record_activity(
+            "advanced",
+            format!(
+                "the ISM moved from height {} to {}{}",
+                update.prev_state.height,
+                height,
+                match &submitted.attestation_tx {
+                    Some(tx) => format!(" in {tx}"),
+                    None => String::new(),
+                }
+            ),
+        );
         Ok(Some(height))
     }
 
@@ -396,6 +452,23 @@ impl Route {
                 }
             }
         }
+    }
+
+    /// What the route is doing right now, for the dashboard. `since` moves only when the phase
+    /// changes, so it says how long the route has been waiting, attesting or submitting.
+    fn record_activity(&self, phase: &str, detail: String) {
+        let path = self.dir.join("activity.json");
+        let now = now();
+        let since = std::fs::read(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+            .filter(|old| old["phase"] == phase)
+            .and_then(|old| old["since"].as_u64())
+            .unwrap_or(now);
+        let _ = std::fs::write(
+            path,
+            json!({ "phase": phase, "detail": detail, "since": since, "at": now }).to_string(),
+        );
     }
 
     /// How far the origin could go, for the dashboard; written even when idle, which is exactly

@@ -116,6 +116,41 @@ pub struct Staged {
     pub since: Option<u64>,
 }
 
+/// What a route's loop is doing right now, as it last wrote it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    /// `idle` (the origin has not moved), `waiting` (nothing to attest yet), `attesting`
+    /// (asking the enclave), `submitting` (landing it on the destination), `advanced` (done).
+    pub phase: String,
+    pub detail: String,
+    /// When the route entered this phase.
+    pub since: u64,
+    /// When the loop last confirmed it.
+    pub at: u64,
+}
+
+/// One attestation this relayer landed on the route's ISM.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttestationView {
+    /// The origin height the ISM moved to.
+    pub height: u64,
+    /// The origin height it moved from. Absent on records from before this was kept.
+    pub from_height: Option<u64>,
+    pub state_root: String,
+    /// Message ids the attestation authorised.
+    pub messages: usize,
+    /// No messages: sent only to keep a quiet route near its origin's head.
+    pub heartbeat: bool,
+    /// The newest origin time the enclave verified.
+    pub attested_at: Option<u64>,
+    pub submitted_at: Option<u64>,
+    /// The attestation's transaction on the destination.
+    pub tx: Option<String>,
+    pub tx_url: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteView {
@@ -130,6 +165,11 @@ pub struct RouteView {
     pub origin_head: Option<OriginHead>,
     pub failing: Option<Failing>,
     pub staged: Option<Staged>,
+    pub activity: Option<Activity>,
+    /// When a quiet route next attests with no messages: an hour after the ISM's trusted state.
+    pub next_heartbeat_at: Option<u64>,
+    /// The latest attestations landed on this route's ISM, newest first.
+    pub attestations: Vec<AttestationView>,
     pub counts: StatusCounts,
     pub notifications: Vec<Notification>,
 }
@@ -385,6 +425,7 @@ fn route_view(
         crate::tracker::read_json(&route.dir.join("blocked.json"));
     let staged: Option<serde_json::Value> =
         crate::tracker::read_json(&route.dir.join("staging").join("batch.json"));
+    let ism_timestamp = tracker.lock().isms.get(&route.name).and_then(|r| r.timestamp);
     let staged_since = std::fs::metadata(route.dir.join("staging").join("batch.json"))
         .and_then(|m| m.modified())
         .ok()
@@ -422,9 +463,55 @@ fn route_view(
             messages: s["messages"].as_array().map_or(0, |m| m.len()),
             since: staged_since,
         }),
+        activity: crate::tracker::read_json::<serde_json::Value>(&route.dir.join("activity.json")).and_then(|a| {
+            Some(Activity {
+                phase: a["phase"].as_str()?.to_string(),
+                detail: a["detail"].as_str().unwrap_or("").to_string(),
+                since: a["since"].as_u64()?,
+                at: a["at"].as_u64()?,
+            })
+        }),
+        next_heartbeat_at: ism_timestamp.map(|t| t + crate::route::HEARTBEAT.as_secs()),
+        attestations: recent_attestations(tracker, route),
         counts,
         notifications,
     }
+}
+
+/// How many attestations a route view lists.
+const RECENT_ATTESTATIONS: usize = 20;
+
+/// The newest attestations filed in the route's directory, as `<height>.json`. Only those files
+/// are read, newest first, so a route with a long history costs no more than a new one.
+fn recent_attestations(tracker: &Tracker, route: &TrackedRoute) -> Vec<AttestationView> {
+    let Ok(entries) = std::fs::read_dir(&route.dir) else {
+        return Vec::new();
+    };
+    let mut heights: Vec<u64> = entries
+        .filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".json")?.parse().ok())
+        .collect();
+    heights.sort_unstable_by(|a, b| b.cmp(a));
+    let destination = tracker.chain(&route.to);
+    heights
+        .into_iter()
+        .take(RECENT_ATTESTATIONS)
+        .filter_map(|h| {
+            let r: serde_json::Value = crate::tracker::read_json(&route.dir.join(format!("{h}.json")))?;
+            let messages = r["batch"].as_array().map_or(0, |b| b.len());
+            let tx = r["attestation_tx"].as_str().map(str::to_string);
+            Some(AttestationView {
+                height: h,
+                from_height: r["from_height"].as_u64(),
+                state_root: r["state_root"].as_str().unwrap_or("").to_string(),
+                messages,
+                heartbeat: r["heartbeat"].as_bool().unwrap_or(messages == 0),
+                attested_at: r["attested_at"].as_u64(),
+                submitted_at: r["submitted_at"].as_u64(),
+                tx_url: tx.as_ref().and_then(|t| destination.and_then(|c| c.tx_url(t))),
+                tx,
+            })
+        })
+        .collect()
 }
 
 /// Down on any critical problem, degraded on any warning.
@@ -996,6 +1083,24 @@ mod tests {
                 messages: 1,
                 since: Some(1),
             }),
+            activity: Some(Activity {
+                phase: "waiting".into(),
+                detail: "d".into(),
+                since: 1,
+                at: 1,
+            }),
+            next_heartbeat_at: Some(1),
+            attestations: vec![AttestationView {
+                height: 2,
+                from_height: Some(1),
+                state_root: "0x".into(),
+                messages: 0,
+                heartbeat: true,
+                attested_at: Some(1),
+                submitted_at: Some(1),
+                tx: Some("0x".into()),
+                tx_url: None,
+            }],
             counts: StatusCounts::default(),
             notifications: vec![],
         };
@@ -1005,6 +1110,8 @@ mod tests {
         check("OriginHead", r["originHead"].clone());
         check("Failing", r["failing"].clone());
         check("Staged", r["staged"].clone());
+        check("Activity", r["activity"].clone());
+        check("Attestation", r["attestations"][0].clone());
         check("StatusCounts", r["counts"].clone());
         check(
             "Chain",

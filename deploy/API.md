@@ -21,7 +21,7 @@ Schema: `$B/api/v1/openapi.json` (source: `tee-hyperlane/crates/tee-coprocessor/
 |---|---|
 | `GET /api/v1/health` | status and open problem counts; **HTTP 503 unless `ok`** |
 | `GET /api/v1/inbox[?resolved=true]` | open notifications, most severe first; `resolved` adds last week's |
-| `GET /api/v1/routes` | every route: ISM height, origin head, loop failures, staged batch, transfer counts, notifications |
+| `GET /api/v1/routes` | every route: what its loop is doing now (`activity`), ISM height, origin head, its latest attestations with their transactions (`attestations`, heartbeats marked), when the next heartbeat is due, loop failures, staged batch, transfer counts, notifications |
 | `GET /api/v1/routes/{name}` | one route |
 | `GET /api/v1/chains` | every chain, and the tracker's watch on each origin |
 | `GET /api/v1/wallets` | relayer gas wallet per destination: balance, daily spend (last week), days left, top-up flag |
