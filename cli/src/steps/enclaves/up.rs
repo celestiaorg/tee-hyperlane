@@ -1,17 +1,17 @@
-//! `teeism enclaves up`: deploy the shared CVM (or each `--chain` alone) on Phala and record
-//! the identity every ISM will pin.
+//! `teeism enclaves up`, `identity` and `delete`: the CVMs on Phala and the identity every ISM
+//! pins. The one piece that cannot be local: a TDX quote has to come from real Intel hardware.
+
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use std::time::Duration;
 
-use super::*;
-use crate::shared::chains;
-use crate::shared::print;
+use super::quote::*;
 use crate::shared::record::{Cvm, Enclave};
 use crate::shared::settings::Ctx;
 use crate::shared::shell::{first_json, Cmd};
-use crate::steps::images::{self, compose_file};
+use crate::shared::{chains, print};
+use crate::steps::enclaves::images::{self, compose_file};
 
 /// Refuse to deploy an image the repo does not describe, or that the current code would not
 /// build. For each chain deployed:
@@ -106,7 +106,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
     std::fs::create_dir_all(&ident_dir)?;
     for target in &targets {
         for chain in chains_in(target) {
-            super::identity::record_identity(ctx, chain).await?;
+            record_identity(ctx, chain).await?;
         }
     }
     Ok(())
@@ -249,4 +249,105 @@ fn find_key(v: &Value, keys: &[&str]) -> Option<String> {
         Value::Array(a) => a.iter().find_map(|x| find_key(x, keys)),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------- teeism enclaves identity
+
+/// The identity file x/teeism takes, its digest, and the TeeDcapIsm measurements, for one
+/// enclave. Read from the quote, and only after the event log replays to the RTMRs the
+/// hardware signed.
+pub async fn record_identity(ctx: &Ctx, chain: &str) -> Result<()> {
+    let mut d = ctx.deployment()?;
+    let url = d
+        .enclaves
+        .chains
+        .get(chain)
+        .map(|e| e.url.clone())
+        .with_context(|| format!("no {chain} enclave recorded; run `teeism enclaves up`"))?;
+    let file = identity_file(ctx, chain);
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    Cmd::new(
+        format!("reading the {chain} enclave's identity"),
+        ctx.coprocessor_bin(),
+    )
+    .args(["identity", "--url", &url, "--json"])
+    .arg(&file)
+    .output()?;
+    let digest = Cmd::new(
+        format!("digesting the {chain} identity"),
+        ctx.bin_dir().join("teeism-identity"),
+    )
+    .arg("-identity")
+    .arg(&file)
+    .output()?
+    .trim()
+    .to_string();
+    if digest.is_empty() {
+        bail!("teeism-identity printed no digest for {}", file.display());
+    }
+    let id = fetch_identity(&url).await?;
+    let e = d
+        .enclaves
+        .chains
+        .get_mut(chain)
+        .context("enclave vanished from the record")?;
+    e.identity_digest = Some(digest.clone());
+    e.measurements = Some(measurements(&id.quote)?);
+    print::kv(&format!("{chain} identity"), &digest);
+    print::kv(
+        &format!("{chain} measurements"),
+        e.measurements.as_deref().unwrap_or(""),
+    );
+    print::kv(&format!("{chain} mr_td"), mr_td(&id.quote)?);
+    ctx.save(&d)
+}
+
+/// `teeism enclaves identity`: re-read what each recorded enclave's quote says.
+pub async fn identity(ctx: &Ctx, chains: Vec<String>) -> Result<()> {
+    let chains = if chains.is_empty() {
+        ctx.deployment()?.enclaves.chains.keys().cloned().collect()
+    } else {
+        chains
+    };
+    for c in chains {
+        record_identity(ctx, &c).await?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- teeism enclaves delete
+
+/// `teeism enclaves delete`
+pub fn delete_cmd(ctx: &Ctx, app_id: Option<String>, retired: bool) -> Result<()> {
+    match (app_id, retired) {
+        (_, true) => delete_retired(ctx),
+        (Some(id), false) => delete(&id),
+        (None, false) => bail!("give --app-id <id> or --retired"),
+    }
+}
+
+/// `teeism enclaves delete --retired`: delete every CVM a newer one replaced.
+pub fn delete_retired(ctx: &Ctx) -> Result<()> {
+    let mut d = ctx.deployment()?;
+    if d.enclaves.retired.is_empty() {
+        print::info("no retired CVMs");
+        return Ok(());
+    }
+    while let Some(cvm) = d.enclaves.retired.first().cloned() {
+        print::step(format!("deleting retired CVM {} ({})", cvm.app_id, cvm.name));
+        delete(&cvm.app_id)?;
+        d.enclaves.retired.remove(0);
+        ctx.save(&d)?;
+    }
+    Ok(())
+}
+
+/// Delete a CVM on Phala.
+pub fn delete(app_id: &str) -> Result<()> {
+    Cmd::new(format!("deleting CVM {app_id} on Phala"), "phala")
+        .args(["cvms", "delete", app_id, "--force"])
+        .output()?;
+    Ok(())
 }

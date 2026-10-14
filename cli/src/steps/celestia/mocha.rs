@@ -6,10 +6,10 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::shared::chains::MOCHA_LIGHT_IMAGE;
-use crate::shared::node_config::{set_toml, tv};
 use crate::shared::print;
 use crate::shared::settings::Ctx;
 use crate::shared::shell::Cmd;
+use crate::steps::celestia::up::{set_toml, tv};
 
 pub const CONTAINER: &str = "mocha-light";
 

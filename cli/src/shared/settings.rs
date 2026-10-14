@@ -4,9 +4,10 @@
 //! `FOO=x teeism ...` overrides the file. `devnet/.env` is also the relayer unit's
 //! EnvironmentFile, so it keeps the syntax systemd reads: `KEY=value`, `#` comments, no `export`.
 
-use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
 
 use crate::shared::record::Deployment;
 

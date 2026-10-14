@@ -18,7 +18,7 @@ async fn main() {
         for cause in e.chain().skip(1) {
             eprintln!("  caused by: {cause}");
         }
-        std::process::exit(match e.downcast_ref::<shared::incomplete::Incomplete>() {
+        std::process::exit(match e.downcast_ref::<shared::print::Incomplete>() {
             Some(_) => 3,
             None => 1,
         });

@@ -3,9 +3,10 @@
 //! One typed document rather than a file per value, so what exists is readable in one place
 //! and a missing piece is a `None` with a name, not a missing file.
 
+use std::collections::BTreeMap;
+
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Deployment {

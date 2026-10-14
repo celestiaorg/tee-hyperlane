@@ -3,17 +3,18 @@
 //! Both assets start on Celestia and are synthetic on every EVM chain: TIA (collateral on
 //! Celestia) and teeUSD (a fixed supply minted on Celestia).
 
+use std::str::FromStr;
+
 use alloy::primitives::{Address, FixedBytes, U256};
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use anyhow::{bail, Context, Result};
-use std::str::FromStr;
 
-use crate::shared::celestia_cli::{self, Appd};
 use crate::shared::chains::{self, celestia as cel};
 use crate::shared::evm::{Artifact, Chain};
 use crate::shared::print;
 use crate::shared::settings::Ctx;
+use crate::steps::celestia::appd::{self, Appd};
 use crate::steps::isms;
 
 sol! {
@@ -139,12 +140,12 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
     // Celestia -> EVM: read what the chain holds rather than a saved marker. The chain refuses
     // to enroll a domain twice, so a changed router is unrolled first.
     print::step("enrolling the EVM routers on Celestia");
-    celestia_cli::wait_for_chain(ctx).await?;
+    appd::wait_for_chain(ctx).await?;
     let appd = Appd::new(ctx)?;
     let d = ctx.deployment()?;
     for asset in &ASSETS {
         let token = celestia_token(&d, asset.symbol).context("no Celestia token")?;
-        let enrolled = celestia_cli::remote_routers(&appd, &token)?;
+        let enrolled = appd::remote_routers(&appd, &token)?;
         for chain in chains::evm_selection(selection)? {
             let Some(router) = d.evm(chain.name).and_then(|e| {
                 if asset.symbol == "TIA" {
@@ -155,7 +156,7 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
             }) else {
                 bail!("no {} router on {}", asset.symbol, chain.label);
             };
-            let want = celestia_cli::pad32(&router);
+            let want = appd::pad32(&router);
             match enrolled.iter().find(|(dom, _)| *dom == chain.domain) {
                 Some((_, got)) if *got == want => {
                     print::info(format!("{} on {}: already enrolled", asset.symbol, chain.label));

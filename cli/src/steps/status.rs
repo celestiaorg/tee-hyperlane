@@ -1,12 +1,13 @@
 //! `teeism status`: what is deployed, and whether each piece answers. Read only.
 
-use anyhow::Result;
 use std::time::Duration;
 
-use crate::shared::celestia_cli;
+use anyhow::Result;
+
 use crate::shared::chains::EVM_CHAINS;
 use crate::shared::print;
 use crate::shared::settings::Ctx;
+use crate::steps::celestia::appd;
 
 fn show(name: &str, v: &Option<String>) {
     print::kv(name, v.as_deref().unwrap_or("-"));
@@ -15,7 +16,7 @@ fn show(name: &str, v: &Option<String>) {
 pub async fn run(ctx: &Ctx) -> Result<()> {
     let d = ctx.deployment()?;
     print::step("celestia");
-    match celestia_cli::height(ctx).await {
+    match appd::height(ctx).await {
         Ok(h) => print::kv("height", h),
         Err(e) => print::bad(format!("down: {e:#}")),
     }

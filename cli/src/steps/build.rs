@@ -2,8 +2,9 @@
 //! the celestia-app checkout beside it. Always rebuilt (each tool is incremental), so nothing
 //! runs from a stale build.
 
-use anyhow::{bail, Context, Result};
 use std::path::Path;
+
+use anyhow::{bail, Context, Result};
 
 use crate::shared::print;
 use crate::shared::settings::Ctx;

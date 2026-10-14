@@ -5,16 +5,17 @@
 //!   2. each EVM chain -> Celestia: the EVM signer sends back to the `smoke` key, which nothing
 //!      else pays, so its balance rises only when a transfer lands.
 
+use std::time::{Duration, Instant};
+
 use alloy::primitives::{Address, U256};
 use alloy::sol_types::SolCall;
 use anyhow::{bail, Context, Result};
-use std::time::{Duration, Instant};
 
-use crate::shared::celestia_cli::{self, Appd};
 use crate::shared::chains::{self, celestia as cel, EvmChain};
 use crate::shared::evm::Chain;
 use crate::shared::print;
 use crate::shared::settings::Ctx;
+use crate::steps::celestia::appd::{self, Appd};
 use crate::steps::warp::IRouter;
 
 /// Ceiling on what a Celestia-origin transfer may pay the paymaster.
@@ -39,7 +40,7 @@ fn router(d: &crate::shared::record::Deployment, chain: &EvmChain, symbol: &str)
 }
 
 pub async fn run(ctx: &Ctx, selection: &[String], amount: u128, timeout_mins: u64) -> Result<()> {
-    celestia_cli::wait_for_chain(ctx).await?;
+    appd::wait_for_chain(ctx).await?;
     let appd = Appd::new(ctx)?;
     let d = ctx.deployment()?;
     let chains = chains::evm_selection(selection)?;
@@ -49,7 +50,7 @@ pub async fn run(ctx: &Ctx, selection: &[String], amount: u128, timeout_mins: u6
         .smoke
         .clone()
         .context("no smoke key recorded; run `teeism celestia up`")?;
-    let smoke32 = celestia_cli::bech32_to_hex32(&smoke)?;
+    let smoke32 = appd::bech32_to_hex32(&smoke)?;
     let tokens = [
         (
             "TIA",
@@ -77,7 +78,7 @@ pub async fn run(ctx: &Ctx, selection: &[String], amount: u128, timeout_mins: u6
         for (symbol, token, _) in &tokens {
             let r = router(&d, c.chain, symbol)?;
             let before = IRouter::new(r, &c.p).balanceOf(c.from).call().await?;
-            let recipient = celestia_cli::pad32(&c.from);
+            let recipient = appd::pad32(&c.from);
             appd.tx(
                 &format!("sending {symbol} to {}", c.chain.label),
                 "user",

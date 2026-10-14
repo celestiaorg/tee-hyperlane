@@ -1,15 +1,23 @@
 //! `teeism celestia up`: create the genesis (first run only) on the host, then run the node.
+//! Also the keys every step signs with, and editing a node's TOML config.
 
-use crate::shared::node_config::{set_toml, tv};
-use crate::steps::build;
+use std::path::Path;
+
 use anyhow::{bail, Context, Result};
 
-use super::*;
-use crate::shared::celestia_cli::{self, Appd};
 use crate::shared::chains::celestia as cel;
 use crate::shared::print;
 use crate::shared::settings::Ctx;
 use crate::shared::shell::Cmd;
+use crate::steps::build;
+use crate::steps::celestia::appd::{self, Appd};
+
+pub const CONTAINER: &str = "teeism-celestia";
+
+/// Keys derived from CELESTIA_MNEMONIC, by account index. 0 is what Keplr selects when the
+/// phrase is imported. 3 is the paymaster's `bridge` key, added by `teeism paymaster`.
+const KEYS: [(&str, u32); 4] = [("user", 0), ("relayer", 1), ("validator", 2), ("smoke", 5)];
+pub const BRIDGE_KEY: (&str, u32) = ("bridge", 3);
 
 /// Genesis balances, in utia.
 const VALIDATOR_COINS: &str = "1000000000000000utia"; // 1B TIA
@@ -174,7 +182,7 @@ pub async fn run(ctx: &mut Ctx, new_image: bool) -> Result<()> {
     }
     print::step(format!("starting {CONTAINER} ({image})"));
     compose(ctx, &image)?.args(["up", "-d"]).run()?;
-    let h = celestia_cli::wait_for_chain(ctx).await?;
+    let h = appd::wait_for_chain(ctx).await?;
     print::info(format!("{} is at height {h}", cel::CHAIN_ID));
 
     let mut d = ctx.deployment()?;
@@ -185,4 +193,37 @@ pub async fn run(ctx: &mut Ctx, new_image: bool) -> Result<()> {
     print::kv("user", d.celestia.user.as_deref().unwrap_or(""));
     print::kv("relayer", d.celestia.relayer.as_deref().unwrap_or(""));
     Ok(())
+}
+
+// ---------------------------------------------------------------- editing a node's TOML config
+
+/// Set `key` under the dotted `table` path ("" for the top level) in a TOML file, failing if
+/// the key is not already there: a renamed setting must stop the run, not be silently added
+/// under a name the node ignores.
+pub fn set_toml(path: &Path, table: &str, key: &str, value: toml_edit::Item) -> Result<()> {
+    let raw = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .with_context(|| format!("{} is not TOML", path.display()))?;
+    let mut t = doc.as_table_mut();
+    if !table.is_empty() {
+        for part in table.split('.') {
+            t = t
+                .get_mut(part)
+                .and_then(|t| t.as_table_mut())
+                .with_context(|| format!("{} has no [{table}] table", path.display()))?;
+        }
+    }
+    if !t.contains_key(key) {
+        bail!(
+            "{} has no `{key}` under [{table}]; this version names it differently",
+            path.display()
+        );
+    }
+    t[key] = value;
+    std::fs::write(path, doc.to_string()).with_context(|| format!("writing {}", path.display()))
+}
+
+pub fn tv(v: impl Into<toml_edit::Value>) -> toml_edit::Item {
+    toml_edit::Item::Value(v.into())
 }

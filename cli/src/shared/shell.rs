@@ -3,9 +3,10 @@
 //! Every call names what it was for. A failure reports that, the command line, the exit status
 //! and the end of its output, so nothing fails as a bare "exit 1".
 
-use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+use anyhow::{bail, Context, Result};
 
 pub struct Cmd {
     program: String,

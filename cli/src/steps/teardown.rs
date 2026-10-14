@@ -10,14 +10,14 @@ use anyhow::{Context, Result};
 use crate::shared::print;
 use crate::shared::settings::Ctx;
 use crate::shared::shell::Cmd;
+use crate::steps::celestia::mocha;
 use crate::steps::enclaves;
-use crate::steps::mocha;
 
 /// The units this host has run for the bridge, current and retired.
 const UNITS: [&str; 4] = ["teeism-relayer", "teeism-gas-oracle", "teeism-api", "bridge-ui"];
 const CONTAINERS: [&str; 3] = [
     "teeism-gateway",
-    crate::steps::celestia::CONTAINER,
+    crate::steps::celestia::up::CONTAINER,
     mocha::CONTAINER,
 ];
 
@@ -125,7 +125,7 @@ pub async fn run(ctx: &mut Ctx, yes: bool) -> Result<()> {
 
     for (target, id) in &cvms {
         print::info(format!("deleting CVM {id} ({target})"));
-        enclaves::delete::delete(id)
+        enclaves::up::delete(id)
             .with_context(|| format!("CVM {id} is still billing; check `phala cvms ls`"))?;
     }
 

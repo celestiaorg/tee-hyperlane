@@ -3,8 +3,9 @@
 //!
 //! The deployment's ids are baked into the build, so it is built on the host that serves it.
 
-use anyhow::{bail, Context, Result};
 use std::fmt::Write as _;
+
+use anyhow::{bail, Context, Result};
 
 use crate::shared::chains::{celestia as cel, EVM_CHAINS};
 use crate::shared::print;

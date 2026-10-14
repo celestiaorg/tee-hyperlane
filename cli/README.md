@@ -8,27 +8,26 @@ Start at `src/commands.rs`: every command in deploy order, and the file that imp
 
 ```
 src/
-  main.rs          entry point; prints errors
-  commands.rs      the commands and their flags; calls one step each
-  steps/           one file per command; a command with subcommands is a folder, one file each
-  shared/          what the steps use; skip it on a first read
+  main.rs            entry point; prints errors
+  commands.rs        the commands and their flags; calls one step each
+  steps/
+    celestia/        the bridge's chain: up.rs (genesis, node), hyperlane.rs (core, warp),
+                     paymaster.rs, mocha.rs (Eden's light node), appd.rs (the celestia-appd wrapper)
+    enclaves/        images.rs, up.rs (CVMs, identities), verify.rs, quote.rs (reading a quote)
+    pccs/            deploy.rs, seed.rs (and fetching from Intel), status.rs
+    isms.rs          both kinds of ISM
+    warp.rs  eden.rs  services.rs  build.rs  preflight.rs  ui.rs  smoke.rs  status.rs
+    teardown.rs  check_secrets.rs
+  shared/            what at least three steps use; skip it on a first read
+    record.rs        devnet/.state/deployment.json: every id a step created
+    settings.rs      devnet/.env, and where everything lives
+    chains.rs        the fixed facts about every chain
+    evm.rs           sending, deploying and reading EVM contracts; naming reverts
+    shell.rs         running external programs
+    print.rs         terminal output; the "partly done" error (exit 3)
 ```
 
-| shared/ | what it is |
-|---|---|
-| `record.rs` | `devnet/.state/deployment.json`: every id a step created |
-| `settings.rs` | `devnet/.env`, and where everything lives |
-| `chains.rs` | the fixed facts about every chain |
-| `evm.rs` | sending, deploying and reading EVM contracts |
-| `celestia_cli.rs` | the `celestia-appd` binary: transactions, queries |
-| `intel.rs` | fetching Intel's collateral |
-| `shell.rs` | running external programs |
-| `print.rs` | terminal output |
-| `incomplete.rs` | the "partly done" error (exit 3) |
-| `node_config.rs` | editing a node's TOML config |
-| `revert_names.rs` | naming Solidity errors in a revert |
-
-Own Cargo workspace on purpose: the enclave images are built from `tee-hyperlane/Cargo.lock`, which this tool's dependencies must never move.
+Its own Cargo workspace on purpose: the enclave images are built from `tee-hyperlane/Cargo.lock`, which this tool's dependencies must never move.
 
 ```sh
 cargo install --locked --path cli      # from the repo root

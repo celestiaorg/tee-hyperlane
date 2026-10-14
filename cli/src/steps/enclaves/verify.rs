@@ -4,12 +4,11 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::*;
-use crate::shared::chains;
-use crate::shared::print;
+use super::quote::*;
 use crate::shared::settings::Ctx;
 use crate::shared::shell::Cmd;
-use crate::steps::images::compose_file;
+use crate::shared::{chains, print};
+use crate::steps::enclaves::images::compose_file;
 
 pub struct Args {
     pub target: String,

@@ -4,10 +4,9 @@
 use alloy::sol_types::SolValue;
 use anyhow::Result;
 
-use crate::shared::chains;
 use crate::shared::evm::{Artifact, Chain};
-use crate::shared::print;
 use crate::shared::settings::Ctx;
+use crate::shared::{chains, print};
 
 /// `teeism eden core`
 pub async fn core(ctx: &Ctx) -> Result<()> {

@@ -5,9 +5,10 @@
 //! up` can check the pins against the code. A chain whose source still evaluates to its locked
 //! store path is left alone: nothing is built or pushed.
 
-use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+use anyhow::{bail, Context, Result};
 
 use crate::shared::chains::{ENCLAVES, IMAGE_REPO};
 use crate::shared::print;

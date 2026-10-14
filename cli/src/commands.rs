@@ -1,32 +1,34 @@
 //! Every `teeism` command, in the order a deploy runs them, and the file that implements it.
 //!
-//! | command                  | file                                  |
-//! |--------------------------|---------------------------------------|
-//! | preflight                | steps/preflight.rs                    |
-//! | build                    | steps/build.rs                        |
-//! | celestia up, core, warp  | steps/celestia/{up,core,warp}.rs      |
-//! | mocha up                 | steps/mocha.rs                        |
-//! | images                   | steps/images.rs                       |
-//! | enclaves up, verify, ... | steps/enclaves/{up,verify,identity,delete}.rs |
-//! | pccs deploy, seed, ...   | steps/pccs/{deploy,seed,status,tcb_eval,check_quote}.rs |
-//! | eden core                | steps/eden.rs                         |
-//! | isms evm, celestia       | steps/isms/{evm,celestia}.rs          |
-//! | warp evm                 | steps/warp.rs                         |
-//! | paymaster                | steps/paymaster.rs                    |
-//! | config                   | steps/config.rs                       |
-//! | services                 | steps/services.rs                     |
-//! | ui                       | steps/ui.rs                           |
-//! | smoke                    | steps/smoke.rs                        |
-//! | status                   | steps/status.rs                       |
-//! | teardown                 | steps/teardown.rs                     |
-//! | check-secrets            | steps/check_secrets.rs                |
+//! | command                         | file                          |
+//! |---------------------------------|-------------------------------|
+//! | preflight                       | steps/preflight.rs            |
+//! | build                           | steps/build.rs                |
+//! | celestia up                     | steps/celestia/up.rs          |
+//! | celestia core, celestia warp    | steps/celestia/hyperlane.rs   |
+//! | mocha up                        | steps/celestia/mocha.rs       |
+//! | images                          | steps/enclaves/images.rs      |
+//! | enclaves up, identity, delete   | steps/enclaves/up.rs          |
+//! | enclaves verify                 | steps/enclaves/verify.rs      |
+//! | pccs deploy, tcb-eval           | steps/pccs/deploy.rs          |
+//! | pccs seed                       | steps/pccs/seed.rs            |
+//! | pccs status, check-quote        | steps/pccs/status.rs          |
+//! | eden core                       | steps/eden.rs                 |
+//! | isms evm, isms celestia         | steps/isms.rs                 |
+//! | warp evm                        | steps/warp.rs                 |
+//! | paymaster                       | steps/celestia/paymaster.rs   |
+//! | config, services                | steps/services.rs             |
+//! | ui                              | steps/ui.rs                   |
+//! | smoke                           | steps/smoke.rs                |
+//! | status                          | steps/status.rs               |
+//! | teardown                        | steps/teardown.rs             |
+//! | check-secrets                   | steps/check_secrets.rs        |
 //!
 //! This file only parses arguments and calls the step. Shared code is under `shared/`.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::shared::revert_names;
 use crate::shared::settings::Ctx;
 use crate::steps::pccs;
 
@@ -158,7 +160,7 @@ pub enum EnclavesCmd {
         #[arg(long = "chain")]
         chains: Vec<String>,
         /// The dstack OS image; a different one is a different mr_td.
-        #[arg(long, default_value = crate::steps::enclaves::DEFAULT_OS_IMAGE)]
+        #[arg(long, default_value = crate::steps::enclaves::quote::DEFAULT_OS_IMAGE)]
         os_image: String,
         /// Skip the check that the images are what this source builds and are pushed.
         #[arg(long)]
@@ -287,18 +289,22 @@ pub enum PccsCmd {
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
     let ctx = Ctx::load()?;
-    revert_names::load(&[&ctx.contracts_dir(), &pccs::pccs_dir(&ctx), &pccs::dcap_dir(&ctx)]);
+    crate::shared::evm::load_revert_names(&[
+        &ctx.contracts_dir(),
+        &pccs::pccs_dir(&ctx),
+        &pccs::dcap_dir(&ctx),
+    ]);
     let mut ctx = ctx;
     match cli.cmd {
         Cmd::Preflight => crate::steps::preflight::run(&ctx).await,
         Cmd::Build => crate::steps::build::build(&ctx),
         Cmd::Celestia { cmd } => match cmd {
             CelestiaCmd::Up { new_image } => crate::steps::celestia::up::run(&mut ctx, new_image).await,
-            CelestiaCmd::Core => crate::steps::celestia::core::run(&ctx).await,
-            CelestiaCmd::Warp => crate::steps::celestia::warp::run(&ctx).await,
+            CelestiaCmd::Core => crate::steps::celestia::hyperlane::core(&ctx).await,
+            CelestiaCmd::Warp => crate::steps::celestia::hyperlane::warp(&ctx).await,
         },
-        Cmd::Mocha { cmd: MochaCmd::Up } => crate::steps::mocha::up(&ctx).await,
-        Cmd::Images { chains } => crate::steps::images::run(&ctx, &chains),
+        Cmd::Mocha { cmd: MochaCmd::Up } => crate::steps::celestia::mocha::up(&ctx).await,
+        Cmd::Images { chains } => crate::steps::enclaves::images::run(&ctx, &chains),
         Cmd::Enclaves { cmd } => match cmd {
             EnclavesCmd::Up {
                 chains,
@@ -332,9 +338,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 )
                 .await
             }
-            EnclavesCmd::Identity { chains } => crate::steps::enclaves::identity::run(&ctx, chains).await,
+            EnclavesCmd::Identity { chains } => crate::steps::enclaves::up::identity(&ctx, chains).await,
             EnclavesCmd::Delete { app_id, retired } => {
-                crate::steps::enclaves::delete::run(&ctx, app_id, retired)
+                crate::steps::enclaves::up::delete_cmd(&ctx, app_id, retired)
             }
         },
         Cmd::Pccs { cmd } => match cmd {
@@ -358,23 +364,23 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 chains,
                 number,
                 fmspc,
-            } => pccs::tcb_eval::run(&ctx, &chains, number, &fmspc).await,
+            } => pccs::deploy::tcb_eval(&ctx, &chains, number, &fmspc).await,
             PccsCmd::CheckQuote {
                 chains,
                 quote,
                 enclave,
-            } => pccs::check_quote::run(&ctx, &chains, quote, enclave).await,
+            } => pccs::status::check_quote_cmd(&ctx, &chains, quote, enclave).await,
         },
         Cmd::Eden { cmd: EdenCmd::Core } => crate::steps::eden::core(&ctx).await,
         Cmd::Isms { cmd } => match cmd {
-            IsmsCmd::Evm { chains } => crate::steps::isms::evm::run(&ctx, &chains).await,
-            IsmsCmd::Celestia { chains } => crate::steps::isms::celestia::run(&ctx, &chains).await,
+            IsmsCmd::Evm { chains } => crate::steps::isms::evm(&ctx, &chains).await,
+            IsmsCmd::Celestia { chains } => crate::steps::isms::celestia(&ctx, &chains).await,
         },
         Cmd::Warp {
             cmd: WarpCmd::Evm { chains },
         } => crate::steps::warp::evm(&ctx, &chains).await,
-        Cmd::Paymaster => crate::steps::paymaster::run(&ctx).await,
-        Cmd::Config => crate::steps::config::write(&ctx),
+        Cmd::Paymaster => crate::steps::celestia::paymaster::run(&ctx).await,
+        Cmd::Config => crate::steps::services::write_config(&ctx),
         Cmd::Services { cmd } => match cmd {
             ServicesCmd::Install => crate::steps::services::install(&ctx).await,
             ServicesCmd::Restart => crate::steps::services::restart(&ctx).await,

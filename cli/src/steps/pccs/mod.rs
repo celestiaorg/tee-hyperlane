@@ -12,19 +12,18 @@
 //! through it, and the versioned TCB info DAO that takes a single `upsertFmspcTcb`. The router
 //! the quote verifiers read from points at all of them.
 
+use std::path::PathBuf;
+
 use alloy::sol;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 
 use crate::shared::chains::EvmChain;
 use crate::shared::record::{Deployment, Pccs};
 use crate::shared::settings::Ctx;
 
-pub mod check_quote;
 pub mod deploy;
 pub mod seed;
 pub mod status;
-pub mod tcb_eval;
 
 pub const DEFAULT_NAMESPACE: &str = "tee-isms/v2";
 /// Phala's hosts.

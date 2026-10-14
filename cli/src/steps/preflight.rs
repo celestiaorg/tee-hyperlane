@@ -1,16 +1,16 @@
 //! `teeism preflight`: check every prerequisite before deploying anything, and say what is
 //! missing. Read only.
 
-use anyhow::{bail, Result};
 use std::time::Duration;
+
+use anyhow::{bail, Result};
 
 use crate::shared::chains::EVM_CHAINS;
 use crate::shared::evm::{self, fmt_eth};
 use crate::shared::print;
 use crate::shared::settings::Ctx;
 use crate::shared::shell::{on_path, Cmd};
-use crate::steps::build;
-use crate::steps::pccs;
+use crate::steps::{build, pccs};
 
 pub async fn run(ctx: &Ctx) -> Result<()> {
     let mut problems: Vec<String> = Vec::new();
@@ -148,7 +148,7 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
     );
 
     print::step("Intel");
-    let intel = crate::shared::intel::Intel::new();
+    let intel = crate::steps::pccs::seed::Intel::new();
     match intel.standard(pccs::DEFAULT_FMSPC).await {
         Ok(n) => check(
             true,

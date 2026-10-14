@@ -4,10 +4,11 @@
 //! A transaction counts as done only once it is in a block with code 0; anything else stops
 //! the step with the node's own log.
 
-use anyhow::{bail, Context, Result};
-use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
+use serde_json::Value;
 
 use crate::shared::chains::{self, celestia};
 use crate::shared::settings::Ctx;

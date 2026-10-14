@@ -7,19 +7,19 @@
 
 use anyhow::{Context, Result};
 
-use crate::shared::celestia_cli::{self, Appd};
 use crate::shared::print;
 use crate::shared::settings::Ctx;
 use crate::shared::shell::Cmd;
-use crate::steps::celestia::BRIDGE_KEY;
-use crate::steps::config;
+use crate::steps::celestia::appd::{self, Appd};
+use crate::steps::celestia::up::BRIDGE_KEY;
+use crate::steps::services::write_config;
 
 /// What the bridge key is kept topped up to, for the gas oracle's transactions.
 const BRIDGE_FLOOR: u128 = 10_000_000; // 10 TIA
 const BRIDGE_TOP_UP: &str = "100000000utia"; // 100 TIA
 
 pub async fn run(ctx: &Ctx) -> Result<()> {
-    celestia_cli::wait_for_chain(ctx).await?;
+    appd::wait_for_chain(ctx).await?;
     let appd = Appd::new(ctx)?;
     let mut d = ctx.deployment()?;
     let (key, account) = BRIDGE_KEY;
@@ -100,7 +100,7 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
 
     // Post every destination's gas price once now: a paymaster without a price for a domain
     // refuses every dispatch to it.
-    config::write(ctx)?;
+    write_config(ctx)?;
     print::step("posting gas prices once (the gas-oracle service keeps them current)");
     let path = format!(
         "{}:{}",

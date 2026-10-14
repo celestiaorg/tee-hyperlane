@@ -55,7 +55,7 @@ teeism build
 
 ## 4. The Celestia chain
 
-`cli/src/steps/celestia/up.rs`, `core.rs`, `warp.rs`.
+`cli/src/steps/celestia/up.rs`, `hyperlane.rs`.
 
 ```sh
 teeism celestia up      # genesis (first run only), then the node in docker
@@ -69,7 +69,7 @@ grep -E '^pruning|^min-retain-blocks' devnet/.state/celestia/config/app.toml   #
 
 ## 5. Mocha light node (for Eden)
 
-`cli/src/steps/mocha.rs`. Start it now: it syncs for about 30 minutes, and step 9 needs it for Eden.
+`cli/src/steps/celestia/mocha.rs`. Start it now: it syncs for about 30 minutes, and step 9 needs it for Eden.
 
 ```sh
 teeism mocha up
@@ -77,7 +77,7 @@ teeism mocha up
 
 ## 6. Enclave images
 
-`cli/src/steps/images.rs`, `flake.nix`.
+`cli/src/steps/enclaves/images.rs`, `flake.nix`.
 
 ```sh
 teeism images
@@ -111,7 +111,7 @@ teeism enclaves verify
 
 ## 8. Intel's collateral on the EVM chains (PCCS)
 
-`cli/src/steps/pccs/deploy.rs`, `check_quote.rs`, `status.rs`. Background: [B](#b-intel-root-ca-and-collateral).
+`cli/src/steps/pccs/deploy.rs`, `seed.rs`, `status.rs`. Background: [B](#b-intel-root-ca-and-collateral).
 
 ```sh
 teeism pccs deploy
@@ -126,7 +126,7 @@ teeism pccs status
 
 ## 9. ISMs
 
-`cli/src/steps/eden.rs`, `cli/src/steps/isms/evm.rs`, `celestia.rs`.
+`cli/src/steps/eden.rs`, `cli/src/steps/isms.rs`.
 
 ```sh
 teeism eden core          # Mailbox and MerkleTreeHook on Eden, which has no canonical Hyperlane
@@ -149,7 +149,7 @@ A TIA and a teeUSD router (HypERC20) per EVM chain, ISM set at initialize, enrol
 
 ## 11. Paymaster
 
-`cli/src/steps/paymaster.rs`.
+`cli/src/steps/celestia/paymaster.rs`.
 
 ```sh
 teeism paymaster
@@ -159,7 +159,7 @@ The interchain gas paymaster on Celestia, owned by the `bridge` key, as the mail
 
 ## 12. Services
 
-`cli/src/steps/config.rs`, `cli/src/steps/services.rs`, `deploy/server/*.service`.
+`cli/src/steps/services.rs`, `deploy/server/*.service`.
 
 ```sh
 teeism services install      # sudo: units into /etc/systemd/system, enable, start
@@ -272,7 +272,7 @@ Register it:
 1. cargo feature in `tee-node/Cargo.toml`; chain in `origin::chains()`
 2. image: chain in `flake.nix` (`chains`, `chainFiles`, `keeps`), a `deploy/docker-compose.<chain>.yml`, its port in `ENCLAVES` (`cli/src/shared/chains.rs`)
 3. `kind` arm in `tee-coprocessor/src/config.rs`
-4. its entry in `EVM_CHAINS` (`cli/src/shared/chains.rs`) and its table in `cli/src/steps/config.rs`
+4. its entry in `EVM_CHAINS` (`cli/src/shared/chains.rs`) and its table in `cli/src/steps/services.rs` (`coprocessor_toml`)
 
 Rules:
 - Addresses, storage slots, keys: constants, never inputs. Time: never an input.
@@ -282,7 +282,7 @@ Rules:
 
 ## E. Adding an asset
 
-No enclave or ISM changes. Add it to `ASSETS` in `cli/src/steps/warp.rs` and create its Celestia token in `cli/src/steps/celestia/warp.rs` (like teeUSD), then `teeism celestia warp`, `teeism warp evm`, `teeism services restart`, `teeism ui`.
+No enclave or ISM changes. Add it to `ASSETS` in `cli/src/steps/warp.rs` and create its Celestia token in `cli/src/steps/celestia/hyperlane.rs` (like teeUSD), then `teeism celestia warp`, `teeism warp evm`, `teeism services restart`, `teeism ui`.
 
 ## F. Sepolia node
 
