@@ -141,7 +141,7 @@
       {
         packages =
           # One image per origin chain. Adding one is this list, `chainFiles` and `keeps` above,
-          # a cargo feature, a compose file and a port in cli/src/chains.rs (ENCLAVES).
+          # a cargo feature, a compose file and a port in cli/src/shared/chains.rs (ENCLAVES).
           let
             chains = [ "celestia" "ethereum" "base" "arbitrum" "eden" ];
             outputs = pkgs.lib.listToAttrs (pkgs.lib.concatMap (f: [
