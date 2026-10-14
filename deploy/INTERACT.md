@@ -81,7 +81,8 @@ celestia-appd query hyperlane delivered <mailbox id> <message id> --node tcp://l
 ## Watching it
 
 ```sh
-curl -s $B/api/status | jq '.[] | {name, height, timestamp, proving, blocked}'
+teeism status                                              # every route's ISM height and state age
+curl -s $B/api/v1/routes | jq '.[] | {name, status, ism: .ismReading.height, head: .originHead.height}'
 journalctl -u teeism-relayer -f | grep -E 'attesting|delivering|delivered|route failed'
 ```
 
@@ -115,7 +116,7 @@ attestation           5,331,900   0.005900   0.000031   0.001330
 delivery, per message   124,000   0.000140   0.000001   0.000030
 ```
 
-Celestia: attestation 343,592 gas, delivery 117,337. Enclaves: $4.38/day. Current quotes: `:3002`, or one round:
+Celestia: attestation 343,592 gas, delivery 117,337. Enclaves: $4.38/day. A quiet route also attests once an hour with no messages ([MAINTAIN](MAINTAIN.md#heartbeat)): one attestation's gas per hour. Current quotes: `:3002`, or one round:
 `~/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle --config ~/tee-ism-nonzk/devnet/.state/gas-oracle.toml --once`.
 
 ## Running the UI locally
@@ -124,4 +125,4 @@ Celestia: attestation 343,592 gas, delivery 117,337. Enclaves: $4.38/day. Curren
 cd bridge-app && npm install && npm run dev     # http://localhost:5173
 ```
 
-Reads `VITE_*` from `.env.local` ([DEPLOY step 11](DEPLOY.md#11-ui-and-gateway)). `make start` (repo root) writes one for a local devnet.
+Reads `VITE_*` from `.env.local`, which `teeism ui` writes ([DEPLOY step 13](DEPLOY.md#13-ui-and-gateway)).

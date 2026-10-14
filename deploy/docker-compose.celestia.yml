@@ -1,5 +1,5 @@
 # The measured configuration for the celestia enclave, when it runs alone in its own CVM
-# (`30-enclave-up.sh --celestia`). By default it runs in the shared CVM instead, whose
+# (`teeism enclaves up --chain celestia`). By default it runs in the shared CVM instead, whose
 # docker-compose.all.yml is generated from this file's service block.
 #
 # Serves the Celestia origin. The four ISMs on the EVM chains pin it.
@@ -7,7 +7,7 @@
 # This file's hash becomes `compose-hash` in RTMR3, and the ISM pins that value, so this file,
 # including the image digest below, is what an ISM ultimately commits to. Pinned by digest: a
 # tag can be repointed, and a repointed tag would mean a different binary under the same
-# measurement. Written by devnet/scripts/25-images.sh.
+# measurement. Written by `teeism images`.
 services:
   celestia:
     image: ghcr.io/jonas089/tee-node@sha256:c38c15417f73a2a8b489aa8863aa24e5e41faf7d9ffb4aad87cb6ef13233ce8c

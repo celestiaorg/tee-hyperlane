@@ -15,8 +15,9 @@ Hyperlane bridging between Celestia and EVM chains. Messages are authorised by a
 tee-hyperlane/crates/tee-node/          the enclave
 tee-hyperlane/crates/tee-coprocessor/   the service: every route, the API, the faucet
 tee-hyperlane/contracts/                TeeDcapIsm.sol
+cli/                                    teeism: deploys, rotates, inspects and tears down everything
 bridge-app/                             React UI, MetaMask + Keplr
-devnet/                                 scripts that deploy everything, and the gateway
+devnet/                                 the chain's and the gateway's compose files, vendored Automata
 deploy/                                 the guides, the measured compose files, systemd units
 ```
 
@@ -25,9 +26,9 @@ deploy/                                 the guides, the measured compose files, 
 
 ## Deployments
 
-Verify: `TARGET=all deploy/verify-digest.sh <app-id>`
+The ids below are the deployment before the CLI redeploy; `teeism status` prints the live ones. Verify: `teeism enclaves verify`.
 
-**Enclaves.** Phala Cloud `prod9`, `tdx.small`, `dstack-0.5.9`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `30-enclave-up.sh --<chain>` runs one alone.
+**Enclaves.** Phala Cloud `prod9`, `tdx.small`, `dstack-0.5.9`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
 
 | enclave | port | attests |
 |---|---|---|
@@ -82,14 +83,6 @@ igp        0x726f757465725f706f73745f6469737061746368000000040000000000000002
 | TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x9822eE81C82138F88D759faef1AC168aDfEe1467`<br>Arbitrum `0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB`<br>Base `0xF50470146B36c638b981e437AB37DfEd9a02FAb3`<br>Eden `0xD2babc9BE1055551b7AB98c440222862a1646158` |
 | teeUSD | none: minted on Celestia, as the synthetic `0x726f757465725f61707000000000000000000000000000020000000000000002` (denom `hyperlane/<that id>`) | Sepolia `0x1be2055d49c0a350C137605a62861f58Aa750297`<br>Arbitrum `0xF699EB10087A1e01993ed628C198fe6e231830eD`<br>Base `0xa8cc6ec4855b1415c03f3aE51953a3643f7991a5`<br>Eden `0xa4697140E90F39D94F3C64D40175FA6F207bc8EC` |
 
-**Pools.** Uniswap v3 TIA/teeUSD, 0.3%, full range, seeded 1M TIA / 500k teeUSD. Owner `0x318d22faa1e0f29eac7Ef644A8FaC676F6688d1e`.
-
-| chain | pool |
-|---|---|
-| Sepolia | `0x52E470FBe0B120FAcb9a8B6Efbfe58a6263d909D` |
-| Base | `0x6E828f3B976d456fe673d26bC0CBEA45838dD018` |
-| Arbitrum | `0xe4d1fc54f8B8AfFcD7e2ffF7dC00d000A5CC4FbF` |
-
 **Eden.** Evolve-stack; mailbox and hook are ours.
 
 ```
@@ -129,6 +122,7 @@ teeism-gas-oracle  systemd  paymaster upkeep
 - `tx teeism set-verifier-overrides`: trust a rotated Intel root CA. Nothing relaxes Intel's verification.
 - `tx teeism update-owner`: hand an ISM to a multisig. EVM controls sit with the Automata owner. See [ADMIN.md](deploy/ADMIN.md).
 - Rollups: enclave checks the sequencer signature, takes the signed state root, proves the tree. No re-execution, no L1 wait.
+- Heartbeat: a quiet route attests hourly with no messages, so its ISM stays near its origin's head. An empty batch cannot skip a message, and the enclave and both ISMs refuse one that moves the origin clock less than 30 minutes.
 
 ## Trust
 
@@ -141,5 +135,6 @@ teeism-gas-oracle  systemd  paymaster upkeep
 ```sh
 cd tee-hyperlane && cargo test                        # state proofs, trees, L2 roots, Eden execution
 cd tee-hyperlane/contracts && forge test              # TeeDcapIsm.sol
+cd cli && cargo test                                  # teeism
 cd ../celestia-app-local && go test ./x/teeism/...    # the Celestia verifier
 ```

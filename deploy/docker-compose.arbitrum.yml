@@ -1,5 +1,5 @@
 # The measured configuration for the arbitrum enclave, when it runs alone in its own CVM
-# (`30-enclave-up.sh --arbitrum`). By default it runs in the shared CVM instead, whose
+# (`teeism enclaves up --chain arbitrum`). By default it runs in the shared CVM instead, whose
 # docker-compose.all.yml is generated from this file's service block.
 #
 # Serves the Arbitrum Sepolia origin: feed messages its sequencer signed. One Celestia-side ISM pins it.
@@ -7,7 +7,7 @@
 # This file's hash becomes `compose-hash` in RTMR3, and the ISM pins that value, so this file,
 # including the image digest below, is what an ISM ultimately commits to. Pinned by digest: a
 # tag can be repointed, and a repointed tag would mean a different binary under the same
-# measurement. Written by devnet/scripts/25-images.sh.
+# measurement. Written by `teeism images`.
 services:
   arbitrum:
     image: ghcr.io/jonas089/tee-node@sha256:92f243484665e80e8f5e437e068acd2b8e8417338d655dd4f161d50ad15bab56

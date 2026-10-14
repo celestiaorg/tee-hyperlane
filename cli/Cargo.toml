@@ -1,0 +1,47 @@
+# The operator CLI: deploys, rotates, inspects and tears down the whole bridge.
+#
+# Its own workspace on purpose. The enclave images are built from tee-hyperlane/Cargo.lock, so a
+# dependency of this tool living in that lock would move every enclave digest and re-pin every
+# ISM whenever it was bumped.
+[package]
+name = "teeism"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "teeism"
+path = "src/main.rs"
+
+[features]
+# Sign EVM owner transactions on a Ledger (EVM_SIGNER=ledger). Off by default: it needs the
+# system's USB HID libraries to build.
+ledger = ["alloy/signer-ledger"]
+
+[dependencies]
+alloy = { version = "1", features = [
+    "contract",
+    "network",
+    "providers",
+    "provider-http",
+    "rpc-types",
+    "signer-local",
+    "signers",
+    "sol-types",
+    "json-abi",
+] }
+anyhow = "1"
+base64 = "0.22"
+bech32 = "0.11"
+clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
+percent-encoding = "2"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }
+toml_edit = "0.22"
+x509-parser = "0.16"

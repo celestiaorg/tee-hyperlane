@@ -14,40 +14,39 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 ## Secrets
 
 - `keys/` and `devnet/.state/` hold real credentials. Never commit them, copy them into tracked files, or send them to an external service.
-- `deploy/check-secrets.sh` must pass before any commit.
+- `teeism check-secrets` must pass before any commit.
 - Only Base and Arbitrum use a metered RPC: Alchemy free tier (`ALCHEMY_KEY` in `devnet/.env`; `ALCHEMY_BASE_KEY` or `devnet/.state/alchemy-base-key` on older hosts), in `rpc` of `[chains.base]` / `[chains.arbitrum]`, used only for the tree at the ISM's trusted height. `eth_getLogs` capped at 10 blocks. Everything else is public.
 
 ## Old stack
 
 - SP1/Groth16 is gone; only in `main` history (`jonas089/tee-hyperlane`, `e2272a0`). `tee-circuit/programs/state-transition`, SP1 vkeys, Groth16 verifier = old, not what runs.
-- Now DCAP is verified on chain via Automata PCCS on EVM, so EVM-destination routes depend on collateral that goes stale. Celestia-destination routes carry fresh collateral and don't.
+- Now DCAP is verified on chain via our Automata PCCS on EVM (CREATE2, salt namespace `tee-isms/v2`), so EVM-destination routes depend on collateral that goes stale (`teeism pccs seed` monthly). Celestia-destination routes carry fresh collateral and don't.
 
 ## Deployed (ark)
 
 - `chef@178.199.12.26`, Zurich, `~/tee-ism-nonzk`, HTTPS clone of `main`. Update with `git pull`. `devnet/.env`, `devnet/.state/` gitignored.
 - systemd: `teeism-relayer` (routes, dashboard + API on :3001), `teeism-gas-oracle`. Gateway serves `bridge-app/dist`.
-- Old `teeism-api` and disabled `bridge-ui` units remain until the next rollout (current binary can't run them; rollout removes them).
+- Old `teeism-api` and disabled `bridge-ui` units remain until `teeism teardown` removes them.
 - Local celestia-app devnet (not mocha), pruning disabled. `mocha-light` light node, Eden only.
 - nginx gateway `:3000`: `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`.
 - 8 routes: Celestia to/from Sepolia, Arbitrum, Base, Eden.
-- Tokens: TIA (Celestia collateral, synthetic on EVM), teeUSD (fixed 1B minted on Celestia, synthetic everywhere). TIA/teeUSD Uniswap v3 pools on Sepolia, Base, Arbitrum; Trade tab and `/api/v1/trade` route through them.
-- 5 images (`celestia`, `ethereum`, `base`, `arbitrum`, `eden`) in one shared CVM, ports 8080 to 8084. Shared identity: any image change re-pins all 8 ISMs. `30-enclave-up.sh --<chain>` gives a chain its own CVM and identity.
-- Until the shared CVM rollout, ark runs the old per-family CVMs (`celestia`, `ethereum`, `evolve`).
+- Tokens: TIA (Celestia collateral, synthetic on EVM), teeUSD (fixed 1B minted on Celestia, synthetic everywhere). Bridge only: no trading, pools or token launch.
+- 5 images (`celestia`, `ethereum`, `base`, `arbitrum`, `eden`) in one shared CVM, ports 8080 to 8084. Shared identity: any image change re-pins all 8 ISMs. `teeism enclaves up --chain <chain>` gives a chain its own CVM and identity.
+- Until the CLI redeploy, ark runs the old deployment (script-built, per-family CVMs, `.state/out/`); `teeism teardown` removes it.
 
 ## Docs
 
 | file | covers |
 |---|---|
 | `README.md` | every live id and identity, the design, the trust model |
-| `deploy/DEPLOY.md` | standing up a bridge; adding an asset or chain |
+| `deploy/DEPLOY.md` | standing up the bridge with `teeism`, step by step; mr_td re-pin; Intel root and collateral; adding an asset or chain |
+| `cli/` | `teeism`, the only deploy tool (own Cargo workspace, so its lock never moves the enclave digests) |
 | `deploy/MAINTAIN.md` | monthly job, rollouts, waiting vs stuck, symptoms |
 | `deploy/ADMIN.md` | owner controls and commands, payload sources, Intel breakage |
 | `deploy/INTERACT.md` | wallets, sending, arrival, latency, cost |
-| `deploy/API.md` | `/api/v1` endpoints, statuses, notifications, `/api/v1/trade` |
+| `deploy/API.md` | `/api/v1` endpoints, statuses, notifications |
 | `deploy/coprocessor.toml.example` | deployed chains and routes, verbatim but for the one key |
-| `deploy/images.lock` | Nix build per pinned image; `30-enclave-up.sh` refuses to deploy on mismatch with code |
-| `deploy/verify-digest.sh` | compose file to `compose_hash` to `mr_config_id`, against the signed quote |
-| `deploy/check-secrets.sh` | run before every commit |
+| `deploy/images.lock` | Nix build per pinned image; `teeism enclaves up` refuses to deploy on mismatch with code |
 
 ## Gotchas
 
@@ -59,14 +58,14 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
   - Transfers land within a few minutes; longer means stuck.
 - EVM chains use canonical Hyperlane deployments, so hooks carry others' traffic. Relayer log `leaves=N` is batch size, not tree size.
 - `routers` list is a trigger filter: affects latency, not delivery.
-- Quotes: Phala emits v4. `TeeDcapIsm` (`VERSION` 2), `75-dcap-verifiers.sh` and `x/teeism` (go-tdx-guest `b0a2dd8`) accept v4 and v5. Later versions need a celestia-app upgrade.
+- Quotes: Phala emits v4. `TeeDcapIsm` (`VERSION` 2+), the v5 verifier `teeism pccs deploy` registers, and `x/teeism` (go-tdx-guest `b0a2dd8`) accept v4 and v5. Later versions need a celestia-app upgrade.
 - **Sepolia is past Gloas; light client is ours.** From slot 11296768 the relayer sends the header RLP, enclave checks its keccak. helios vendored in `crates/helios-consensus-core` (changes marked `Gloas:`). ark's Sepolia beacon is Lodestar (only one serving Gloas light-client data), not lighthouse.
 - **Eden runs Osaka, not Prague.** Fixtures on Prague prove nothing for DCAP: P-256 verification is an Osaka precompile and reverts with empty data under Prague.
 - **Shared CVM: per-chain split bounds digests, not identities.** Editing one chain's file moves only its digest, but the compose hash still moves the shared identity. `Cargo.lock` and shared modules (`attest.rs`, `origin.rs`, `state.rs`, `evm.rs`) move every digest.
 - **A rotation re-pins, never re-anchors.**
-  - Owner re-pins in place: `setEnclave` (EVM, revision 3+), `tx teeism update-identity` (Celestia). `80-evm-isms.sh`, `85-celestia-isms.sh` do this.
+  - Owner re-pins in place: `setEnclave` (EVM, revision 3+), `tx teeism update-identity` (Celestia). `teeism isms evm`, `teeism isms celestia` do this.
   - Only ISMs we don't own, or an EVM contract revision change, get a replacement: starts from the old ISM's last state, stops rather than fall back to the head.
   - Only a first deploy anchors at the head.
-- **Launched tokens:** a `TeeTokenFactory` per venue chain owns their routers; `90-evm-warp.sh` re-points them on rotation. Trade API lists a token once renounced and wired, adding routers to `.state/proofs/launched.json` (accepted by `worth_attesting` and the tracker).
+- **Heartbeat:** a quiet route attests hourly with no messages. Enclave, `TeeDcapIsm` (`VERSION` 4) and `x/teeism` refuse an empty batch that moves the origin clock < 30 min; the replay from the ISM's own root means it can never skip a message.
 - **Intel root CA:** only the owner can update it on Celestia (`tx teeism set-verifier-overrides --trusted-root-cert`). Nothing skips or relaxes Intel verification.
-- **Ownership:** `tx teeism update-owner`. Rotation scripts re-pin only ISMs owned by the relayer (Celestia) or `EVM_SIGNER` (Ledger, or `EVM_PRIVATE_KEY`) and replace the rest, so after an ownership transfer the new owner re-pins first ([ADMIN.md](deploy/ADMIN.md)).
+- **Ownership:** `tx teeism update-owner`. `teeism isms` re-pins only ISMs owned by the relayer (Celestia) or `EVM_SIGNER` (Ledger, or `EVM_PRIVATE_KEY`) and replace the rest, so after an ownership transfer the new owner re-pins first ([ADMIN.md](deploy/ADMIN.md)).
