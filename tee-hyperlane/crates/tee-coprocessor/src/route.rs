@@ -12,10 +12,12 @@ use crate::config::{self, Config};
 use crate::destination::{Batch, Delivery, Destination, Outcome, Stale};
 use crate::origin::{Indexer, Message};
 
-/// A route that has not advanced in this long attests anyway, if its origin has any new leaf.
+/// A route whose trusted state is this old attests anyway, with no messages if there are none.
 /// Quiet routes otherwise fall far behind, and a route far behind has to read further back than
-/// its RPCs will serve: four days of that stopped every Celestia route once.
-const HEARTBEAT: Duration = Duration::from_secs(12 * 60 * 60);
+/// its RPCs will serve: four days of that stopped every Celestia route once. Twice the interval
+/// the enclave and both ISMs require between empty batches
+/// (`tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS`), so the origin's clock always clears it.
+const HEARTBEAT: Duration = Duration::from_secs(60 * 60);
 /// A staged batch older than this is rebuilt rather than retried. Both kinds of ISM refuse an
 /// attestation older than 24h, so past that it could never land, and retrying it forever would
 /// stall the route long after whatever delayed it had passed.
@@ -143,13 +145,24 @@ impl Route {
             .context("reading the ISM's trusted state")?;
         let step = self.origin.gather(&trusted).await?;
         self.record_head(step.head);
-        if step.leaves.is_empty() {
+        // An idle step carries no proofs: the origin has not moved past the trusted height.
+        if step.chain.is_empty() {
             debug!(route = %self.config.name, head = step.head, "idle");
             return Ok(None);
         }
+        let heartbeat = heartbeat_due(trusted.timestamp, now());
+        if step.leaves.is_empty() && !heartbeat {
+            debug!(route = %self.config.name, head = step.head, "nothing dispatched");
+            return Ok(None);
+        }
 
-        let messages = self.origin.index(trusted.height, step.head).await?;
-        check_index(step.leaves.len(), messages.len())?;
+        let messages = if step.leaves.is_empty() {
+            Vec::new()
+        } else {
+            let messages = self.origin.index(trusted.height, step.head).await?;
+            check_index(step.leaves.len(), messages.len())?;
+            messages
+        };
         // Also advance when the trusted height falls too far behind, so the next proof at it
         // stays cheap: a full node rebuilds an old block's trie from the head, and on Sepolia
         // that took longer than any timeout once the route sat idle for a few hours.
@@ -158,13 +171,16 @@ impl Route {
             .max_lag
             .is_some_and(|max| step.head.saturating_sub(trusted.height) >= max);
         if !worth_attesting(&messages, self.destination_domain, &self.config.routers)
-            && !self.heartbeat_due()
+            && !heartbeat
             && !lagging
         {
             debug!(route = %self.config.name, leaves = messages.len(), "nothing for our routes");
             return Ok(None);
         }
 
+        if messages.is_empty() {
+            info!(route = %self.config.name, from = trusted.height, to = step.head, "heartbeat: advancing with no messages");
+        }
         debug!(route = %self.config.name, from = trusted.height, to = step.head, leaves = messages.len(), "attesting");
         let request = json!({
             "protocol": tee_node::attest::PROTOCOL_VERSION,
@@ -187,7 +203,6 @@ impl Route {
             "messages": messages.iter().map(|m| hex::encode(&m.bytes)).collect::<Vec<_>>(),
         });
         std::fs::write(self.staged(), serde_json::to_vec_pretty(&record)?)?;
-        let _ = std::fs::write(self.dir.join("advanced"), b"");
         self.submit_staged().await
     }
 
@@ -383,10 +398,6 @@ impl Route {
         }
     }
 
-    fn heartbeat_due(&self) -> bool {
-        heartbeat_due(&self.dir)
-    }
-
     /// How far the origin could go, for the dashboard; written even when idle, which is exactly
     /// when it is worth seeing.
     fn record_head(&self, head: u64) {
@@ -434,7 +445,6 @@ pub async fn serve(config: Config) -> Result<()> {
         debug!(route = %route.name, from = %route.from, to = %route.to, "configured");
         tasks.spawn(Route::new(&config, route)?.run(tick));
     }
-    crate::registry::load(config.proof_dir().join("launched.json"));
     let tracker = crate::tracker::Tracker::new(&config)?;
     tracker.spawn(&mut tasks);
     let api = crate::api::Api::new(&config)?;
@@ -491,20 +501,15 @@ fn worth_attesting(messages: &[Message], destination: u32, routers: &[String]) -
     messages.iter().any(|m| {
         hyperlane_types::decode_hyperlane_message(&m.bytes).is_ok_and(|d| {
             d.destination == destination
-                && (ours.is_empty()
-                    || ours.contains(&d.recipient)
-                    || crate::registry::accepts(destination, &d.recipient))
+                && (ours.is_empty() || ours.contains(&d.recipient))
         })
     })
 }
 
-fn heartbeat_due(dir: &std::path::Path) -> bool {
-    match std::fs::metadata(dir.join("advanced")).and_then(|m| m.modified()) {
-        Ok(at) => at.elapsed().is_ok_and(|d| d > HEARTBEAT),
-        // Never advanced under this binary: take the heartbeat rather than wait twelve hours to
-        // find out the route is stuck.
-        Err(_) => true,
-    }
+/// Whether the ISM's trusted state is old enough for a heartbeat. Read from the state itself,
+/// the origin's own clock at the last advance, so it holds across restarts and hosts.
+fn heartbeat_due(trusted_timestamp: u64, now: u64) -> bool {
+    now.saturating_sub(trusted_timestamp) >= HEARTBEAT.as_secs()
 }
 
 fn backoff(tick: Duration, failures: u32) -> Duration {
@@ -646,18 +651,15 @@ mod tests {
     }
 
     #[test]
-    fn the_heartbeat_is_due_until_the_route_advances() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(heartbeat_due(dir.path()), "never advanced");
-        std::fs::write(dir.path().join("advanced"), b"").unwrap();
-        assert!(!heartbeat_due(dir.path()), "just advanced");
-        let old = std::time::SystemTime::now() - HEARTBEAT - Duration::from_secs(60);
-        filetime::set_file_mtime(
-            dir.path().join("advanced"),
-            filetime::FileTime::from_system_time(old),
-        )
-        .unwrap();
-        assert!(heartbeat_due(dir.path()), "quiet for over twelve hours");
+    fn the_heartbeat_is_due_once_the_trusted_state_is_an_hour_old() {
+        let hour = HEARTBEAT.as_secs();
+        assert!(!heartbeat_due(1_000, 1_000), "just advanced");
+        assert!(!heartbeat_due(1_000, 1_000 + hour - 1), "not yet an hour");
+        assert!(heartbeat_due(1_000, 1_000 + hour), "an hour old");
+        assert!(
+            hour >= 2 * tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS,
+            "the heartbeat must clear the ISMs' minimum interval with room for origin lag"
+        );
     }
 
     #[test]

@@ -79,13 +79,22 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     uint256 private constant ATTESTED_HEAD = 2 * STATE_BYTES + 48;
     uint256 public constant MAX_MESSAGE_ID_COUNT = 1_000_000;
 
+    /// How far an attestation with no messages must move the origin's clock. An empty batch
+    /// keeps a quiet route's trusted state close to its origin's head; it cannot skip a
+    /// message, because the enclave replays the batch from the tree under this ISM's own root
+    /// and zero ids reproduce the head's tree only if nothing was dispatched. The interval
+    /// bounds how often anyone, through the public enclave, can advance this ISM with nothing
+    /// in it. The same bound holds in the enclave and in the Celestia module.
+    uint64 public constant EMPTY_BATCH_MIN_INTERVAL = 30 minutes;
+
     /// Hyperlane's module type for this bridge's ISMs, matching the Celestia module id.
     uint8 public constant MODULE_TYPE = 43;
 
-    /// Which revision of this contract is deployed. `80-evm-isms.sh` replaces an ISM whose
+    /// Which revision of this contract is deployed. `teeism isms evm` replaces an ISM whose
     /// `VERSION` differs even when it pins the right enclave. 2 accepts v5 quotes; the first
-    /// deployments have no `VERSION` at all. 3 lets the owner re-pin the enclave.
-    uint8 public constant VERSION = 3;
+    /// deployments have no `VERSION` at all. 3 lets the owner re-pin the enclave. 4 bounds how
+    /// often a batch with no messages may advance the state.
+    uint8 public constant VERSION = 4;
 
     IDcapAttestation public immutable dcap;
 
@@ -151,6 +160,7 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     error AttestationTooOld(uint64 blockTime, uint64 attestedAt, uint256 maxSkew);
     error AttestedBeforeState(uint64 attestedAt, uint64 stateTimestamp);
     error TooManyMessages();
+    error EmptyBatchTooSoon(uint64 previous, uint64 next, uint64 minInterval);
     error NotMailbox();
 
     constructor(
@@ -285,6 +295,13 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
 
         _requireLegalTransition(prev, next);
         _requireFresh(attestedAt, uint64(bytes8(next[44:52])));
+        if (count == 0) {
+            uint64 previousTime = uint64(bytes8(prev[44:52]));
+            uint64 nextTime = uint64(bytes8(next[44:52]));
+            if (nextTime < previousTime + EMPTY_BATCH_MIN_INTERVAL) {
+                revert EmptyBatchTooSoon(previousTime, nextTime, EMPTY_BATCH_MIN_INTERVAL);
+            }
+        }
 
         state = next;
 

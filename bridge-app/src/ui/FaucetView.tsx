@@ -146,8 +146,7 @@ export function FaucetView({
         </header>
         <p className="hint">
           Every route has {CHAINS.celestia.name} on one side. TIA leaves Celestia as collateral and arrives as a
-          synthetic on the other chain; sending it back burns the synthetic and releases the collateral. teeUSD
-          is what every pool in Trade is quoted in.
+          synthetic on the other chain; sending it back burns the synthetic and releases the collateral.
         </p>
         <ul className="route-list">
           {ALL_CHAINS.filter((c) => c !== "celestia").map((c) => (

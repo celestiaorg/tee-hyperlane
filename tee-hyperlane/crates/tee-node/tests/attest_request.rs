@@ -194,21 +194,66 @@ fn every_chain_has_a_unique_name_and_domain() {
     assert_eq!(names, ["arbitrum", "base", "celestia", "eden", "ethereum"]);
 }
 
-/// A batch that authorises nothing still consumes the destination's one-batch-per-root slot,
-/// and the root must change on every update, so the slot never reopens for that root. Posted
-/// faster than the relayer, that freezes the bridge with user funds locked. The replay cannot
-/// catch it: with the head's own tree as the snapshot it is the identity function.
-#[test]
-fn an_empty_batch_is_refused() {
-    use hyperlane_types::MerkleTree;
-    use tee_node::attest::{verify_message_batch, BatchError};
+/// An origin where nothing was dispatched: the same tree under both roots, with the head's
+/// clock at `head_timestamp`.
+struct Quiet {
+    head_timestamp: u64,
+}
 
-    let tree = MerkleTree {
-        branch: [[0u8; 32]; 32],
-        count: 0,
-    };
-    let err = verify_message_batch(tree, &[], &tree).unwrap_err();
-    assert!(matches!(err, BatchError::EmptyBatch), "got {err}");
+impl Origin for Quiet {
+    fn verify(&self, _input: Value, _trusted: &IsmState) -> anyhow::Result<Head> {
+        Ok(Head {
+            root: NEW_ROOT.into(),
+            height: 20,
+            timestamp: self.head_timestamp,
+            store_commit: [9u8; 32],
+            attested_at: self.head_timestamp,
+        })
+    }
+
+    fn merkle_tree(&self, _proof: Value, _root: B256) -> anyhow::Result<Tree> {
+        Ok(Tree {
+            address: HOOK,
+            tree: snapshot_tree(),
+        })
+    }
+}
+
+fn quiet(head_timestamp: u64) -> Chain {
+    Chain {
+        name: "stand-in",
+        domain: DOMAIN,
+        origin: Box::leak(Box::new(Quiet { head_timestamp })),
+    }
+}
+
+/// The heartbeat: with nothing dispatched, an empty batch moves the state to the new head so
+/// a quiet route never falls far behind its origin.
+#[test]
+fn an_empty_batch_advances_a_quiet_origin() {
+    use tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS;
+    let at = trusted().timestamp + EMPTY_BATCH_MIN_INTERVAL_SECS;
+    let (update, _) = attest_with(&quiet(at), request(trusted(), vec![])).unwrap();
+    assert_eq!(update.new_state.state_root, NEW_ROOT);
+    assert!(update.message_ids.is_empty());
+}
+
+/// Anyone can ask the public enclave for one, so an empty batch has to move the origin's clock
+/// by the interval the ISMs also enforce.
+#[test]
+fn an_empty_batch_too_soon_is_refused() {
+    use tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS;
+    let at = trusted().timestamp + EMPTY_BATCH_MIN_INTERVAL_SECS - 1;
+    let err = attest_with(&quiet(at), request(trusted(), vec![])).unwrap_err();
+    assert!(err.to_string().contains("empty batch"), "got {err}");
+}
+
+/// An empty batch replays to the on-chain tree only if nothing was dispatched.
+#[test]
+fn an_empty_batch_with_nothing_dispatched_replays() {
+    use tee_node::attest::verify_message_batch;
+    let tree = snapshot_tree();
+    assert_eq!(verify_message_batch(tree, &[], &tree), Ok(()));
 }
 
 /// A batch has to be exactly the leaves added since the snapshot it was given.
@@ -235,14 +280,14 @@ fn a_batch_must_reproduce_the_onchain_tree() {
 }
 
 /// The span check does not pin where a batch starts, and reading it as though it did was the
-/// hole that outlived the empty-batch fix.
+/// hole that outlived the fix for caller-chosen snapshots.
 ///
 /// A Hyperlane tree is incremental and every leaf that ever entered it is public, so anyone
 /// can rebuild the exact tree the origin held at any past count. Hand this function the head
 /// minus one leaf plus the single id that closes the gap and it passes - correctly, because
 /// that really is the distance between the two trees it was handed. What it cannot see is
 /// that the ISM stands at count 5, not 8, and that three transfers in between were dropped.
-/// Worse than the empty batch, because it is aimed: drop one victim, let the rest through,
+/// It is aimed: drop one victim, let the rest through,
 /// and the bridge looks healthy while that root's one batch slot is spent and those ids are
 /// never attested by any later batch either.
 ///

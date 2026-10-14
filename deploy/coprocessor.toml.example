@@ -1,4 +1,5 @@
 # The ark deployment: five origins, eight routes, one shared CVM running an enclave per origin.
+# `teeism config` writes the live file from devnet/.state/deployment.json.
 #
 # Chains are declared once and routes name them. A chain's fields are documented on its
 # `Config` in tee-hyperlane/crates/tee-coprocessor/src/origin/{l1,l2}/<chain>.rs. This is the
@@ -80,60 +81,6 @@ logs_rpc = "https://rpc.testnet.eden.gateway.fm/"
 send_rpc = "https://rpc.testnet.eden.gateway.fm/"
 mailbox = "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729"
 merkle_tree_hook = "0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db"
-
-# ---------------------------------------------------------------- trade
-
-# The pools /api/v1/trade swaps through, and the assets it routes.
-[trade]
-default_venue = "base"
-hub_rest = "http://localhost:1317"
-hub_mailbox = "0x68797065726c616e650000000000000000000000000000000000000000000000"
-noop_ism = "0x726f757465725f69736d00000000000000000000000000000000000000000000"
-routing_ism = "0x726f757465725f69736d00000000000000000000000000010000000000000035"
-
-[trade.venues.sepolia]
-factory = "0x0227628f3F023bb0B980b67D528571c95c6DaC1c"
-positions = "0x1238536071E1c677A632429e3655c799b22cDA52"
-swap_router = "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E"
-quoter = "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3"
-fee = 3000
-token_factory = "0x511e40dd0d0100abFA2507aBD5A03724A216DdEA"
-
-[trade.venues.base]
-factory = "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"
-positions = "0x27F971cb582BF9E50F397e4d29a5C7A34f11faA2"
-swap_router = "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4"
-quoter = "0xC5290058841028F1614F3A6F0F5816cAd0df5E27"
-fee = 3000
-token_factory = "0xF3ef9fb895dA496dAd71E84442ff6Bd92A126fb7"
-
-[trade.venues.arbitrum]
-factory = "0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e"
-positions = "0x6b2937Bde17889EDCf8fbD8dE31C3C2a70Bc4d65"
-swap_router = "0x101F443B4d1b059569D643917553c771E1b9663E"
-quoter = "0x2779a0CC1c3e0E44D2542EC3e79e3864Ae93Ef0B"
-fee = 3000
-token_factory = "0x4212A657061Dd3E9Ba17FFfD9583eADEe3C86dD0"
-
-[trade.assets.TIA]
-decimals = 6
-denom = "utia"
-[trade.assets.TIA.routers]
-celestia = "0x726f757465725f61707000000000000000000000000000010000000000000000"
-sepolia = "0x9822eE81C82138F88D759faef1AC168aDfEe1467"
-arbitrum = "0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB"
-base = "0xF50470146B36c638b981e437AB37DfEd9a02FAb3"
-eden = "0xD2babc9BE1055551b7AB98c440222862a1646158"
-
-[trade.assets.teeUSD]
-decimals = 6
-denom = "hyperlane/0x726f757465725f61707000000000000000000000000000020000000000000002"
-[trade.assets.teeUSD.routers]
-celestia = "0x726f757465725f61707000000000000000000000000000020000000000000002"
-sepolia = "0x1be2055d49c0a350C137605a62861f58Aa750297"
-arbitrum = "0xF699EB10087A1e01993ed628C198fe6e231830eD"
-base = "0xa8cc6ec4855b1415c03f3aE51953a3643f7991a5"
-eden = "0xa4697140E90F39D94F3C64D40175FA6F207bc8EC"
 
 # ---------------------------------------------------------------- routes
 #

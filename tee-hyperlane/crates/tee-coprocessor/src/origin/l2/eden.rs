@@ -274,10 +274,6 @@ impl Indexer for Eden {
             &tree,
             B256::from(header.state_root),
         )?;
-        if leaves.is_empty() {
-            return Ok(Step::idle(header.height));
-        }
-
         // The store the ISM moves to sits at this Celestia height; remember it ahead of the one
         // just used, so the next tick finds the store in one request either way.
         self.cache

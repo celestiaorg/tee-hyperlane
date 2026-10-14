@@ -37,10 +37,9 @@ pub struct TrackedRoute {
 }
 
 impl TrackedRoute {
-    /// Is `recipient` one of ours on this route's destination, configured or launched?
+    /// Is `recipient` one of our routers on this route's destination?
     pub fn accepts(&self, recipient: &[u8; 32]) -> bool {
         self.routers.contains(recipient)
-            || crate::registry::accepts(self.destination_domain, recipient)
     }
 }
 
@@ -624,11 +623,7 @@ impl Tracker {
         let to = tip.min(cursor + watcher.span());
         let recipients: Vec<[u8; 32]> = routes
             .iter()
-            .flat_map(|r| {
-                let mut all = r.routers.clone();
-                all.extend(crate::registry::on(r.destination_domain));
-                all
-            })
+            .flat_map(|r| r.routers.iter().copied())
             .collect();
         let found = watcher.scan(&recipients, cursor + 1, to).await?;
 

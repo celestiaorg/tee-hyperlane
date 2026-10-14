@@ -8,8 +8,6 @@ import {
   routeIsLive,
   whyNotLive,
   routerFor,
-  registerToken,
-  labelOf,
 } from "./config";
 import type { ChainId, CosmosChain, EvmChain, TokenId } from "./config";
 import {
@@ -40,15 +38,12 @@ import type { Account } from "./wallets";
 import { BridgeView } from "./ui/BridgeView";
 import { FaucetView } from "./ui/FaucetView";
 import { HistoryView } from "./ui/HistoryView";
-import { VenuePage } from "./ui/venue/VenuePage";
-import { fetchInfo } from "./trade";
-import type { Section } from "./ui/venue/VenuePage";
 import { describeDuration, shorten } from "./ui/shared";
 
 /// Every route has Celestia on one side. The bridge is a hub, not a mesh: each EVM chain's
 /// ISM trusts Celestia and Celestia's trusts each EVM chain, and no EVM chain trusts another.
 const COUNTERPARTIES: ChainId[] = ["sepolia", "arbitrum", "base", "eden"];
-const BASE_TOKENS: TokenId[] = ["TIA", "teeUSD"];
+const TOKENS: TokenId[] = ["TIA", "teeUSD"];
 
 /// The relayer and the gas oracle serve their own dashboards beside this one. Linking out
 /// beats reimplementing them here, which is what the Prover tab was doing, worse.
@@ -60,17 +55,11 @@ function service(port: number): string {
   return `${window.location.protocol}//${window.location.hostname}:${port}/`;
 }
 
-type Tab = "bridge" | "trade" | "faucet" | "history";
+type Tab = "bridge" | "faucet" | "history";
 
 function tabFromHash(): Tab {
-  const name = window.location.hash.replace(/^#\/?/, "").split("?")[0].split("/")[0];
-  return name === "history" || name === "faucet" || name === "trade" ? name : "bridge";
-}
-
-/// The venue's section, from `#trade/launch` and `#trade/docs`.
-function sectionFromHash(): Section {
-  const sub = window.location.hash.replace(/^#\/?/, "").split("?")[0].split("/")[1];
-  return sub === "launch" || sub === "docs" ? sub : "trade";
+  const name = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+  return name === "history" || name === "faucet" ? name : "bridge";
 }
 
 /// The search a `#history?q=…` link carries.
@@ -84,41 +73,18 @@ export default function App() {
   const [cosmos, setCosmos] = useState<Account | null>(null);
   // The tab lives in the URL hash, so a reload keeps it and `#history?q=<tx>` links a search.
   const [tab, setTabState] = useState<Tab>(tabFromHash);
-  const [section, setSectionState] = useState<Section>(sectionFromHash);
   const setTab = useCallback((next: Tab) => {
     setTabState(next);
     if (tabFromHash() !== next) window.location.hash = next === "bridge" ? "" : next;
   }, []);
-  const setSection = useCallback((next: Section) => {
-    setSectionState(next);
-    window.location.hash = next === "trade" ? "trade" : `trade/${next}`;
-  }, []);
   useEffect(() => {
-    const onHash = () => {
-      setTabState(tabFromHash());
-      setSectionState(sectionFromHash());
-    };
+    const onHash = () => setTabState(tabFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
   const [counterparty, setCounterparty] = useState<ChainId>("sepolia");
   const [outbound, setOutbound] = useState(true);
   const [token, setToken] = useState<TokenId>("TIA");
-  // Launched tokens bridge like ours once the venue lists them.
-  const [tokens, setTokens] = useState<TokenId[]>(BASE_TOKENS);
-  useEffect(() => {
-    const load = () =>
-      fetchInfo()
-        .then((info) => {
-          const launched = info.assets.filter((a) => a.launched);
-          for (const a of launched) registerToken(a.id, a.symbol, a.routers, a.denom);
-          setTokens([...BASE_TOKENS, ...launched.map((a) => a.id)]);
-        })
-        .catch(() => {});
-    load();
-    const timer = setInterval(load, 60_000);
-    return () => clearInterval(timer);
-  }, []);
   const [amount, setAmount] = useState("");
   const [recipient, setRecipient] = useState("");
   const [transfers, setTransfers] = useState<Transfer[]>(loadTransfers);
@@ -232,7 +198,7 @@ export default function App() {
   const loadBalances = useCallback(async () => {
     const wanted: [ChainId, TokenId][] = [];
     for (const chain of ["celestia", ...COUNTERPARTIES] as ChainId[]) {
-      for (const t of tokens) wanted.push([chain, t]);
+      for (const t of TOKENS) wanted.push([chain, t]);
     }
     const found: Record<string, bigint> = {};
     await Promise.all(
@@ -247,7 +213,7 @@ export default function App() {
       }),
     );
     setBalances((current) => ({ ...current, ...found }));
-  }, [evm, cosmos, tokens]);
+  }, [evm, cosmos]);
 
   useEffect(() => {
     loadBalances();
@@ -312,7 +278,7 @@ export default function App() {
       if (wanted <= 0n) throw new Error("Enter an amount greater than zero");
       if (sourceBalance !== undefined && wanted > sourceBalance) {
         throw new Error(
-          `Not enough ${labelOf(token)} on ${source.name}: ` +
+          `Not enough ${token} on ${source.name}: ` +
             `you have ${formatAmount(sourceBalance, token)} and asked to send ${amount}`,
         );
       }
@@ -336,7 +302,7 @@ export default function App() {
       } else {
         if (!cosmos) throw new Error("Connect Keplr first");
         const tokenId = routerFor(token, "celestia");
-        if (!tokenId) throw new Error(`${labelOf(token)} is not deployed on Celestia`);
+        if (!tokenId) throw new Error(`${token} is not deployed on Celestia`);
         // Re-quoted rather than reusing what the page showed, which may be minutes old.
         const quoted = await quoteBridgeFee(from, to);
         tx = await sendFromCelestia({
@@ -355,7 +321,7 @@ export default function App() {
       setTransfers((current) => [
         {
           messageId,
-          token: labelOf(token),
+          token,
           amount,
           from,
           to,
@@ -367,7 +333,7 @@ export default function App() {
       ]);
       setConfirmed({
         messageId,
-        token: labelOf(token),
+        token,
         amount,
         origin: source.name,
         destination: destination.name,
@@ -428,7 +394,6 @@ export default function App() {
 
   const tabs: { id: typeof tab; label: string }[] = [
     { id: "bridge", label: "Bridge" },
-    { id: "trade", label: "Trade" },
     { id: "history", label: "History" },
     { id: "faucet", label: "Faucet" },
   ];
@@ -461,14 +426,14 @@ export default function App() {
         </div>
       </header>
 
-      <main className={tab === "history" ? "page" : tab === "trade" ? "page venue-page" : "page bridge-page"}>
+      <main className={tab === "history" ? "page" : "page bridge-page"}>
         <ViewBoundary key={tab}>
         {tab === "bridge" ? (
           <BridgeView
             from={from}
             to={to}
             token={token}
-            tokens={tokens}
+            tokens={TOKENS}
             amount={amount}
             recipient={recipient}
             defaultRecipient={defaultRecipient}
@@ -492,15 +457,6 @@ export default function App() {
             onAmount={setAmount}
             onRecipient={setRecipient}
             onSend={send}
-          />
-        ) : tab === "trade" ? (
-          <VenuePage
-            section={section}
-            onSection={setSection}
-            evm={evm?.address ?? null}
-            cosmos={cosmos?.address ?? null}
-            onConnect={(wallet) => connect(wallet === "MetaMask" ? "base" : "celestia")}
-            onTransfer={(t) => setTransfers((all) => [t, ...all])}
           />
         ) : tab === "history" ? (
           <HistoryView

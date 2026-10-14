@@ -28,9 +28,6 @@ pub struct Config {
     pub routes: Vec<Route>,
     /// Test TIA for anyone who asks, from a funded key on a Celestia chain. Off when absent.
     pub faucet: Option<crate::api::FaucetConfig>,
-    /// Swaps across chains through the pools and the bridge, under `/api/v1/trade`. Off when
-    /// absent.
-    pub trade: Option<crate::api::trade::TradeConfig>,
     /// How often the tracker reads each origin for new transfers and checks each one's
     /// progress.
     #[serde(default = "default_track")]

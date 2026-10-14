@@ -1,6 +1,6 @@
 # API
 
-Relayer API (backs the `:3001` explorer) and the venue under `/api/v1/trade` (backs the Trade tab).
+Relayer API (backs the `:3001` explorer).
 
 ```
 B=http://<host>:3001          # direct
@@ -89,29 +89,6 @@ curl -s $B/api/v1/wallets | jq '.[] | {chain, display, symbol, daysLeft, level}'
 ```
 
 Alerting: probe `/api/v1/health` from outside the host. Non-200 or no answer is a problem.
-
-## The venue: `/api/v1/trade`
-
-- Enabled by a `[trade]` config table (`write_config` adds it once teeUSD exists).
-- Returns unsigned transactions only: `evm` ones send as-is; `cosmos` `msgs` go in one Celestia tx, in order.
-- Amounts: base-unit strings, 6 decimals. Asset `id`: symbol for TIA/teeUSD, hub token id for launched tokens.
-
-| | |
-|---|---|
-| `GET /api/v1/trade` | chains, pools and every listed asset; `?refresh=true` re-reads now |
-| `GET /api/v1/trade/quote?from&sell&to&buy&amount` | the price and the steps |
-| `POST /api/v1/trade/build` | one step to transactions, for the amount actually held |
-| `POST /api/v1/trade/pool` | full-range liquidity, creating the pool if needed |
-| `POST /api/v1/trade/launch/create`, `/deploy`, `/wire` | the three steps of a launch |
-| `GET /api/v1/trade/launch/{id}` | a launch's routers, and its listing once wired |
-
-- Swaps use the direct pool or the route via teeUSD, whichever pays more.
-- A launched token is listed once the hub shows it ownerless, on the routing ISM, with every remote router from a `TeeTokenFactory`. Its routers then join `.state/proofs/launched.json`.
-- Launches and pools re-read every 30 seconds.
-
-```sh
-curl -s "$B/api/v1/trade/quote?from=celestia&sell=TIA&to=base&buy=teeUSD&amount=10000000" | jq
-```
 
 ## Older endpoints
 

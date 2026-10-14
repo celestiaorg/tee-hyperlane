@@ -1,6 +1,5 @@
 //! HTTP server: the explorer page, `/api/v1`, the faucet, and the older endpoints the bridge app uses.
 
-pub mod trade;
 pub mod v1;
 
 use std::collections::BTreeMap;
@@ -28,7 +27,6 @@ pub struct Api {
     proof_dir: Arc<PathBuf>,
     routes: Arc<Vec<RouteView>>,
     faucet: Option<Arc<Faucet>>,
-    trade: Option<Arc<trade::Trade>>,
 }
 
 struct RouteView {
@@ -77,7 +75,6 @@ impl Api {
             proof_dir: Arc::new(config.proof_dir()),
             routes: Arc::new(routes),
             faucet: Faucet::new(config)?.map(Arc::new),
-            trade: trade::Trade::new(config)?.map(Arc::new),
         })
     }
 
@@ -148,7 +145,6 @@ impl Api {
 }
 
 pub async fn serve(api: Api, tracker: Arc<crate::tracker::Tracker>, listen: &str) -> Result<()> {
-    let trade = api.trade.clone();
     let legacy = Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/status", get(status))
@@ -156,17 +152,13 @@ pub async fn serve(api: Api, tracker: Arc<crate::tracker::Tracker>, listen: &str
         .route("/api/faucet", get(faucet_info).post(faucet_claim))
         .route("/api/faucet/{address}", get(faucet_claimed))
         .with_state(api);
-    let mut app = Router::new()
+    let app = Router::new()
         .route(
             "/",
             get(|| async { axum::response::Html(include_str!("../ui/explorer.html")) }),
         )
         .merge(v1::router(tracker))
         .merge(legacy);
-    if let Some(trade) = trade {
-        trade.spawn_refresh();
-        app = app.merge(trade::router(trade));
-    }
     let listener = tokio::net::TcpListener::bind(listen).await?;
     debug!(listen, "api listening");
     axum::serve(listener, app).await?;

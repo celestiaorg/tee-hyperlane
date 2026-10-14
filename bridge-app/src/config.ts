@@ -10,11 +10,10 @@
 const sameOrigin = (path: string): string =>
   typeof window === "undefined" ? path : `${window.location.origin}${path}`;
 
-/// A deployment value that the local devnet overrides.
+/// A deployment value, from .env.local.
 ///
-/// `make start` writes these into .env.local from what `make init` actually deployed, so the
-/// devnet points at a chain whose ids are minted at genesis and cannot be known in advance.
-/// Unset, every one of them falls back to the live testnet value below.
+/// `teeism ui` writes these from what the deployment actually created: its ids are minted at
+/// genesis and cannot be known in advance. Unset, each falls back to the value below.
 const env = (key: string, fallback: string): string =>
   (import.meta.env[key] as string | undefined) ?? fallback;
 
@@ -25,9 +24,7 @@ const envNum = (key: string, fallback: number): number => {
 };
 
 export type ChainId = "sepolia" | "arbitrum" | "base" | "eden" | "celestia";
-/// TIA, teeUSD, or a launched token's hub id: launched tokens join at runtime through
-/// `registerToken`, from the trade API's catalog.
-export type TokenId = "TIA" | "teeUSD" | (string & {});
+export type TokenId = "TIA" | "teeUSD";
 
 export interface EvmChain {
   kind: "evm";
@@ -111,7 +108,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     explorer: "https://eden-testnet.blockscout.com",
     // Ours, unlike the other three. Eden had no Hyperlane deployment, so the mailbox and the
     // merkle tree hook were deployed with the rest of this bridge.
-    mailbox: "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729",
+    mailbox: env("VITE_EDEN_MAILBOX", "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729") as `0x${string}`,
     ism: env("VITE_EDEN_ISM", "0x84D9b9223609CEd908f247DD88f9Ae306a768E2e") as `0x${string}`,
     // Eden pays gas in TIA at 18 decimals, not in ETH. The synthetic TIA this bridge mints
     // here is a separate ERC20 at 6 decimals, matching the collateral on Celestia.
@@ -155,7 +152,7 @@ export const CHAINS: Record<ChainId, Chain> = {
 };
 
 /** A warp router, per chain, per token. `null` where the route is not deployed yet. */
-export const ROUTERS: Record<string, Partial<Record<ChainId, string>>> = {
+export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
   TIA: {
     celestia: env(
       "VITE_CELESTIA_TIA_ROUTER",
@@ -177,31 +174,18 @@ export const ROUTERS: Record<string, Partial<Record<ChainId, string>>> = {
   },
 };
 
-export const DECIMALS: Record<string, number> = { TIA: 6, teeUSD: 6 };
+export const DECIMALS: Record<TokenId, number> = { TIA: 6, teeUSD: 6 };
 
 /// Gas each warp router is enrolled with, and therefore what the paymaster quotes against.
 export const REMOTE_ROUTER_GAS = 50000;
 
 /// What each token is called in Celestia's bank module. On the EVM side the router *is* the
 /// ERC20, so its address is enough and there is nothing to name here.
-export const CELESTIA_DENOM: Record<string, string> = {
+export const CELESTIA_DENOM: Record<TokenId, string> = {
   TIA: "utia",
   // A synthetic's bank denom is its token id under `hyperlane/`.
   teeUSD: `hyperlane/${ROUTERS.teeUSD.celestia}`,
 };
-
-/// What each token is shown as. A launched token's id is its hub token id, so it needs one.
-const LABELS: Record<string, string> = {};
-
-export const labelOf = (token: string): string => LABELS[token] ?? token;
-
-/// Add a launched token, so the bridge can carry it like TIA and teeUSD.
-export function registerToken(id: string, symbol: string, routers: Partial<Record<ChainId, string>>, denom: string) {
-  ROUTERS[id] = routers;
-  CELESTIA_DENOM[id] = denom;
-  DECIMALS[id] = 6;
-  LABELS[id] = symbol;
-}
 
 /// What happens between the origin finalising and the funds arriving.
 ///
@@ -290,7 +274,7 @@ export function whyNotLive(token: TokenId, from: ChainId, to: ChainId): string |
     return `Every route goes through ${CHAINS.celestia.name}, so ${CHAINS[from].name} to ${CHAINS[to].name} is two transfers rather than one. Bridge to ${CHAINS.celestia.name} first.`;
   }
   for (const c of [from, to]) {
-    if (routerFor(token, c) === null) return `${labelOf(token)} is not deployed on ${CHAINS[c].name} yet.`;
+    if (routerFor(token, c) === null) return `${token} is not deployed on ${CHAINS[c].name} yet.`;
   }
   return null;
 }

@@ -27,8 +27,7 @@ export const STEPS: Step[] = ["dispatched", "attested", "authorised", "delivered
 
 export interface Transfer {
   messageId: string;
-  /// A symbol: TIA, teeUSD, or a launched token's.
-  token: string;
+  token: TokenId;
   amount: string;
   from: ChainId;
   to: ChainId;
@@ -69,33 +68,17 @@ const ROUTER_ABI = parseAbi([
   "function allowance(address owner, address spender) view returns (uint256)",
 ]);
 
-/** Wait for a transaction to land, failing if it reverted. */
-export async function waitForReceipt(chain: EvmChain, txHash: string): Promise<any> {
-  for (let attempt = 0; attempt < 120; attempt++) {
-    const receipt = await rpc(chain, "eth_getTransactionReceipt", [txHash]).catch(() => null);
-    if (receipt) {
-      if (receipt.status !== "0x1") throw new Error(`transaction ${txHash} reverted on ${chain.name}`);
-      return receipt;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-  }
-  throw new Error("Transaction did not confirm in time; check the explorer");
-}
-
 const MAILBOX_ABI = parseAbi(["function delivered(bytes32 id) view returns (bool)"]);
 
-/// Decimals by symbol. Every launched token has 6, like both of ours.
-export const decimalsOf = (token: string): number => DECIMALS[token] ?? 6;
-
-export function toBaseUnits(amount: string, token: string): bigint {
+export function toBaseUnits(amount: string, token: TokenId): bigint {
   const [whole, fraction = ""] = amount.trim().split(".");
-  const decimals = decimalsOf(token);
+  const decimals = DECIMALS[token];
   const padded = (fraction + "0".repeat(decimals)).slice(0, decimals);
   return BigInt(whole || "0") * 10n ** BigInt(decimals) + BigInt(padded || "0");
 }
 
-export function formatAmount(base: bigint, token: string): string {
-  const decimals = decimalsOf(token);
+export function formatAmount(base: bigint, token: TokenId): string {
+  const decimals = DECIMALS[token];
   const unit = 10n ** BigInt(decimals);
   const whole = base / unit;
   const fraction = (base % unit).toString().padStart(decimals, "0").replace(/0+$/, "");
@@ -146,7 +129,7 @@ async function rpc(chain: EvmChain, method: string, params: unknown[]): Promise<
   return body.result;
 }
 
-export async function ethCall(chain: EvmChain, to: string, data: string): Promise<string> {
+async function ethCall(chain: EvmChain, to: string, data: string): Promise<string> {
   return rpc(chain, "eth_call", [{ to, data }, "latest"]);
 }
 
@@ -193,7 +176,7 @@ export async function sendFromEvm(opts: {
 }
 
 /** Send one transaction from MetaMask on `chain`. Returns its hash. */
-export async function sendEvmTx(opts: {
+async function sendEvmTx(opts: {
   chain: EvmChain;
   sender: string;
   to: string;
@@ -458,22 +441,6 @@ export async function fetchBalance(
   const denom = CELESTIA_DENOM[token];
   const response = await fetch(
     `${chain.rest}/cosmos/bank/v1beta1/balances/${address}/by_denom?denom=${encodeURIComponent(denom)}`,
-  );
-  if (!response.ok) return 0n;
-  const body = await response.json();
-  return BigInt(body?.balance?.amount ?? "0");
-}
-
-/** What `owner` holds of an ERC20 on an EVM chain. */
-export async function erc20Balance(chain: EvmChain, token: string, owner: string): Promise<bigint> {
-  const data = encodeFunctionData({ abi: ROUTER_ABI, functionName: "balanceOf", args: [owner as `0x${string}`] });
-  return BigInt(await ethCall(chain, token, data));
-}
-
-/** What `owner` holds of a bank denom on Celestia. */
-export async function bankBalance(chain: CosmosChain, denom: string, owner: string): Promise<bigint> {
-  const response = await fetch(
-    `${chain.rest}/cosmos/bank/v1beta1/balances/${owner}/by_denom?denom=${encodeURIComponent(denom)}`,
   );
   if (!response.ok) return 0n;
   const body = await response.json();

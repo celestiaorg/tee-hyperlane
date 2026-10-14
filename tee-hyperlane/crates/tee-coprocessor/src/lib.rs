@@ -8,7 +8,6 @@ pub mod destination;
 pub mod identity;
 pub mod monitor;
 pub mod origin;
-pub mod registry;
 pub mod route;
 pub mod slack;
 pub mod tracker;
