@@ -52,12 +52,11 @@ pub async fn up(ctx: &Ctx) -> Result<()> {
                 "mocha",
             ])
             .run()?;
-        let cfg = d.join("config.toml");
-        // Fewer samples per header keeps a light node's bandwidth modest; the long pruning
-        // window keeps the headers Eden's ISM may need to prove from.
-        set_toml(&cfg, "Share.LightAvailability", "SampleAmount", tv(16i64))?;
-        set_toml(&cfg, "Header.Syncer", "PruningWindow", tv("800h0m0s"))?;
     }
+    // Applied on every run, so a node initialised by an earlier, interrupted run still gets it.
+    // The long pruning window keeps the headers Eden's ISM may need to prove from: a quiet
+    // route's trusted height can sit far behind the head.
+    set_toml(&d.join("config.toml"), "Header.Syncer", "PruningWindow", tv("800h0m0s"))?;
 
     match container_state()?.as_deref() {
         Some("running") => print::info(format!("{CONTAINER} already running")),
