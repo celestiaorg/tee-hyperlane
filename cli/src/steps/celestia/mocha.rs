@@ -12,6 +12,11 @@ use crate::shared::shell::Cmd;
 use crate::steps::celestia::up::{set_toml, tv};
 
 pub const CONTAINER: &str = "mocha-light";
+/// The image's entrypoint runs `celestia $NODE_TYPE init` before every command, and defaults
+/// to a bridge node: without this it initialises a bridge store over the light node's and the
+/// light node crashes on start.
+const NODE_TYPE: &str = "NODE_TYPE=light";
+const NETWORK: &str = "P2P_NETWORK=mocha";
 
 pub fn dir(ctx: &Ctx) -> std::path::PathBuf {
     ctx.state_dir.join("mocha-light")
@@ -40,6 +45,10 @@ pub async fn up(ctx: &Ctx) -> Result<()> {
             .args([
                 "run",
                 "--rm",
+                "-e",
+                NODE_TYPE,
+                "-e",
+                NETWORK,
                 "-v",
                 &mount,
                 "-u",
@@ -56,46 +65,63 @@ pub async fn up(ctx: &Ctx) -> Result<()> {
     // Applied on every run, so a node initialised by an earlier, interrupted run still gets it.
     // The long pruning window keeps the headers Eden's ISM may need to prove from: a quiet
     // route's trusted height can sit far behind the head.
-    set_toml(&d.join("config.toml"), "Header.Syncer", "PruningWindow", tv("800h0m0s"))?;
+    set_toml(
+        &d.join("config.toml"),
+        "Header.Syncer",
+        "PruningWindow",
+        tv("800h0m0s"),
+    )?;
 
-    match container_state()?.as_deref() {
-        Some("running") => print::info(format!("{CONTAINER} already running")),
-        Some(other) => {
-            print::step(format!("starting {CONTAINER} (it was {other})"));
-            Cmd::new("starting the mocha light node", "docker")
-                .args(["start", CONTAINER])
+    // A container that is not running, or was created without the light node type, is
+    // recreated rather than restarted: a restart keeps whatever it was created with. Its data
+    // is the bind mount, so nothing is lost.
+    let state = container_state()?;
+    let env = Cmd::new("reading the light node's settings", "docker")
+        .args(["inspect", "-f", "{{.Config.Env}}", CONTAINER])
+        .capture()?
+        .1;
+    let right = state.as_deref() == Some("running") && env.contains(NODE_TYPE);
+    if right {
+        print::info(format!("{CONTAINER} already running"));
+    } else {
+        if let Some(other) = state {
+            print::step(format!("recreating {CONTAINER} (it was {other})"));
+            Cmd::new("removing the old mocha light node container", "docker")
+                .args(["rm", "-f", CONTAINER])
                 .output()?;
         }
-        None => {
-            print::step(format!("starting {CONTAINER}"));
-            Cmd::new("starting the mocha light node", "docker")
-                .args([
-                    "run",
-                    "-d",
-                    "--name",
-                    CONTAINER,
-                    "--restart",
-                    "unless-stopped",
-                    "-p",
-                    "127.0.0.1:26658:26658",
-                    "-v",
-                    &mount,
-                    "-u",
-                    &uid,
-                    MOCHA_LIGHT_IMAGE,
-                    "celestia",
-                    "light",
-                    "start",
-                    "--p2p.network",
-                    "mocha",
-                    "--rpc.addr",
-                    "0.0.0.0",
-                    "--rpc.port",
-                    "26658",
-                    "--rpc.skip-auth",
-                ])
-                .output()?;
-        }
+        print::step(format!("starting {CONTAINER}"));
+        Cmd::new("starting the mocha light node", "docker")
+            .args([
+                "run",
+                "-d",
+                "--name",
+                CONTAINER,
+                "--restart",
+                "unless-stopped",
+                "-p",
+                "127.0.0.1:26658:26658",
+                "-e",
+                NODE_TYPE,
+                "-e",
+                NETWORK,
+                "-v",
+                &mount,
+                "-u",
+                &uid,
+                MOCHA_LIGHT_IMAGE,
+                "celestia",
+                "light",
+                "start",
+                "--p2p.network",
+                "mocha",
+                "--rpc.addr",
+                "0.0.0.0",
+                "--rpc.port",
+                "26658",
+                "--rpc.skip-auth",
+            ])
+            .output()?;
     }
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     match sync_state(&ctx.var_or("EDEN_DA_RPC", "http://localhost:26658")).await {
