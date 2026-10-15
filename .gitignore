@@ -13,3 +13,4 @@ bridge-app/tsconfig.tsbuildinfo
 # Automata libraries fetched by `teeism pccs build`
 devnet/automata/automata/evm/lib/
 devnet/automata/pccs/lib/
+.DS_Store

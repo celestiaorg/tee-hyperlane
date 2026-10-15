@@ -2,8 +2,7 @@
 //! on Phala, so the next deploy starts from nothing.
 //!
 //! Without --yes it only lists what it would do. Contracts already on the EVM chains cannot be
-//! deleted; they stay there, unused. Secrets are never deleted: devnet/.env is not touched,
-//! and a key file found under .state is moved into it first.
+//! deleted; they stay there, unused. Secrets are never deleted: devnet/.env is not touched.
 
 use anyhow::{Context, Result};
 
@@ -13,16 +12,14 @@ use crate::shared::shell::Cmd;
 use crate::steps::celestia::mocha;
 use crate::steps::enclaves;
 
-/// The units this host has run for the bridge, current and retired.
-const UNITS: [&str; 4] = ["teeism-relayer", "teeism-gas-oracle", "teeism-api", "bridge-ui"];
+const UNITS: [&str; 2] = crate::steps::services::UNITS;
 const CONTAINERS: [&str; 3] = [
     "teeism-gateway",
     crate::steps::celestia::up::CONTAINER,
     mocha::CONTAINER,
 ];
 
-/// Every CVM this deployment knows of: the current record, and the per-file record older
-/// hosts kept in .state/out/enclave-app-id-<target>.
+/// Every CVM this deployment knows of, current and retired.
 fn known_cvms(ctx: &Ctx) -> Result<Vec<(String, String)>> {
     let mut out: Vec<(String, String)> = ctx
         .deployment()?
@@ -33,17 +30,6 @@ fn known_cvms(ctx: &Ctx) -> Result<Vec<(String, String)>> {
         .collect();
     for c in ctx.deployment()?.enclaves.retired {
         out.push(("retired".into(), c.app_id));
-    }
-    if let Ok(dir) = std::fs::read_dir(ctx.state_dir.join("out")) {
-        for f in dir.flatten() {
-            let name = f.file_name().to_string_lossy().into_owned();
-            if let Some(target) = name.strip_prefix("enclave-app-id-") {
-                let id = std::fs::read_to_string(f.path())?.trim().to_string();
-                if !out.iter().any(|(_, a)| *a == id) {
-                    out.push((target.to_string(), id));
-                }
-            }
-        }
     }
     Ok(out)
 }
@@ -65,7 +51,7 @@ pub async fn run(ctx: &mut Ctx, yes: bool) -> Result<()> {
         print::info(format!("Phala CVM {id} ({target}): delete"));
     }
     print::info(format!(
-        "{}: delete, keeping only secrets (moved into {})",
+        "{}: delete ({} is kept)",
         ctx.state_dir.display(),
         ctx.env_file().display()
     ));
@@ -128,25 +114,6 @@ pub async fn run(ctx: &mut Ctx, yes: bool) -> Result<()> {
         enclaves::up::delete(id)?;
     }
 
-    // Secrets kept under .state on older hosts go to devnet/.env before .state goes.
-    let alchemy = ctx.state_dir.join("alchemy-base-key");
-    if alchemy.is_file() && ctx.var("ALCHEMY_KEY").is_none() {
-        let key = std::fs::read_to_string(&alchemy)?.trim().to_string();
-        ctx.set_env("ALCHEMY_KEY", &key)?;
-        print::info(format!(
-            "moved .state/alchemy-base-key into {} as ALCHEMY_KEY",
-            ctx.env_file().display()
-        ));
-    }
-    let evm_key = ctx.state_dir.join("evm-key");
-    if evm_key.is_file() && ctx.var("EVM_PRIVATE_KEY").is_none() {
-        let key = std::fs::read_to_string(&evm_key)?.trim().to_string();
-        ctx.set_env("EVM_PRIVATE_KEY", &key)?;
-        print::info(format!(
-            "moved .state/evm-key into {} as EVM_PRIVATE_KEY",
-            ctx.env_file().display()
-        ));
-    }
     if ctx.state_dir.exists() {
         // The node containers wrote some of this as their own user; docker can always remove it.
         let (s, _, _) = Cmd::new("deleting the state directory", "rm")

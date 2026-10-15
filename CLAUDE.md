@@ -15,7 +15,7 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 
 - `keys/` and `devnet/.state/` hold real credentials. Never commit them, copy them into tracked files, or send them to an external service.
 - `teeism check-secrets` must pass before any commit.
-- Only Base and Arbitrum use a metered RPC: Alchemy free tier (`ALCHEMY_KEY` in `devnet/.env`; `ALCHEMY_BASE_KEY` or `devnet/.state/alchemy-base-key` on older hosts), in `rpc` of `[chains.base]` / `[chains.arbitrum]`, used only for the tree at the ISM's trusted height. `eth_getLogs` capped at 10 blocks. Everything else is public.
+- Only Base and Arbitrum use a metered RPC: Alchemy free tier (`ALCHEMY_KEY` in `devnet/.env`, or its older name `ALCHEMY_BASE_KEY`), in `rpc` of `[chains.base]` / `[chains.arbitrum]`, used only for the tree at the ISM's trusted height. `eth_getLogs` capped at 10 blocks. Everything else is public.
 
 ## Old stack
 
@@ -26,7 +26,6 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 
 - `chef@178.199.12.26`, Zurich, `~/tee-ism-nonzk`, HTTPS clone of `main`. Update with `git pull`. `devnet/.env`, `devnet/.state/` gitignored.
 - systemd: `teeism-relayer` (routes, dashboard + API on :3001), `teeism-gas-oracle`. Gateway serves `bridge-app/dist`.
-- Old `teeism-api` and disabled `bridge-ui` units remain until `teeism teardown` removes them.
 - Local celestia-app devnet (not mocha), pruning disabled. `mocha-light` light node, Eden only.
 - nginx gateway `:3000`: `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`.
 - 8 routes: Celestia to/from Sepolia, Arbitrum, Base, Eden.

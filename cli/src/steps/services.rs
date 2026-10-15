@@ -99,7 +99,7 @@ pub async fn wait_for_relayer(ctx: &Ctx) -> Result<()> {
 // ---------------------------------------------------------------- teeism config
 
 /// The Base and Arbitrum archives: BASE_ARCHIVE / ARBITRUM_ARCHIVE as URLs, else Alchemy with
-/// ALCHEMY_KEY (ALCHEMY_BASE_KEY, or the key file older hosts keep in .state). Only these two
+/// ALCHEMY_KEY (or ALCHEMY_BASE_KEY, its older name). Only these two
 /// `rpc` fields ever carry the metered key; logs and reads near the head use public endpoints.
 fn archive(ctx: &Ctx, var: &str, alchemy_host: &str, fallback: &str) -> String {
     if let Some(url) = ctx.var(var) {
@@ -108,11 +108,6 @@ fn archive(ctx: &Ctx, var: &str, alchemy_host: &str, fallback: &str) -> String {
     let key = ctx
         .var("ALCHEMY_KEY")
         .or_else(|| ctx.var("ALCHEMY_BASE_KEY"))
-        .or_else(|| {
-            std::fs::read_to_string(ctx.state_dir.join("alchemy-base-key"))
-                .ok()
-                .map(|s| s.trim().to_string())
-        })
         .filter(|k| !k.is_empty());
     match key {
         Some(k) => format!("https://{alchemy_host}/v2/{k}"),

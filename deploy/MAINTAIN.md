@@ -95,7 +95,7 @@ Costs one more CVM.
 
 ```sh
 teeism teardown            # lists what it would delete
-teeism teardown --yes      # services, containers, CVMs, devnet/.state (secrets move into devnet/.env)
+teeism teardown --yes      # services, containers, CVMs, devnet/.state (devnet/.env is kept)
 ```
 
 Contracts on the EVM chains stay where they are, unused. A CVM named `teeism-*` that the record does not know is reported, never deleted: `teeism enclaves delete --app-id <id>`.

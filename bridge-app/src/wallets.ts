@@ -56,15 +56,6 @@ export async function restoreKeplr(chain: CosmosChain): Promise<Account | null> 
   }
 }
 
-export function forget(): void {
-  try {
-    localStorage.removeItem(EVM_CONNECTED);
-    localStorage.removeItem(COSMOS_CONNECTED);
-  } catch {
-    // A browser that refuses storage simply asks to connect again next time.
-  }
-}
-
 const EVM_CONNECTED = "tee-bridge-evm-connected";
 const COSMOS_CONNECTED = "tee-bridge-cosmos-connected";
 
