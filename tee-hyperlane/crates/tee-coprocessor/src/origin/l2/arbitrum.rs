@@ -5,7 +5,7 @@
 //! newest signed messages; each tick attests the newest one whose block the RPC can prove.
 
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -55,12 +55,23 @@ impl Arbitrum {
 
     /// The newest signed messages above `height`, each with its block's header.
     async fn heads(&self, height: u64) -> Result<Vec<SignedHead>> {
+        Ok(self.heads_or_last_error(height).await?.0)
+    }
+
+    /// `heads`, with the RPC's last error for a block it could not serve, so a caller that got
+    /// none can say why.
+    async fn heads_or_last_error(
+        &self,
+        height: u64,
+    ) -> Result<(Vec<SignedHead>, Option<anyhow::Error>)> {
         let mut heads = Vec::new();
+        let mut last_error = None;
         for message in self.feed().above(0, TRIES) {
             let (rlp, _) = match self.chain.rpc().header_rlp(message.block_hash).await {
                 Ok(h) => h,
                 Err(e) => {
                     debug!(block = %message.block_hash, error = %e, "the RPC does not have this block yet");
+                    last_error = Some(e.context(format!("block {}", message.block_hash)));
                     continue;
                 }
             };
@@ -75,7 +86,7 @@ impl Arbitrum {
                 input: json!({ "message": message, "header_rlp": format!("0x{}", hex::encode(rlp)) }),
             });
         }
-        Ok(heads)
+        Ok((heads, last_error))
     }
 }
 
@@ -92,14 +103,27 @@ impl Indexer for Arbitrum {
     }
 
     async fn bootstrap(&self, identity: [u8; 32], _height: Option<u64>) -> Result<IsmState> {
-        self.feed().first(Duration::from_secs(60)).await?;
-        let head = self
-            .heads(0)
-            .await?
-            .into_iter()
-            .next()
-            .context("no signed Arbitrum block the RPC has")?;
-        Ok(self.chain.genesis(&head, identity))
+        self.feed()
+            .first(Duration::from_secs(60))
+            .await
+            .context("the Arbitrum sequencer feed (`feed`) sent nothing")?;
+        // The feed runs ahead of every RPC, so its first blocks are often not served yet: retry
+        // until the RPC catches up, and say what it answered if it never does.
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            let (heads, error) = self.heads_or_last_error(0).await?;
+            if let Some(head) = heads.into_iter().next() {
+                return Ok(self.chain.genesis(&head, identity));
+            }
+            if Instant::now() >= until {
+                let why = error.map_or("no feed message to look up".into(), |e| format!("{e:#}"));
+                anyhow::bail!(
+                    "the Arbitrum RPC (`rpc` of [chains.arbitrum]) served none of the feed's newest \
+                     blocks within 60s; its last answer: {why}"
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
     }
 }
 
