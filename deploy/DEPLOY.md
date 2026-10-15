@@ -100,9 +100,9 @@ teeism enclaves verify
 ```
 
 - Refuses unless every image is what this source builds and the pins are pushed (`--unpinned` skips that; never on ark).
-- One CVM on Phala (`prod9`, node 18, `tdx.small`, `--no-dev-os`) running all five enclaves, ports 8080 to 8084. `--chain <name>` runs one alone instead.
+- One CVM on Phala (node `prod9`, looked up by name, `--no-dev-os`) running all five enclaves, ports 8080 to 8084. `--chain <name>` runs one alone instead.
 - Then reads each enclave's quote: the identity the Celestia ISMs pin, the measurements the EVM ISMs pin, mr_td.
-- `tdx.medium` on purpose: appendix A moves to `tdx.small` (the default) with the admin key. `--os-image` picks the dstack OS image (default `dstack-0.5.9`; Phala no longer accepts `0.5.8`).
+- `tdx.medium` on purpose: appendix A moves to `tdx.small` (the default) with the admin key. `--os-image` picks the dstack OS image (default `dstack-0.5.12`); an image the node does not offer is refused with the list it does.
 - `verify` checks compose file -> `compose_hash` -> `mr_config_id` in the signed quote. Every line must say `ok`. `--rebuild` also rebuilds the images and compares them.
 - **Never `phala cvms upgrade`: it changes the enclave identity.**
 
@@ -314,7 +314,7 @@ EDEN_ARCHIVE      https://ev-reth-eden-testnet.binarybuilders.services:8545/
 EDEN_RPC          https://rpc.testnet.eden.gateway.fm/
 EDEN_DA_RPC       http://localhost:26658   (mocha light node)
 CELESTIA_RPC      http://localhost:26657
-PHALA_NODE_ID     18 (prod9)     PHALA_INSTANCE_TYPE   tdx.small
+PHALA_NODE        prod9 (a node name; its id is looked up)
 ```
 
 Never a metered key for logs: `eth_getLogs` sweeps drain it and stall every route.

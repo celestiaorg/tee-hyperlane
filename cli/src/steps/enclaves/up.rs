@@ -171,7 +171,7 @@ async fn deploy_cvm(
             .output()?;
         *authenticated = true;
     }
-    let node = ctx.var_or("PHALA_NODE_ID", DEFAULT_NODE);
+    let node = phala_node(&ctx.var_or("PHALA_NODE", DEFAULT_NODE), os_image)?;
     print::step(format!("deploying {name} ({instance}, node {node}, {os_image})"));
     // --no-dev-os matters: with an SSH key on this machine the CLI otherwise provisions a dev
     // image that allows a shell in the CVM, which would make its measurements meaningless.
@@ -372,3 +372,50 @@ pub fn delete(app_id: &str) -> Result<()> {
         crate::shared::shell::tail(&said, 20)
     )
 }
+
+/// The node to deploy on, by name (`prod9`), as the id the phala CLI takes today, after
+/// checking it offers `os_image`. Phala renumbers nodes and retires images, so neither is a
+/// constant: a hard-coded id once became a different field and silently meant no node.
+fn phala_node(wanted: &str, os_image: &str) -> Result<String> {
+    let raw = Cmd::new("listing Phala's nodes", "phala")
+        .args(["cvms", "list-nodes", "--json"])
+        .output()?;
+    let v = first_json(&raw).context("phala printed no node list")?;
+    let nodes = v["nodes"]
+        .as_array()
+        .or_else(|| v["items"].as_array())
+        .context("phala's node list has no nodes")?;
+    let node = nodes
+        .iter()
+        .find(|n| {
+            n["name"].as_str() == Some(wanted)
+                || n["node_id"].as_u64().is_some_and(|id| id.to_string() == wanted)
+        })
+        .with_context(|| {
+            let names: Vec<&str> = nodes.iter().filter_map(|n| n["name"].as_str()).collect();
+            format!(
+                "Phala has no node `{wanted}`; it has: {}. Set PHALA_NODE",
+                names.join(", ")
+            )
+        })?;
+    let images: Vec<&str> = node["images"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| i["name"].as_str())
+                .filter(|n| !n.contains("-dev-") && !n.contains("nvidia"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !images.contains(&os_image) {
+        bail!(
+            "node {wanted} does not offer {os_image}; it offers: {}. Pass one with --os-image",
+            images.join(", ")
+        );
+    }
+    node["node_id"]
+        .as_u64()
+        .map(|n| n.to_string())
+        .with_context(|| format!("node {wanted} has no node_id"))
+}
+
