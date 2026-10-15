@@ -12,6 +12,10 @@ use serde_json::Value;
 use crate::shared::chains::ENCLAVES;
 use crate::shared::settings::Ctx;
 
+/// The dstack OS image line the enclave identity is defined for. dstack 0.6 drops the `mr-kms`
+/// event that the identity (here and in x/teeism) includes, so a 0.6 CVM cannot be pinned until
+/// that identity changes. Phala's default is 0.6, so the image is always asked for.
+pub const DEFAULT_OS_IMAGE: &str = "dstack-0.5.12";
 pub const DEFAULT_INSTANCE: &str = "tdx.small";
 
 /// The chains a CVM target serves.

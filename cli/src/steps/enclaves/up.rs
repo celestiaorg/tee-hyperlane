@@ -415,4 +415,3 @@ pub fn cvm_info(app_id: &str) -> Result<CvmInfo> {
         os_image: v["os"]["name"].as_str().unwrap_or("?").to_string(),
     })
 }
-
