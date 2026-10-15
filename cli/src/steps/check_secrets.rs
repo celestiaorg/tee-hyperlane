@@ -11,12 +11,6 @@ use crate::shared::print;
 use crate::shared::settings::Ctx;
 use crate::shared::shell::Cmd;
 
-/// Anvil's published test keys: in every Foundry tutorial, not secrets.
-const PUBLIC_KEYS: [&str; 2] = [
-    "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-    "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
-];
-
 pub fn check(ctx: &Ctx, staged: bool) -> Result<()> {
     let files = if staged {
         Cmd::new("listing staged files", "git")
@@ -44,8 +38,8 @@ pub fn check(ctx: &Ctx, staged: bool) -> Result<()> {
 
     let mut found = Vec::new();
     for f in files.lines().filter(|f| !f.is_empty()) {
-        // Vendored upstream code, and this file's own patterns.
-        if f.starts_with("devnet/automata/") || f == "cli/src/secrets.rs" {
+        // Vendored upstream code.
+        if f.starts_with("devnet/automata/") {
             continue;
         }
         let path = ctx.repo.join(f);
@@ -59,8 +53,7 @@ pub fn check(ctx: &Ctx, staged: bool) -> Result<()> {
             }
             if key_words.is_match(line) {
                 for m in hex64.find_iter(line) {
-                    let h = m.as_str().trim_start_matches("0x").to_lowercase();
-                    if !PUBLIC_KEYS.contains(&h.as_str()) && h.chars().any(|c| c != '0') {
+                    if m.as_str().trim_start_matches("0x").chars().any(|c| c != '0') {
                         found.push(format!("private key   {at}"));
                     }
                 }
