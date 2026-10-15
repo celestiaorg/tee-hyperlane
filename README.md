@@ -26,9 +26,9 @@ deploy/                                 the guides, the measured compose files, 
 
 ## Deployments
 
-The ids below are the deployment before the CLI redeploy; `teeism status` prints the live ones. Verify: `teeism enclaves verify`.
+Deployed with `teeism` on 2026-10-15. `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
 
-**Enclaves.** Phala Cloud (node picked by Phala), `tdx.small`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
+**Enclaves.** Phala Cloud (node picked by Phala), `tdx.medium`, dstack `0.5.12`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
 
 | enclave | port | attests |
 |---|---|---|
@@ -38,14 +38,14 @@ The ids below are the deployment before the CLI redeploy; `teeism status` prints
 | `arbitrum` | 8083 | Arbitrum Sepolia |
 | `eden` | 8084 | Eden |
 
-Until the shared CVM rollout, the per-family CVMs (`e6a9dc0d…`, `6479fb4b…`, `c3789ece…`) serve.
+```
+app id         fcdc75f95d37f0fbccc410b66d51aaf95e13c404   (teeism-all-1792060469)
+urls           https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-<port>.dstack-pha-prod9.phala.network
+identity       0xe0b5a87fc1ffeeaa334805d111c93e52cfd5da646adf6bc0d0fd39af40e37bcb
+measurements   0xfa5aad91ae47c44139bebe74c7c2747e51223d0a83236557b14550bb6ee7c70f
+```
 
-```
-app id         set at rollout
-identity       set at rollout
-compose_hash   set at rollout
-measurements   set at rollout
-```
+Image digests per chain: `deploy/images.lock`.
 
 EVM ISMs pin `measurements`; Celestia ISMs pin the fields behind `identity`.
 
@@ -63,32 +63,32 @@ igp        0x726f757465725f706f73745f6469737061746368000000040000000000000002
 
 | Celestia-origin, `TeeDcapIsm` on | address |
 |---|---|
-| Ethereum Sepolia | `0x865264E0ae7b173943e34c493E7851B895F37E3F` |
-| Arbitrum Sepolia | `0x39b7Cefe6523c474A31652cc297bA2b06ac53AB3` |
-| Base Sepolia | `0x94cC258254B4e9ef6675E6f3a2Ee023D3D21bFcC` |
-| Eden | `0xe686F221B7A2B641574340F43Ad5cD59707791Ca` |
+| Ethereum Sepolia | `0x8DDAB7d98b7C7FC40eb4D54Ae10Da60734f2c5AF` |
+| Arbitrum Sepolia | `0xE7eAeb624AB993f2b058E041dd2b762a9F0c038B` |
+| Base Sepolia | `0x96D3A82398545651117e0B754b55a2cF00A0aA1c` |
+| Eden | `0xB06dE0F56E05f5af1431708af6B92888d18A9abd` |
 
 | EVM-origin, `x/teeism` on `teeism-local` | id |
 |---|---|
-| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b000000000000003c` |
-| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b000000000000003d` |
-| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b000000000000003e` |
-| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b000000000000003f` |
-| routing ISM over all four | `0x726f757465725f69736d00000000000000000000000000010000000000000035` |
+| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b0000000000000001` |
+| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b0000000000000005` |
+| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b0000000000000002` |
+| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b0000000000000003` |
+| routing ISM over all four | `0x726f757465725f69736d00000000000000000000000000010000000000000004` |
 
 **Tokens.** Synthetic on every EVM chain. EVM to EVM is two hops via Celestia.
 
 | | collateral | synthetic |
 |---|---|---|
-| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x9822eE81C82138F88D759faef1AC168aDfEe1467`<br>Arbitrum `0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB`<br>Base `0xF50470146B36c638b981e437AB37DfEd9a02FAb3`<br>Eden `0xD2babc9BE1055551b7AB98c440222862a1646158` |
-| teeUSD | none: minted on Celestia, as the synthetic `0x726f757465725f61707000000000000000000000000000020000000000000002` (denom `hyperlane/<that id>`) | Sepolia `0x1be2055d49c0a350C137605a62861f58Aa750297`<br>Arbitrum `0xF699EB10087A1e01993ed628C198fe6e231830eD`<br>Base `0xa8cc6ec4855b1415c03f3aE51953a3643f7991a5`<br>Eden `0xa4697140E90F39D94F3C64D40175FA6F207bc8EC` |
+| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x7F751c18467C6D00f423BBc8183C38B01898D07c`<br>Arbitrum `0xDED207d4d9fad5aC89E755D77029453fFa834F2f`<br>Base `0x5F37c2B101527997436de2BB7C8636B356621d7b`<br>Eden `0xad4471aC85d64E6ea99426EedCB15097EF3EC850` |
+| teeUSD | none: minted on Celestia, as the synthetic `0x726f757465725f61707000000000000000000000000000020000000000000001` (denom `hyperlane/<that id>`) | Sepolia `0xB2fab15FdC9185b6F15eB383fe57E12cc7Ea5e99`<br>Arbitrum `0xE7d728A1884C840b4153A0BcAb766e8ebb5352dF`<br>Base `0xdA22F5ebE5e8dF2cbA5a4487622B9EF80BA413e7`<br>Eden `0x254Fd6b521ac0f6911Ef10846D6fc932D9ed3191` |
 
 **Eden.** Evolve-stack; mailbox and hook are ours.
 
 ```
 chain id     3735928814      ~10 blocks/s
-mailbox      0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729
-merkle hook  0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db   (tree at slot 151)
+mailbox      0x4D37EeeAE9fA656a85D15366f60dc55aa73a1907
+merkle hook  0xDF59A3c135B159a7Ac81b0140425C3B4Ba0407a9   (tree at slot 151)
 DA           mocha-5, namespace 0000000000000000000000000000000000005d2e074163aa3b4d9818
 sequencer    ed25519 4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d630b68d51
 ```
@@ -99,6 +99,18 @@ sequencer    ed25519 4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d630b
 base       0xb830b99c95Ea32300039624Cb567d324D4b1D83C   SystemConfig 0xf272670eb55e895584501d564AfEB048bEd26194 unsafeBlockSigner
 arbitrum   0x9396c22161c821231ad4ae8fcf991b4beee39990   SequencerInbox 0x6c97864CE4bEf387dE0b3310A44230f7E3F1be0D isSequencer
 ```
+
+**Intel collateral (PCCS).** Ours, Automata's contracts at the same CREATE2 addresses on all four EVM chains (namespace `tee-isms/v2`, owner `0x318d22faa1e0f29eac7ef644a8fac676f6688d1e`):
+
+```
+entrypoint   0x1AeAc1f7280fb57c1A2d82bD7f76875a7C32A9d3
+router       0x46ccfafa9413dc904eb6dd07e5b3ef1ad6dc8cee
+v4 verifier  0xbdde242942c2c6dbd8194235d4011d8296aa6b08
+v5 verifier  0xccc63af1c2ed8777c31ed90a1acec8ef1c08e83f
+storage      0x7a58de47eb15fa9bcac84e1d917046c3792e85c9
+```
+
+The DAOs and helpers: `devnet/.state/deployment.json`, `evm.<chain>.pccs`.
 
 **Host.** `ark` runs everything except the enclaves.
 

@@ -74,7 +74,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     // Etherscan link lands on raw bytecode. Verifying both would need an Etherscan API key.
     explorer: "https://eth-sepolia.blockscout.com",
     mailbox: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
-    ism: env("VITE_SEPOLIA_ISM", "0x83B41448ADfBdde1926575f774489892F88190A8") as `0x${string}`,
+    ism: env("VITE_SEPOLIA_ISM", "0x8DDAB7d98b7C7FC40eb4D54Ae10Da60734f2c5AF") as `0x${string}`,
   },
   arbitrum: {
     kind: "evm",
@@ -85,7 +85,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_ARBITRUM_RPC", "https://arbitrum-sepolia-rpc.publicnode.com"),
     explorer: "https://arbitrum-sepolia.blockscout.com",
     mailbox: "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8",
-    ism: env("VITE_ARBITRUM_ISM", "0xD50322542cCA994322760f170D3A2df8d7f5817e") as `0x${string}`,
+    ism: env("VITE_ARBITRUM_ISM", "0xE7eAeb624AB993f2b058E041dd2b762a9F0c038B") as `0x${string}`,
   },
   base: {
     kind: "evm",
@@ -96,7 +96,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_BASE_RPC", "https://base-sepolia-rpc.publicnode.com"),
     explorer: "https://base-sepolia.blockscout.com",
     mailbox: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
-    ism: env("VITE_BASE_ISM", "0xcF5929abd3Baa03BB161745319C9E2d2Ce1201C4") as `0x${string}`,
+    ism: env("VITE_BASE_ISM", "0x96D3A82398545651117e0B754b55a2cF00A0aA1c") as `0x${string}`,
   },
   eden: {
     kind: "evm",
@@ -108,8 +108,8 @@ export const CHAINS: Record<ChainId, Chain> = {
     explorer: "https://eden-testnet.blockscout.com",
     // Ours, unlike the other three. Eden had no Hyperlane deployment, so the mailbox and the
     // merkle tree hook were deployed with the rest of this bridge.
-    mailbox: env("VITE_EDEN_MAILBOX", "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729") as `0x${string}`,
-    ism: env("VITE_EDEN_ISM", "0x84D9b9223609CEd908f247DD88f9Ae306a768E2e") as `0x${string}`,
+    mailbox: env("VITE_EDEN_MAILBOX", "0x4D37EeeAE9fA656a85D15366f60dc55aa73a1907") as `0x${string}`,
+    ism: env("VITE_EDEN_ISM", "0xB06dE0F56E05f5af1431708af6B92888d18A9abd") as `0x${string}`,
     // Eden pays gas in TIA at 18 decimals, not in ETH. The synthetic TIA this bridge mints
     // here is a separate ERC20 at 6 decimals, matching the collateral on Celestia.
     nativeCurrency: { name: "TIA", symbol: "TIA", decimals: 18 },
@@ -146,7 +146,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     ),
     ismId: env(
       "VITE_CELESTIA_ISM_ID",
-      "0x726f757465725f69736d00000000000000000000000000010000000000000011",
+      "0x726f757465725f69736d00000000000000000000000000010000000000000004",
     ),
   },
 };
@@ -158,19 +158,19 @@ export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
       "VITE_CELESTIA_TIA_ROUTER",
       "0x726f757465725f61707000000000000000000000000000010000000000000000",
     ),
-    sepolia: env("VITE_SEPOLIA_TIA_ROUTER", "0x9822eE81C82138F88D759faef1AC168aDfEe1467"),
-    arbitrum: env("VITE_ARBITRUM_TIA_ROUTER", "0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB"),
-    base: env("VITE_BASE_TIA_ROUTER", "0xF50470146B36c638b981e437AB37DfEd9a02FAb3"),
-    eden: env("VITE_EDEN_TIA_ROUTER", "0xD2babc9BE1055551b7AB98c440222862a1646158"),
+    sepolia: env("VITE_SEPOLIA_TIA_ROUTER", "0x7F751c18467C6D00f423BBc8183C38B01898D07c"),
+    arbitrum: env("VITE_ARBITRUM_TIA_ROUTER", "0xDED207d4d9fad5aC89E755D77029453fFa834F2f"),
+    base: env("VITE_BASE_TIA_ROUTER", "0x5F37c2B101527997436de2BB7C8636B356621d7b"),
+    eden: env("VITE_EDEN_TIA_ROUTER", "0xad4471aC85d64E6ea99426EedCB15097EF3EC850"),
   },
   // Ours: a fixed supply minted on Celestia, synthetic everywhere else. A deployment that has
   // not created it leaves these unset, and the route reports itself as not deployed.
   teeUSD: {
-    celestia: env("VITE_CELESTIA_TEEUSD_ROUTER", "0x726f757465725f61707000000000000000000000000000020000000000000002"),
-    sepolia: env("VITE_SEPOLIA_TEEUSD_ROUTER", "0x1be2055d49c0a350C137605a62861f58Aa750297"),
-    arbitrum: env("VITE_ARBITRUM_TEEUSD_ROUTER", "0xF699EB10087A1e01993ed628C198fe6e231830eD"),
-    base: env("VITE_BASE_TEEUSD_ROUTER", "0xa8cc6ec4855b1415c03f3aE51953a3643f7991a5"),
-    eden: env("VITE_EDEN_TEEUSD_ROUTER", "0xa4697140E90F39D94F3C64D40175FA6F207bc8EC"),
+    celestia: env("VITE_CELESTIA_TEEUSD_ROUTER", "0x726f757465725f61707000000000000000000000000000020000000000000001"),
+    sepolia: env("VITE_SEPOLIA_TEEUSD_ROUTER", "0xB2fab15FdC9185b6F15eB383fe57E12cc7Ea5e99"),
+    arbitrum: env("VITE_ARBITRUM_TEEUSD_ROUTER", "0xE7d728A1884C840b4153A0BcAb766e8ebb5352dF"),
+    base: env("VITE_BASE_TEEUSD_ROUTER", "0xdA22F5ebE5e8dF2cbA5a4487622B9EF80BA413e7"),
+    eden: env("VITE_EDEN_TEEUSD_ROUTER", "0x254Fd6b521ac0f6911Ef10846D6fc932D9ed3191"),
   },
 };
 

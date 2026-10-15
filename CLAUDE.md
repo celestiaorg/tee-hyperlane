@@ -32,7 +32,6 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 - 8 routes: Celestia to/from Sepolia, Arbitrum, Base, Eden.
 - Tokens: TIA (Celestia collateral, synthetic on EVM), teeUSD (fixed 1B minted on Celestia, synthetic everywhere). Bridge only: no trading, pools or token launch.
 - 5 images (`celestia`, `ethereum`, `base`, `arbitrum`, `eden`) in one shared CVM, ports 8080 to 8084. Shared identity: any image change re-pins all 8 ISMs. `teeism enclaves up --chain <chain>` gives a chain its own CVM and identity.
-- Until the CLI redeploy, ark runs the old deployment (script-built, per-family CVMs, `.state/out/`); `teeism teardown` removes it.
 
 ## Docs
 

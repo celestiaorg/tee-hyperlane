@@ -17,7 +17,7 @@ chain = "celestia"
 key = "user"
 grants = [
   { symbol = "TIA", denom = "utia", amount = 5000000000, floor = 500000000000000 },
-  { symbol = "teeUSD", denom = "hyperlane/0x726f757465725f61707000000000000000000000000000020000000000000002", amount = 20000000000, floor = 1000000000000000 },
+  { symbol = "teeUSD", denom = "hyperlane/0x726f757465725f61707000000000000000000000000000020000000000000001", amount = 20000000000, floor = 1000000000000000 },
 ]
 
 # ---------------------------------------------------------------- chains
@@ -79,13 +79,13 @@ da_rpc = "http://localhost:26658"
 rpc = "https://ev-reth-eden-testnet.binarybuilders.services:8545/"
 logs_rpc = "https://rpc.testnet.eden.gateway.fm/"
 send_rpc = "https://rpc.testnet.eden.gateway.fm/"
-mailbox = "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729"
-merkle_tree_hook = "0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db"
+mailbox = "0x4D37EeeAE9fA656a85D15366f60dc55aa73a1907"
+merkle_tree_hook = "0xDF59A3c135B159a7Ac81b0140425C3B4Ba0407a9"
 
 # ---------------------------------------------------------------- routes
 #
-# Every enclave URL is `https://<app id>-<port>.dstack-pha-prod9.phala.network`; APP_ID stands
-# for the shared CVM's app id until the next rollout writes the live file.
+# Every enclave URL is `https://<app id>-<port>.<gateway>`, both as `teeism enclaves up` read
+# them from Phala for the shared CVM.
 #
 # `routers` are our warp routers on the destination: only a batch carrying a message for one
 # of them starts an attestation. It changes when a route works, never what it delivers.
@@ -95,65 +95,65 @@ merkle_tree_hook = "0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db"
 name = "celestia-to-sepolia"
 from = "celestia"
 to = "sepolia"
-enclave = "https://APP_ID-8080.dstack-pha-prod9.phala.network"
-ism = "0x865264E0ae7b173943e34c493E7851B895F37E3F"
-routers = ["0x9822eE81C82138F88D759faef1AC168aDfEe1467", "0x1be2055d49c0a350C137605a62861f58Aa750297"]
+enclave = "https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-8080.dstack-pha-prod9.phala.network"
+ism = "0x8DDAB7d98b7C7FC40eb4D54Ae10Da60734f2c5AF"
+routers = ["0x7F751c18467C6D00f423BBc8183C38B01898D07c", "0xB2fab15FdC9185b6F15eB383fe57E12cc7Ea5e99"]
 
 [[routes]]
 name = "celestia-to-arbitrum"
 from = "celestia"
 to = "arbitrum"
-enclave = "https://APP_ID-8080.dstack-pha-prod9.phala.network"
-ism = "0x39b7Cefe6523c474A31652cc297bA2b06ac53AB3"
-routers = ["0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB", "0xF699EB10087A1e01993ed628C198fe6e231830eD"]
+enclave = "https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-8080.dstack-pha-prod9.phala.network"
+ism = "0xE7eAeb624AB993f2b058E041dd2b762a9F0c038B"
+routers = ["0xDED207d4d9fad5aC89E755D77029453fFa834F2f", "0xE7d728A1884C840b4153A0BcAb766e8ebb5352dF"]
 
 [[routes]]
 name = "celestia-to-base"
 from = "celestia"
 to = "base"
-enclave = "https://APP_ID-8080.dstack-pha-prod9.phala.network"
-ism = "0x94cC258254B4e9ef6675E6f3a2Ee023D3D21bFcC"
-routers = ["0xF50470146B36c638b981e437AB37DfEd9a02FAb3", "0xa8cc6ec4855b1415c03f3aE51953a3643f7991a5"]
+enclave = "https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-8080.dstack-pha-prod9.phala.network"
+ism = "0x96D3A82398545651117e0B754b55a2cF00A0aA1c"
+routers = ["0x5F37c2B101527997436de2BB7C8636B356621d7b", "0xdA22F5ebE5e8dF2cbA5a4487622B9EF80BA413e7"]
 
 [[routes]]
 name = "celestia-to-eden"
 from = "celestia"
 to = "eden"
-enclave = "https://APP_ID-8080.dstack-pha-prod9.phala.network"
-ism = "0xe686F221B7A2B641574340F43Ad5cD59707791Ca"
-routers = ["0xD2babc9BE1055551b7AB98c440222862a1646158", "0xa4697140E90F39D94F3C64D40175FA6F207bc8EC"]
+enclave = "https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-8080.dstack-pha-prod9.phala.network"
+ism = "0xB06dE0F56E05f5af1431708af6B92888d18A9abd"
+routers = ["0xad4471aC85d64E6ea99426EedCB15097EF3EC850", "0x254Fd6b521ac0f6911Ef10846D6fc932D9ed3191"]
 
 # Attested by the ethereum, arbitrum and base enclaves, ports 8081, 8083 and 8082.
 [[routes]]
 name = "sepolia-to-celestia"
 from = "sepolia"
 to = "celestia"
-enclave = "https://APP_ID-8081.dstack-pha-prod9.phala.network"
-ism = "0x726f757465725f69736d000000000000000000000000002b000000000000003c"
-routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000002"]
+enclave = "https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-8081.dstack-pha-prod9.phala.network"
+ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000001"
+routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
 max_lag = 300
 
 [[routes]]
 name = "arbitrum-to-celestia"
 from = "arbitrum"
 to = "celestia"
-enclave = "https://APP_ID-8083.dstack-pha-prod9.phala.network"
-ism = "0x726f757465725f69736d000000000000000000000000002b000000000000003d"
-routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000002"]
+enclave = "https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-8083.dstack-pha-prod9.phala.network"
+ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000005"
+routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
 
 [[routes]]
 name = "base-to-celestia"
 from = "base"
 to = "celestia"
-enclave = "https://APP_ID-8082.dstack-pha-prod9.phala.network"
-ism = "0x726f757465725f69736d000000000000000000000000002b000000000000003e"
-routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000002"]
+enclave = "https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-8082.dstack-pha-prod9.phala.network"
+ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000002"
+routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
 
 # Attested by the eden enclave, port 8084.
 [[routes]]
 name = "eden-to-celestia"
 from = "eden"
 to = "celestia"
-enclave = "https://APP_ID-8084.dstack-pha-prod9.phala.network"
-ism = "0x726f757465725f69736d000000000000000000000000002b000000000000003f"
-routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000002"]
+enclave = "https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-8084.dstack-pha-prod9.phala.network"
+ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000003"
+routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
