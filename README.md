@@ -28,7 +28,7 @@ deploy/                                 the guides, the measured compose files, 
 
 The ids below are the deployment before the CLI redeploy; `teeism status` prints the live ones. Verify: `teeism enclaves verify`.
 
-**Enclaves.** Phala Cloud `prod9`, `tdx.small`, `dstack-0.5.9`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
+**Enclaves.** Phala Cloud (node picked by Phala), `tdx.small`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
 
 | enclave | port | attests |
 |---|---|---|

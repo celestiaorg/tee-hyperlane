@@ -37,7 +37,17 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
             .with_context(|| format!("no recorded {} CVM; pass --app-id", a.target))?,
     };
     let first = *chains_in(&a.target).first().context("unknown target")?;
-    let url = chains::enclave_url(&app_id, first)?;
+    let gateway = match d
+        .enclaves
+        .cvms
+        .get(&a.target)
+        .filter(|c| c.app_id == app_id)
+        .and_then(|c| c.gateway.clone())
+    {
+        Some(g) => g,
+        None => super::up::cvm_info(&app_id)?.gateway,
+    };
+    let url = chains::enclave_url(&app_id, &gateway, first)?;
     print::step(format!("enclave {url}"));
     let id = fetch_identity(&url).await?;
     let mut failed = Vec::new();

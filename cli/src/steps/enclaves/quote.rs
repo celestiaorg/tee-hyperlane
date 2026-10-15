@@ -12,11 +12,6 @@ use serde_json::Value;
 use crate::shared::chains::ENCLAVES;
 use crate::shared::settings::Ctx;
 
-/// The Phala node, by name; `enclaves up` looks up its current id and checks it offers the OS
-/// image. Auto-selection sometimes lands on a node whose gateway never registers the CVM: it
-/// runs, and every request returns nothing. PHALA_NODE overrides.
-pub const DEFAULT_NODE: &str = "prod9";
-pub const DEFAULT_OS_IMAGE: &str = "dstack-0.5.12";
 pub const DEFAULT_INSTANCE: &str = "tdx.small";
 
 /// The chains a CVM target serves.

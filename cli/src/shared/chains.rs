@@ -162,13 +162,10 @@ pub fn enclave_for(origin: &str) -> &str {
     }
 }
 
-pub const PHALA_GATEWAY: &str = "dstack-pha-prod9.phala.network";
-
-pub fn enclave_url(app_id: &str, chain: &str) -> Result<String> {
-    Ok(format!(
-        "https://{app_id}-{}.{PHALA_GATEWAY}",
-        enclave_port(chain)?
-    ))
+/// Where an enclave answers: its CVM's app id and port under the gateway of whichever Phala node
+/// runs it. Only plumbing: what the ISMs trust is the quote, never the address it came from.
+pub fn enclave_url(app_id: &str, gateway: &str, chain: &str) -> Result<String> {
+    Ok(format!("https://{app_id}-{}.{gateway}", enclave_port(chain)?))
 }
 
 /// The registry the enclave images are pushed to.

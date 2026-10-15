@@ -77,7 +77,7 @@ fn check_pins(ctx: &Ctx, targets: &[String]) -> Result<()> {
 pub struct Args {
     pub chains: Vec<String>,
     pub unpinned: bool,
-    pub os_image: String,
+    pub os_image: Option<String>,
     pub instance_type: String,
 }
 
@@ -99,7 +99,14 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
     }
     let mut authenticated = false;
     for target in &targets {
-        deploy_cvm(ctx, target, &a.os_image, &a.instance_type, &mut authenticated).await?;
+        deploy_cvm(
+            ctx,
+            target,
+            a.os_image.as_deref(),
+            &a.instance_type,
+            &mut authenticated,
+        )
+        .await?;
     }
 
     print::step("reading each enclave's identity from its quote");
@@ -116,7 +123,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
 async fn deploy_cvm(
     ctx: &Ctx,
     target: &str,
-    os_image: &str,
+    os_image: Option<&str>,
     instance: &str,
     authenticated: &mut bool,
 ) -> Result<()> {
@@ -127,22 +134,28 @@ async fn deploy_cvm(
     let mut name = format!("teeism-{target}");
     let mut d = ctx.deployment()?;
 
-    // Keep a recorded CVM only if it answers, measured this compose file, and runs this OS
-    // image. Answering is not enough: after a re-pin the old CVM is still healthy, and keeping
-    // it would leave every ISM pinning the old code.
+    // Keep a recorded CVM only if it answers, measured this compose file, and runs the OS image
+    // (if one was asked for) and instance type asked for. Answering is not enough: after a
+    // re-pin the old CVM is still healthy, and keeping it would leave every ISM pinning the old
+    // code.
     if let Some(cvm) = d.enclaves.cvms.get(target).cloned() {
-        let url = chains::enclave_url(&cvm.app_id, first)?;
+        let gateway = match &cvm.gateway {
+            Some(g) => g.clone(),
+            None => cvm_info(&cvm.app_id)?.gateway,
+        };
+        let url = chains::enclave_url(&cvm.app_id, &gateway, first)?;
         if healthy(&url).await {
             let id = fetch_identity(&url).await?;
             if measured_compose(&id)? == file
-                && cvm.os_image.as_deref().unwrap_or(DEFAULT_OS_IMAGE) == os_image
+                && os_image.is_none_or(|want| cvm.os_image.as_deref() == Some(want))
                 && cvm.instance_type.as_deref().unwrap_or(DEFAULT_INSTANCE) == instance
             {
                 print::info(format!(
-                    "{target} CVM {} already runs this compose on {os_image}, {instance}",
-                    cvm.app_id
+                    "{target} CVM {} already runs this compose on {}, {instance}",
+                    cvm.app_id,
+                    cvm.os_image.as_deref().unwrap_or("its OS image")
                 ));
-                record_urls(&mut d, target, &cvm.app_id)?;
+                record_urls(&mut d, target, &cvm.app_id, &gateway)?;
                 return ctx.save(&d);
             }
             print::warn(format!(
@@ -171,44 +184,44 @@ async fn deploy_cvm(
             .output()?;
         *authenticated = true;
     }
-    let node = phala_node(&ctx.var_or("PHALA_NODE", DEFAULT_NODE), os_image)?;
-    print::step(format!("deploying {name} ({instance}, node {node}, {os_image})"));
+    print::step(format!(
+        "deploying {name} ({instance}, {}; Phala picks the node)",
+        os_image.unwrap_or("Phala's default OS image")
+    ));
     // --no-dev-os matters: with an SSH key on this machine the CLI otherwise provisions a dev
     // image that allows a shell in the CVM, which would make its measurements meaningless.
-    let raw = Cmd::new(format!("deploying the {target} CVM on Phala"), "phala")
+    let mut deploy = Cmd::new(format!("deploying the {target} CVM on Phala"), "phala")
         .args(["deploy", "--name", &name, "--compose"])
         .arg(&compose)
-        .args([
-            "--instance-type",
-            instance,
-            "--node-id",
-            &node,
-            "--image",
-            os_image,
-            "--no-dev-os",
-            "--wait",
-            "--json",
-        ])
-        .output()?;
+        .args(["--instance-type", instance, "--no-dev-os", "--wait", "--json"]);
+    if let Some(image) = os_image {
+        deploy = deploy.args(["--image", image]);
+    }
+    let raw = deploy.output()?;
     let app_id = first_json(&raw)
         .and_then(|v| find_key(&v, &["app_id", "appId"]))
         .with_context(|| format!("could not read the app id for {target} from phala's output; check `phala cvms ls` for a stray {name}:\n{raw}"))?;
+    // Where Phala put it: the node's gateway, and the OS image it actually runs.
+    let info = cvm_info(&app_id)?;
     if let Some(old) = d.enclaves.cvms.insert(
         target.to_string(),
         Cvm {
             name: name.clone(),
             app_id: app_id.clone(),
-            os_image: Some(os_image.to_string()),
+            os_image: Some(info.os_image.clone()),
             instance_type: Some(instance.to_string()),
+            gateway: Some(info.gateway.clone()),
         },
     ) {
         d.enclaves.retired.push(old);
     }
     ctx.save(&d)?;
     print::kv("app id", &app_id);
+    print::kv("node", &info.node);
+    print::kv("os image", &info.os_image);
 
     for chain in chains_in(target) {
-        let url = chains::enclave_url(&app_id, chain)?;
+        let url = chains::enclave_url(&app_id, &info.gateway, chain)?;
         print::info(format!("waiting for {url}"));
         let mut up = false;
         for _ in 0..60 {
@@ -222,15 +235,20 @@ async fn deploy_cvm(
             bail!("the {chain} enclave did not answer within 10 minutes; check `phala cvms get {app_id}`");
         }
     }
-    record_urls(&mut d, target, &app_id)?;
+    record_urls(&mut d, target, &app_id, &info.gateway)?;
     ctx.save(&d)
 }
 
 /// Point every chain this CVM serves at it. A chain deployed alone later takes over its own.
-fn record_urls(d: &mut crate::shared::record::Deployment, target: &str, app_id: &str) -> Result<()> {
+fn record_urls(
+    d: &mut crate::shared::record::Deployment,
+    target: &str,
+    app_id: &str,
+    gateway: &str,
+) -> Result<()> {
     for chain in chains_in(target) {
         let e = d.enclaves.chains.entry(chain.to_string()).or_default();
-        let url = chains::enclave_url(app_id, chain)?;
+        let url = chains::enclave_url(app_id, gateway, chain)?;
         if e.url != url {
             *e = Enclave {
                 url,
@@ -373,49 +391,28 @@ pub fn delete(app_id: &str) -> Result<()> {
     )
 }
 
-/// The node to deploy on, by name (`prod9`), as the id the phala CLI takes today, after
-/// checking it offers `os_image`. Phala renumbers nodes and retires images, so neither is a
-/// constant: a hard-coded id once became a different field and silently meant no node.
-fn phala_node(wanted: &str, os_image: &str) -> Result<String> {
-    let raw = Cmd::new("listing Phala's nodes", "phala")
-        .args(["cvms", "list-nodes", "--json"])
+/// What Phala says about a CVM: the node it runs on, that node's gateway, its OS image.
+pub struct CvmInfo {
+    pub node: String,
+    pub gateway: String,
+    pub os_image: String,
+}
+
+pub fn cvm_info(app_id: &str) -> Result<CvmInfo> {
+    let raw = Cmd::new(format!("reading CVM {app_id} from Phala"), "phala")
+        .args(["cvms", "get", app_id, "--json"])
         .output()?;
-    let v = first_json(&raw).context("phala printed no node list")?;
-    let nodes = v["nodes"]
-        .as_array()
-        .or_else(|| v["items"].as_array())
-        .context("phala's node list has no nodes")?;
-    let node = nodes
-        .iter()
-        .find(|n| {
-            n["name"].as_str() == Some(wanted)
-                || n["node_id"].as_u64().is_some_and(|id| id.to_string() == wanted)
-        })
-        .with_context(|| {
-            let names: Vec<&str> = nodes.iter().filter_map(|n| n["name"].as_str()).collect();
-            format!(
-                "Phala has no node `{wanted}`; it has: {}. Set PHALA_NODE",
-                names.join(", ")
-            )
-        })?;
-    let images: Vec<&str> = node["images"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|i| i["name"].as_str())
-                .filter(|n| !n.contains("-dev-") && !n.contains("nvidia"))
-                .collect()
-        })
-        .unwrap_or_default();
-    if !images.contains(&os_image) {
-        bail!(
-            "node {wanted} does not offer {os_image}; it offers: {}. Pass one with --os-image",
-            images.join(", ")
-        );
-    }
-    node["node_id"]
-        .as_u64()
-        .map(|n| n.to_string())
-        .with_context(|| format!("node {wanted} has no node_id"))
+    let v = first_json(&raw)
+        .with_context(|| format!("phala printed nothing readable for CVM {app_id}:\n{raw}"))?;
+    let gateway = v["gateway"]["base_domain"]
+        .as_str()
+        .filter(|g| !g.is_empty())
+        .with_context(|| format!("Phala reports no gateway for CVM {app_id}; its enclaves are unreachable"))?
+        .to_string();
+    Ok(CvmInfo {
+        node: v["node_info"]["name"].as_str().unwrap_or("?").to_string(),
+        gateway,
+        os_image: v["os"]["name"].as_str().unwrap_or("?").to_string(),
+    })
 }
 

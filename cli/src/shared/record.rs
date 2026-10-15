@@ -66,6 +66,9 @@ pub struct Cvm {
     /// The Phala instance type, whose vCPU and memory shape the measurements cover.
     #[serde(default)]
     pub instance_type: Option<String>,
+    /// The gateway domain of the node Phala placed it on; its enclaves answer under it.
+    #[serde(default)]
+    pub gateway: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
