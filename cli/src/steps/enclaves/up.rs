@@ -345,9 +345,22 @@ pub fn delete_retired(ctx: &Ctx) -> Result<()> {
 }
 
 /// Delete a CVM on Phala.
+/// Delete a CVM on Phala. One Phala no longer has is already where this wants it, so "not
+/// found" counts as done; any other failure stops, since the CVM may still be billing.
 pub fn delete(app_id: &str) -> Result<()> {
-    Cmd::new(format!("deleting CVM {app_id} on Phala"), "phala")
+    let (status, stdout, stderr) = Cmd::new(format!("deleting CVM {app_id} on Phala"), "phala")
         .args(["cvms", "delete", app_id, "--force"])
-        .output()?;
-    Ok(())
+        .capture()?;
+    if status.success() {
+        return Ok(());
+    }
+    let said = format!("{stdout}\n{stderr}");
+    if said.contains("CVM not found") || said.contains("ERR-03-001") {
+        print::info(format!("CVM {app_id} is already gone on Phala"));
+        return Ok(());
+    }
+    bail!(
+        "deleting CVM {app_id} on Phala failed; it may still be billing, check `phala cvms ls`:\n{}",
+        crate::shared::shell::tail(&said, 20)
+    )
 }

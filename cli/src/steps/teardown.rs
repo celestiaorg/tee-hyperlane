@@ -125,8 +125,7 @@ pub async fn run(ctx: &mut Ctx, yes: bool) -> Result<()> {
 
     for (target, id) in &cvms {
         print::info(format!("deleting CVM {id} ({target})"));
-        enclaves::up::delete(id)
-            .with_context(|| format!("CVM {id} is still billing; check `phala cvms ls`"))?;
+        enclaves::up::delete(id)?;
     }
 
     // Secrets kept under .state on older hosts go to devnet/.env before .state goes.
