@@ -78,6 +78,7 @@ pub struct Args {
     pub chains: Vec<String>,
     pub unpinned: bool,
     pub os_image: String,
+    pub instance_type: String,
 }
 
 /// `teeism enclaves up`
@@ -98,7 +99,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
     }
     let mut authenticated = false;
     for target in &targets {
-        deploy_cvm(ctx, target, &a.os_image, &mut authenticated).await?;
+        deploy_cvm(ctx, target, &a.os_image, &a.instance_type, &mut authenticated).await?;
     }
 
     print::step("reading each enclave's identity from its quote");
@@ -112,7 +113,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
     Ok(())
 }
 
-async fn deploy_cvm(ctx: &Ctx, target: &str, os_image: &str, authenticated: &mut bool) -> Result<()> {
+async fn deploy_cvm(
+    ctx: &Ctx,
+    target: &str,
+    os_image: &str,
+    instance: &str,
+    authenticated: &mut bool,
+) -> Result<()> {
     let compose = compose_file(ctx, target);
     let file = std::fs::read_to_string(&compose)
         .with_context(|| format!("no compose for {target} at {}", compose.display()))?;
@@ -129,16 +136,17 @@ async fn deploy_cvm(ctx: &Ctx, target: &str, os_image: &str, authenticated: &mut
             let id = fetch_identity(&url).await?;
             if measured_compose(&id)? == file
                 && cvm.os_image.as_deref().unwrap_or(DEFAULT_OS_IMAGE) == os_image
+                && cvm.instance_type.as_deref().unwrap_or(DEFAULT_INSTANCE) == instance
             {
                 print::info(format!(
-                    "{target} CVM {} already runs this compose on {os_image}",
+                    "{target} CVM {} already runs this compose on {os_image}, {instance}",
                     cvm.app_id
                 ));
                 record_urls(&mut d, target, &cvm.app_id)?;
                 return ctx.save(&d);
             }
             print::warn(format!(
-                "the recorded {target} CVM {} runs a different compose or OS image; deploying a new one. \
+                "the recorded {target} CVM {} runs a different compose, OS image or instance type; deploying a new one. \
                  The old one keeps running (and billing) until `teeism enclaves delete --retired`",
                 cvm.app_id
             ));
@@ -163,7 +171,6 @@ async fn deploy_cvm(ctx: &Ctx, target: &str, os_image: &str, authenticated: &mut
             .output()?;
         *authenticated = true;
     }
-    let instance = ctx.var_or("PHALA_INSTANCE_TYPE", DEFAULT_INSTANCE);
     let node = ctx.var_or("PHALA_NODE_ID", DEFAULT_NODE);
     print::step(format!("deploying {name} ({instance}, node {node}, {os_image})"));
     // --no-dev-os matters: with an SSH key on this machine the CLI otherwise provisions a dev
@@ -173,7 +180,7 @@ async fn deploy_cvm(ctx: &Ctx, target: &str, os_image: &str, authenticated: &mut
         .arg(&compose)
         .args([
             "--instance-type",
-            &instance,
+            instance,
             "--node-id",
             &node,
             "--image",
@@ -192,6 +199,7 @@ async fn deploy_cvm(ctx: &Ctx, target: &str, os_image: &str, authenticated: &mut
             name: name.clone(),
             app_id: app_id.clone(),
             os_image: Some(os_image.to_string()),
+            instance_type: Some(instance.to_string()),
         },
     ) {
         d.enclaves.retired.push(old);

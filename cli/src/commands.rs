@@ -162,6 +162,10 @@ pub enum EnclavesCmd {
         /// The dstack OS image; a different one is a different mr_td.
         #[arg(long, default_value = crate::steps::enclaves::quote::DEFAULT_OS_IMAGE)]
         os_image: String,
+        /// The Phala instance type. Its vCPU and memory shape is measured too, so a different
+        /// one is a different enclave identity, re-pinned like a new OS image.
+        #[arg(long, default_value = crate::steps::enclaves::quote::DEFAULT_INSTANCE)]
+        instance_type: String,
         /// Skip the check that the images are what this source builds and are pushed.
         #[arg(long)]
         unpinned: bool,
@@ -309,6 +313,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             EnclavesCmd::Up {
                 chains,
                 os_image,
+                instance_type,
                 unpinned,
             } => {
                 crate::steps::enclaves::up::run(
@@ -317,6 +322,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                         chains,
                         unpinned,
                         os_image,
+                        instance_type,
                     },
                 )
                 .await

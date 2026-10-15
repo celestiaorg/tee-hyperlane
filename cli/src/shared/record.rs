@@ -63,6 +63,9 @@ pub struct Cvm {
     /// The dstack OS image it runs, which mr_td measures.
     #[serde(default)]
     pub os_image: Option<String>,
+    /// The Phala instance type, whose vCPU and memory shape the measurements cover.
+    #[serde(default)]
+    pub instance_type: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

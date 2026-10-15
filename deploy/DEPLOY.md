@@ -95,14 +95,14 @@ git add deploy/ && git commit -m "Pin enclave images" && git push
 `cli/src/steps/enclaves/up.rs`, `verify.rs`.
 
 ```sh
-teeism enclaves up --os-image dstack-0.5.8
+teeism enclaves up --instance-type tdx.medium
 teeism enclaves verify
 ```
 
 - Refuses unless every image is what this source builds and the pins are pushed (`--unpinned` skips that; never on ark).
 - One CVM on Phala (`prod9`, node 18, `tdx.small`, `--no-dev-os`) running all five enclaves, ports 8080 to 8084. `--chain <name>` runs one alone instead.
 - Then reads each enclave's quote: the identity the Celestia ISMs pin, the measurements the EVM ISMs pin, mr_td.
-- `0.5.8` on purpose: appendix A moves to `0.5.9` with the admin key.
+- `tdx.medium` on purpose: appendix A moves to `tdx.small` (the default) with the admin key. `--os-image` picks the dstack OS image (default `dstack-0.5.9`; Phala no longer accepts `0.5.8`).
 - `verify` checks compose file -> `compose_hash` -> `mr_config_id` in the signed quote. Every line must say `ok`. `--rebuild` also rebuilds the images and compares them.
 - **Never `phala cvms upgrade`: it changes the enclave identity.**
 
@@ -191,12 +191,12 @@ Then copy `teeism status` into `README.md` and refresh `deploy/coprocessor.toml.
 
 ---
 
-## A. Re-pin with the admin key: a new mr_td
+## A. Re-pin with the admin key: a new enclave measurement
 
-Do this once after step 14. A new dstack OS image changes mr_td, so every ISM must be re-pinned by its owner, in place: same address, same state, no router moves.
+Do this once after step 14. The ISMs pin `keccak256(mr_td ++ mr_config_id ++ rtmr0..2)`, which covers the dstack OS image and the VM's vCPU and memory shape. Moving the CVM from `tdx.medium` to `tdx.small` changes it, so every ISM must be re-pinned by its owner, in place: same address, same state, no router moves. A new dstack OS image (`--os-image`) is the same procedure.
 
 ```sh
-teeism enclaves up --os-image dstack-0.5.9    # a new CVM; the old one is recorded as retired
+teeism enclaves up --instance-type tdx.small  # a new CVM; the old one is recorded as retired
 teeism enclaves verify
 teeism isms evm                               # setEnclave on each TeeDcapIsm, signed by EVM_SIGNER
 teeism isms celestia                          # tx teeism update-identity on each, signed by `relayer`
@@ -205,7 +205,7 @@ teeism smoke
 teeism enclaves delete --retired              # only once smoke passed
 ```
 
-- `enclaves up` prints the new mr_td; `isms evm` and `isms celestia` print `re-pinning <ism>: <old> -> <new>` per ISM. Anything saying `replacing` instead means an ISM this key does not own or an older contract revision: stop and check.
+- `enclaves up` prints the new measurements; `isms evm` and `isms celestia` print `re-pinning <ism>: <old> -> <new>` per ISM. Anything saying `replacing` instead means an ISM this key does not own or an older contract revision: stop and check.
 - Until `services restart`, attestations from the old enclave are refused (`WrongEnclave`); nothing is lost, the relayer retries.
 - Rollback before `delete --retired`: the old CVM still runs; re-pin to it with [ADMIN](ADMIN.md)'s commands.
 
