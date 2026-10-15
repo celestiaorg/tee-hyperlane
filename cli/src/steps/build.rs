@@ -148,31 +148,7 @@ pub fn automata(ctx: &Ctx) -> Result<()> {
         ),
     ];
     for (project, dir, url, rev) in deps {
-        let path = project.join(dir);
-        if !path.join(".git").exists() {
-            print::info(format!("fetching {url} at {rev}"));
-            Cmd::new(format!("cloning {url}"), "git")
-                .args(["clone", "-q", url])
-                .arg(&path)
-                .output()?;
-        }
-        let head = Cmd::new("reading a dependency's revision", "git")
-            .arg("-C")
-            .arg(&path)
-            .args(["rev-parse", "HEAD"])
-            .output()?;
-        if head.trim() != rev {
-            Cmd::new(format!("fetching {url}"), "git")
-                .arg("-C")
-                .arg(&path)
-                .args(["fetch", "-q", "origin"])
-                .output()?;
-            Cmd::new(format!("checking out {rev} of {url}"), "git")
-                .arg("-C")
-                .arg(&path)
-                .args(["checkout", "-q", rev])
-                .output()?;
-        }
+        pin_dependency(&project.join(dir), url, rev)?;
     }
     // risc0-ethereum carries the OpenZeppelin that Automata's remappings name.
     Cmd::new("fetching risc0-ethereum's OpenZeppelin", "git")
@@ -201,5 +177,42 @@ pub fn automata(ctx: &Ctx) -> Result<()> {
         .arg("@openzeppelin/contracts/=lib/automata-on-chain-pccs/lib/openzeppelin-contracts/contracts/")
         .cwd(&dcap)
         .run()?;
+    Ok(())
+}
+
+/// Put a gitignored dependency checkout at exactly `rev`. The commit is fetched by its hash,
+/// which works on a shallow or stale clone too. A checkout that still cannot reach it (left by
+/// older tooling) is deleted and cloned again: the directory only ever holds a fetched copy.
+fn pin_dependency(path: &Path, url: &str, rev: &str) -> Result<()> {
+    let git = |what: &str| Cmd::new(what, "git").arg("-C").arg(path);
+    if path.join(".git").exists() {
+        let head = git("reading a dependency's revision")
+            .args(["rev-parse", "HEAD"])
+            .output()?;
+        if head.trim() == rev {
+            return Ok(());
+        }
+        let fetched = git(&format!("fetching {rev} of {url}"))
+            .args(["fetch", "-q", "origin", rev])
+            .output();
+        let checked = fetched.and_then(|_| {
+            git(&format!("checking out {rev} of {url}"))
+                .args(["checkout", "-q", rev])
+                .output()
+        });
+        if checked.is_ok() {
+            return Ok(());
+        }
+        print::info(format!("{} cannot reach {rev}; cloning it again", path.display()));
+        std::fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))?;
+    }
+    print::info(format!("fetching {url} at {rev}"));
+    Cmd::new(format!("cloning {url}"), "git")
+        .args(["clone", "-q", url])
+        .arg(path)
+        .output()?;
+    git(&format!("checking out {rev} of {url}"))
+        .args(["checkout", "-q", rev])
+        .output()?;
     Ok(())
 }
