@@ -84,13 +84,10 @@ teeism images
 ```
 
 - Builds each chain's image with Nix, pushes it, pins the digest in `deploy/docker-compose.<chain>.yml` and `deploy/images.lock`, regenerates `docker-compose.all.yml`. A chain whose source is unchanged is skipped.
-- The pins must be committed and pushed before step 7. ark has no GitHub push access, so carry them over:
+- The pins must be committed and pushed before step 7. Add only these files: `git add .` would also take untracked files such as an `.env` backup.
 
 ```sh
-git diff deploy/ > /tmp/pins.patch                       # on ark
-scp chef@178.199.12.26:/tmp/pins.patch .                 # on the laptop, in the repo (add your ssh port)
-git apply pins.patch && git commit -am "Pin enclave images" && git push
-git checkout deploy/ && git pull                          # on ark
+git add deploy/ && git commit -m "Pin enclave images" && git push
 ```
 
 ## 7. Enclaves
