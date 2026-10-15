@@ -89,8 +89,23 @@ pub fn build(ctx: &Ctx) -> Result<()> {
             .cwd(&contracts)
             .run()?;
     }
+    // Our ISM, and the Hyperlane contracts teeism deploys from out/: the warp routers, and
+    // Eden's mailbox and merkle tree hook. Nothing in src/ imports those, so they are named
+    // here, and `--lib-paths lib` stops forge treating node_modules as a library, which it
+    // would otherwise only compile when imported. Tests are skipped: they need forge-std,
+    // which nothing fetches.
     Cmd::new("compiling tee-hyperlane/contracts", "forge")
-        .arg("build")
+        .args([
+            "build",
+            "--skip",
+            "test",
+            "--lib-paths",
+            "lib",
+            "src",
+            "node_modules/@hyperlane-xyz/core/contracts/token/HypERC20.sol",
+            "node_modules/@hyperlane-xyz/core/contracts/Mailbox.sol",
+            "node_modules/@hyperlane-xyz/core/contracts/hooks/MerkleTreeHook.sol",
+        ])
         .cwd(&contracts)
         .run()?;
 
