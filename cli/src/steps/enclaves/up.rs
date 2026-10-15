@@ -77,7 +77,7 @@ fn check_pins(ctx: &Ctx, targets: &[String]) -> Result<()> {
 pub struct Args {
     pub chains: Vec<String>,
     pub unpinned: bool,
-    pub os_image: Option<String>,
+    pub os_image: String,
     pub instance_type: String,
 }
 
@@ -102,7 +102,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
         deploy_cvm(
             ctx,
             target,
-            a.os_image.as_deref(),
+            Some(&a.os_image),
             &a.instance_type,
             &mut authenticated,
         )
