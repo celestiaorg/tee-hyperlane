@@ -145,3 +145,19 @@ cd tee-hyperlane && cargo test                        # state proofs, trees, L2 
 cd tee-hyperlane/contracts && forge test              # TeeDcapIsm.sol
 cd ../celestia-app-local && go test ./x/teeism/...    # the Celestia verifier
 ```
+
+### Copying TEE bridge alerts to Protocol Alerts
+
+Keep the deployed `SLACK_CHANNEL` and `SLACK_BOT_TOKEN` unchanged. Invite the
+existing `tee-bridge-alerts-bot` to Celestia Labs `#protocol-alerts` and set
+`SLACK_MIRROR_CHANNELS=C0C9WE8B5RC` in the relayer's deployment environment.
+Rebuild and deploy the relayer with this change using its normal release
+process. Additional channel IDs can be comma-separated; empty and repeated
+entries are ignored. Each channel has an independent queue, retry state and
+status timer, so mirror failures do not hold up the existing destination.
+
+Verify a new problem and its resolution in both channels, as well as the
+periodic health status, before considering the copy operational. To disable
+the mirror, remove `SLACK_MIRROR_CHANNELS` and restart through the normal
+release process. This is separate from the Alertmanager feed configuration
+in `celestiaorg/infrastructure`.

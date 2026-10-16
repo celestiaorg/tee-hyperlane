@@ -11,9 +11,11 @@ const DEFAULT_EVERY: u64 = 30 * 60;
 /// Slack allows about one post a second per channel.
 const SPACING: Duration = Duration::from_millis(1100);
 
+#[derive(Clone)]
 pub struct Slack {
     token: String,
     channel: String,
+    mirror_channels: Vec<String>,
     explorer: Option<String>,
     pub every: u64,
     http: reqwest::Client,
@@ -26,6 +28,7 @@ impl Slack {
         Some(Self {
             token: var("SLACK_BOT_TOKEN")?,
             channel: var("SLACK_CHANNEL")?,
+            mirror_channels: mirror_channels(var("SLACK_MIRROR_CHANNELS").as_deref()),
             explorer: var("EXPLORER_URL").map(|u| u.trim_end_matches('/').to_string()),
             every: var("SLACK_EVERY_SECS")
                 .and_then(|v| v.parse().ok())
@@ -81,9 +84,54 @@ impl Slack {
 
 const RETRIES: u32 = 3;
 
+/// Parse optional channel IDs, ignoring empty and repeated entries.
+fn mirror_channels(value: Option<&str>) -> Vec<String> {
+    let mut channels = Vec::new();
+    for channel in value.unwrap_or_default().split(',').map(str::trim) {
+        if !channel.is_empty() && !channels.iter().any(|c| c == channel) {
+            channels.push(channel.to_string());
+        }
+    }
+    channels
+}
+
+/// Each destination has its own queue, retry state and timer. A slow or broken
+/// mirror must not delay delivery to the existing channel.
+pub async fn run(
+    mut slack: Slack,
+    tracker: std::sync::Arc<crate::tracker::Tracker>,
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<Change>,
+) {
+    let mirrors = std::mem::take(&mut slack.mirror_channels);
+    let mut destinations = vec![slack.clone()];
+    for channel in mirrors {
+        if channel != slack.channel {
+            destinations.push(Slack {
+                channel,
+                ..slack.clone()
+            });
+        }
+    }
+    let mut senders = Vec::new();
+    for destination in destinations {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        senders.push(sender);
+        tokio::spawn(run_channel(
+            destination,
+            std::sync::Arc::clone(&tracker),
+            receiver,
+        ));
+    }
+    while let Some(change) = changes.recv().await {
+        for sender in &senders {
+            let _ = sender.send(change.clone());
+        }
+    }
+}
+
 /// Post every change as it arrives, and the status every `every` seconds, until the process
 /// stops.
-pub async fn run(
+async fn run_channel(
     slack: Slack,
     tracker: std::sync::Arc<crate::tracker::Tracker>,
     mut changes: tokio::sync::mpsc::UnboundedReceiver<Change>,
@@ -205,6 +253,16 @@ pub fn summary_text(s: &Summary, explorer: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mirror_channel_configuration_ignores_empty_and_duplicate_entries() {
+        assert!(mirror_channels(None).is_empty());
+        assert!(mirror_channels(Some(" , ")).is_empty());
+        assert_eq!(
+            mirror_channels(Some(" C0C9WE8B5RC, C123, C0C9WE8B5RC, ")),
+            vec!["C0C9WE8B5RC", "C123"]
+        );
+    }
 
     fn note(severity: Severity) -> Notification {
         Notification {
