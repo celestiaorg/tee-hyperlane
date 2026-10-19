@@ -154,6 +154,21 @@ impl Route {
             );
             return Ok(None);
         }
+        // Both ISMs refuse a transition that leaves the state root where it is, and the enclave
+        // does not check that, so it would attest one anyway. An origin can sit on one root for
+        // many blocks (Eden's empty blocks change nothing), so wait for the root to move rather
+        // than stage a batch no retry can land.
+        if step.state_root.0 == trusted.state_root {
+            debug!(route = %self.config.name, head = step.head, "state root unchanged");
+            self.record_activity(
+                "waiting",
+                format!(
+                    "the origin's state root at height {} is the one the ISM holds from height {}",
+                    step.head, trusted.height
+                ),
+            );
+            return Ok(None);
+        }
         let heartbeat = heartbeat_due(trusted.timestamp, now());
         if step.leaves.is_empty() && !heartbeat {
             debug!(route = %self.config.name, head = step.head, "nothing dispatched");

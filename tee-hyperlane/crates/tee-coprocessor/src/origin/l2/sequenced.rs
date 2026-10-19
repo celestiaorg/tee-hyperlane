@@ -179,6 +179,7 @@ impl Sequenced {
                 Ok(leaves) => {
                     return Ok(Step {
                         head: head.height,
+                        state_root: head.state_root,
                         leaves,
                         chain: self.chain.name,
                         input: head.input.clone(),

@@ -281,6 +281,7 @@ impl Indexer for Eden {
 
         Ok(Step {
             head: header.height,
+            state_root: B256::from(header.state_root),
             leaves,
             chain: EDEN.name,
             input: json!({

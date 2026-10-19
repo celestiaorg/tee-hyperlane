@@ -98,6 +98,7 @@ impl Indexer for Celestia {
         .state_root;
         Ok(Step {
             head,
+            state_root: head_root,
             leaves: origin::leaves(&CELESTIA, &snapshot, trusted.state_root, &tree, head_root)?,
             chain: CELESTIA.name,
             input: json!({ "store": { "trusted": trusted_block }, "updates": [next] }),

@@ -339,6 +339,7 @@ impl Indexer for Ethereum {
             .context("reading the tree at the trusted height; set `archive_rpc` if pruned")?;
         Ok(Step {
             head: l1.block,
+            state_root: l1.state_root,
             leaves: origin::leaves(
                 &ETHEREUM,
                 &snapshot,

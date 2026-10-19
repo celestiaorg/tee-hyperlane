@@ -3,6 +3,7 @@
 use std::ops::Range;
 use std::path::PathBuf;
 
+use alloy_primitives::B256;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -26,6 +27,8 @@ pub trait Indexer: Send + Sync {
 pub struct Step {
     /// The origin height this step attests.
     pub head: u64,
+    /// The origin's state root at `head`: the root the ISM would move to.
+    pub state_root: B256,
     /// The tree's size at the trusted height, up to its size at `head`. Empty means idle.
     pub leaves: Range<u32>,
     /// The enclave's chain name, then that chain's input and its two tree proofs.
@@ -42,6 +45,7 @@ impl Step {
     pub fn idle(head: u64) -> Self {
         Self {
             head,
+            state_root: B256::ZERO,
             leaves: 0..0,
             chain: "",
             input: Value::Null,
