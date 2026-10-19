@@ -44,6 +44,7 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 | `deploy/INTERACT.md` | wallets, sending, arrival, latency, cost |
 | `deploy/API.md` | `/api/v1` endpoints, statuses, notifications |
 | `deploy/coprocessor.toml.example` | deployed chains and routes, verbatim but for the one key |
+| `deploy/upstream.toml` | what `teeism upstream check` watches upstream, what we support, the manifest the judge reads |
 | `deploy/images.lock` | Nix build per pinned image; `teeism enclaves up` refuses to deploy on mismatch with code |
 
 ## Gotchas

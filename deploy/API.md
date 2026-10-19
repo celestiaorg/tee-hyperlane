@@ -28,6 +28,7 @@ Schema: `$B/api/v1/openapi.json` (source: `tee-hyperlane/crates/tee-coprocessor/
 | `GET /api/v1/messages[?status=&route=&limit=&offset=]` | transfers, problems first, then newest. `status` comma-separated. `limit` default 50, max 500 |
 | `GET /api/v1/messages/{id}` | one transfer: timeline, verdict, failure, explorer links |
 | `GET /api/v1/search?q=` | by message id, tx hash (origin or delivery), or account (sender or recipient; hex or `celestia1…`) |
+| `GET /api/v1/upstream` | what `teeism upstream check` found: `checked_at`, `errors` (sources it could not read), `items` (upgrades and releases with `verdict` breaking, maybe, irrelevant or unjudged, `action`, `activates_at`, `acked_at`) |
 | `GET /metrics` | Prometheus: `teeism_notifications_open{severity}`, `teeism_messages{route,status}`, `teeism_ism_height{route}`, `teeism_wallet_balance{chain}`, `teeism_wallet_days_left{chain}`, `teeism_last_sweep_seconds` |
 
 ## Transfer status

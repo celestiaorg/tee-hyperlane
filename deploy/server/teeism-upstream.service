@@ -1,0 +1,13 @@
+[Unit]
+Description=teeism upstream check: upgrades and releases that could break the bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=chef
+WorkingDirectory=/home/chef/tee-ism-nonzk
+Environment=HOME=/home/chef
+Environment=PATH=/home/chef/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/chef/.cargo/bin/teeism upstream check
+TimeoutStartSec=30min

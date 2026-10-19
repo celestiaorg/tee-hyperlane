@@ -23,6 +23,7 @@
 //! | status                          | steps/status.rs               |
 //! | teardown                        | steps/teardown.rs             |
 //! | check-secrets                   | steps/check_secrets.rs        |
+//! | upstream                        | steps/upstream.rs             |
 //!
 //! This file only parses arguments and calls the step. Shared code is under `shared/`.
 
@@ -131,6 +132,37 @@ pub enum Cmd {
         #[arg(long)]
         install_hook: bool,
     },
+    /// Upgrades and releases upstream that could break the bridge, judged against
+    /// deploy/upstream.toml. Shown on the dashboard and posted to Slack.
+    Upstream {
+        #[command(subcommand)]
+        cmd: UpstreamCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum UpstreamCmd {
+    /// Read the schedules, keys and releases, judge what is new, and post what could break us.
+    Check {
+        /// Collect only; leave new releases unjudged for the next check (no OpenAI call).
+        #[arg(long)]
+        no_judge: bool,
+    },
+    /// The open items: breaking or maybe, not acked.
+    List {
+        /// Every item, including irrelevant and acked ones.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Mark an item handled. It leaves the open list and is not posted again.
+    Ack {
+        /// The item's id, or a unique start of it (`teeism upstream list` shows them).
+        id: String,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Run the judge on deploy/upstream-eval.toml, known history with known answers.
+    Eval,
 }
 
 #[derive(Subcommand)]
@@ -401,6 +433,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         } => crate::steps::smoke::run(&ctx, &chains, amount, timeout_mins).await,
         Cmd::Status => crate::steps::status::run(&ctx).await,
         Cmd::Teardown { yes } => crate::steps::teardown::run(&mut ctx, yes).await,
+        Cmd::Upstream { cmd } => match cmd {
+            UpstreamCmd::Check { no_judge } => crate::steps::upstream::check(&ctx, !no_judge).await,
+            UpstreamCmd::List { all } => crate::steps::upstream::list(&ctx, all),
+            UpstreamCmd::Ack { id, note } => crate::steps::upstream::ack(&ctx, &id, note),
+            UpstreamCmd::Eval => crate::steps::upstream::eval(&ctx).await,
+        },
         Cmd::CheckSecrets { staged, install_hook } => {
             if install_hook {
                 crate::steps::check_secrets::install_hook(&ctx)

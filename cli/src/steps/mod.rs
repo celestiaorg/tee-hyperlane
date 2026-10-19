@@ -13,4 +13,5 @@ pub mod smoke;
 pub mod status;
 pub mod teardown;
 pub mod ui;
+pub mod upstream;
 pub mod warp;

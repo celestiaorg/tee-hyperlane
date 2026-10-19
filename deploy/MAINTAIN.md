@@ -149,6 +149,24 @@ Base or Arbitrum waiting more than a few minutes: stuck, see below. `leaves=N` c
 
 Decode a four-letter verifier code: `cast call <ism> "describeQuoteError(bytes)(string)" $(cast from-utf8 TCBR) --rpc-url <rpc>`.
 
+## Upstream changes
+
+`teeism upstream check` runs daily (`teeism-upstream.timer`) and reports upgrades and releases that could break the bridge, ideally before they activate:
+
+- **Schedules and keys, from the chains:** consensus forks in Sepolia's beacon spec, Base Sepolia's upgrade table in `base/base`, ArbOS versions and scheduled upgrades, and the Base and Arbitrum sequencer keys against the ones the enclave pins. A rule decides these.
+- **Releases** of the clients, specs and contracts in `deploy/upstream.toml`, each judged by OpenAI against the manifest there.
+
+`breaking` and `maybe` items show on the dashboard (Upstream tab) and in Slack.
+
+```sh
+teeism upstream list                     # what is open
+teeism upstream ack <id> --note "..."    # handled: leaves the open list, not posted again
+teeism upstream check                    # run now; --no-judge collects without calling OpenAI
+teeism upstream eval                     # the judge on known history; after changing the manifest or OPENAI_MODEL
+```
+
+When the stack changes (a fork the enclave now handles, a new chain, a new pinned key), update `deploy/upstream.toml`: a supported fork goes in its list so it is no longer reported.
+
 ## Slack
 
 Set `SLACK_BOT_TOKEN` and `SLACK_CHANNEL` (and `EXPLORER_URL` for links) in `devnet/.env`, then `teeism services restart`. **No status post for over 30 minutes means the relayer is down.**

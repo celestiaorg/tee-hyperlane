@@ -16,6 +16,9 @@ use crate::shared::settings::Ctx;
 use crate::shared::shell::Cmd;
 
 pub const UNITS: [&str; 2] = ["teeism-relayer", "teeism-gas-oracle"];
+/// `teeism upstream check`, once a day. A oneshot service and the timer that starts it; never
+/// restarted with the others, since it is not a long-running process.
+pub const UPSTREAM_UNITS: [&str; 2] = ["teeism-upstream.service", "teeism-upstream.timer"];
 
 fn sudo(what: &str, args: &[&str]) -> Result<()> {
     Cmd::new(what, "sudo").args(args).run()
@@ -37,10 +40,28 @@ pub async fn install(ctx: &Ctx) -> Result<()> {
             ],
         )?;
     }
+    for unit in UPSTREAM_UNITS {
+        let src = ctx.repo.join(format!("deploy/server/{unit}"));
+        if !src.is_file() {
+            bail!("no unit file at {}", src.display());
+        }
+        sudo(
+            &format!("installing {unit}"),
+            &[
+                "cp",
+                &src.to_string_lossy(),
+                &format!("/etc/systemd/system/{unit}"),
+            ],
+        )?;
+    }
     sudo("reloading systemd", &["systemctl", "daemon-reload"])?;
     let mut args = vec!["systemctl", "enable", "--now"];
     args.extend(UNITS);
     sudo("enabling and starting the services", &args)?;
+    sudo(
+        "enabling the daily upstream check",
+        &["systemctl", "enable", "--now", "teeism-upstream.timer"],
+    )?;
     restart(ctx).await
 }
 
@@ -128,6 +149,12 @@ pub fn coprocessor_toml(ctx: &Ctx, d: &Deployment) -> Result<String> {
     writeln!(w, "tick_secs = {}", ctx.var_or("TICK_SECS", "2"))?;
     writeln!(w, "proof_dir = \"{}\"", ctx.state_dir.join("proofs").display())?;
     writeln!(w, "api_listen = \"{}\"", ctx.var_or("API_LISTEN", "0.0.0.0:3001"))?;
+    // What `teeism upstream check` found, for the dashboard.
+    writeln!(
+        w,
+        "upstream_file = \"{}\"",
+        ctx.state_dir.join("upstream.json").display()
+    )?;
 
     // The faucet pays from `user`, which holds the TIA and the teeUSD supply. Each grant stops
     // once the key would fall below its floor, so the account keeps a reserve.

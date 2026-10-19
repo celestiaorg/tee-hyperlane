@@ -74,6 +74,9 @@ th.num { text-align: right; }
 .s-idle, .s-waiting, .s-heartbeat { background: var(--line); color: var(--muted); }
 .s-attesting, .s-submitting, .s-batch { background: var(--info-bg); color: var(--info); }
 .s-advanced { background: var(--ok-bg); color: var(--ok); }
+.s-breaking { background: var(--bad-bg); color: var(--bad); }
+.s-maybe { background: var(--warn-bg); color: var(--warn); }
+.s-irrelevant, .s-unjudged, .s-acked { background: var(--line); color: var(--muted); }
 /* Live: things that are happening move, and nothing else does. */
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor;
   margin-right: 6px; vertical-align: 1px; }
@@ -144,6 +147,7 @@ pre { margin: 0; padding: 12px 14px; background: var(--code); overflow-x: auto; 
     <nav class="nav">
       <a href="#/" id="nav-chains">Chains</a>
       <a href="#/transfers" id="nav-transfers">Transfers</a>
+      <a href="#/upstream" id="nav-upstream">Upstream</a>
     </nav>
     <span class="spacer"></span>
     <span class="live" id="live"><span class="live-dot"></span>Live</span>
@@ -572,6 +576,50 @@ async function chainView(name) {
   </dl></div>` : ""}`;
 }
 
+// ---------------------------------------------------------------- upstream
+
+// What `teeism upstream check` found: upgrades and releases upstream that could break the
+// bridge. Handled items are acked with `teeism upstream ack <id>` on the host.
+function upstreamRow(i) {
+  const time = i.activates_at ? `activates ${when(i.activates_at)}` : esc(i.activation || "");
+  return `<div class="note">
+    <div>${pill(i.acked_at ? "acked" : i.verdict)}</div>
+    <div class="body">
+      ${i.url ? `<a class="title" href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a>` : `<span class="title">${esc(i.title)}</span>`}
+      ${i.summary && i.summary !== i.title ? `<div class="detail">${esc(i.summary)}</div>` : ""}
+      ${i.action ? `<div class="detail"><b>Action:</b> ${esc(i.action)}</div>` : ""}
+      ${i.quote ? `<div class="detail muted">"${esc(i.quote)}"</div>` : ""}
+      ${i.reasoning ? `<details><summary class="sub">why</summary><div class="detail">${esc(i.reasoning)}</div></details>` : ""}
+      <div class="sub">${esc(i.chain)}, ${esc(i.component || "")}${i.judged_by ? `, judged by ${esc(i.judged_by)}` : ""}${i.note ? `, note: ${esc(i.note)}` : ""}. Ack: <code>teeism upstream ack ${esc(i.id)}</code></div>
+    </div>
+    <div class="when">${time}</div></div>`;
+}
+
+async function upstreamView() {
+  const u = await get("/upstream");
+  if (!u.configured) return `<h2>Upstream changes</h2><div class="panel empty">Not set up on this host: run <code>teeism services install</code>, then <code>teeism upstream check</code>.</div>`;
+  const items = u.items || [];
+  const rank = { breaking: 0, maybe: 1, unjudged: 2, irrelevant: 3 };
+  const open = items.filter((i) => !i.acked_at && (i.verdict === "breaking" || i.verdict === "maybe"))
+    .sort((a, b) => (rank[a.verdict] - rank[b.verdict]) || ((a.activates_at || 9e15) - (b.activates_at || 9e15)));
+  const acked = items.filter((i) => i.acked_at);
+  const quiet = items.filter((i) => !i.acked_at && !(i.verdict === "breaking" || i.verdict === "maybe"));
+  const breaking = open.filter((i) => i.verdict === "breaking").length;
+  const head = !u.checked_at ? `<div class="banner warn">Never checked. Run <code>teeism upstream check</code> on the host.</div>`
+    : breaking ? `<div class="banner bad">${breaking} upstream change${breaking === 1 ? "" : "s"} will break the bridge unless handled.</div>`
+    : open.length ? `<div class="banner warn">${open.length} upstream change${open.length === 1 ? "" : "s"} to look at.</div>`
+    : `<div class="banner ok">Nothing upstream threatens the bridge.</div>`;
+  const errors = (u.errors || []).length ? `<div class="banner warn">The last check could not read: ${(u.errors || []).map(esc).join("; ")}</div>` : "";
+  return `${head}${errors}
+    <p class="sub">Last checked ${when(u.checked_at)}. Checked daily against deploy/upstream.toml.</p>
+    <h2>Open (${open.length})</h2>
+    ${open.length ? `<div class="panel">${open.map(upstreamRow).join("")}</div>` : `<div class="panel empty">Nothing open.</div>`}
+    <h2>Acked (${acked.length})</h2>
+    ${acked.length ? `<div class="panel"><details><summary class="pad">show</summary>${acked.map(upstreamRow).join("")}</details></div>` : `<div class="panel empty">None.</div>`}
+    <h2>Judged irrelevant or waiting (${quiet.length})</h2>
+    ${quiet.length ? `<div class="panel"><details><summary class="pad">show</summary>${quiet.map(upstreamRow).join("")}</details></div>` : `<div class="panel empty">None.</div>`}`;
+}
+
 // ---------------------------------------------------------------- routing
 
 let rendering = false;
@@ -585,8 +633,10 @@ async function route() {
   document.getElementById("toolbar").hidden = !onTransfers;
   document.getElementById("nav-transfers").className = onTransfers ? "on" : "";
   document.getElementById("nav-chains").className = !kind ? "on" : "";
+  document.getElementById("nav-upstream").className = kind === "upstream" ? "on" : "";
   try {
     const html = kind === "inbox" ? await inboxView()
+      : kind === "upstream" ? await upstreamView()
       : kind === "message" ? await messageView(arg)
       : kind === "route" ? await routeView(arg)
       : kind === "chain" ? await chainView(arg)

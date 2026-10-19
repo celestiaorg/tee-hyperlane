@@ -1,0 +1,154 @@
+# What `teeism upstream check` watches for changes that could break this bridge, and what the
+# bridge supports today. Edit this file when the stack changes: a new chain, a fork the
+# enclave now handles, a new pinned key.
+
+# A release first seen this many days after it was published is skipped, so the first run
+# does not judge a year of history.
+since_days = 45
+
+# ---------------------------------------------------------------- scheduled upgrades
+#
+# Read from the chains themselves. An upgrade named here is one the stack has been checked
+# against; any other is reported, with its activation time when one is set.
+
+# Consensus forks, as `<NAME>_FORK_EPOCH` in the Sepolia beacon spec (SEPOLIA_BEACON).
+ethereum_forks = ["altair", "bellatrix", "capella", "deneb", "electra", "fulu", "gloas"]
+
+# Base's own upgrade line, from `const SEPOLIA` in base/base crates/common/chains/src/config.rs.
+base_config_url = "https://raw.githubusercontent.com/base/base/main/crates/common/chains/src/config.rs"
+base_upgrades = [
+  "regolith", "canyon", "delta", "ecotone", "fjord", "granite", "holocene",
+  "pectra_blob_schedule", "isthmus", "jovian", "azul", "beryl", "cobalt",
+]
+
+# ArbOS versions (ArbSys.arbOSVersion() minus 55), and any upgrade ArbOwnerPublic schedules.
+arbos_versions = [61]
+
+# The sequencer keys are read from the enclave's own source, so they never drift from what
+# the image pins:
+#   Base:     tee-node/src/chains/l2/base.rs `SEQUENCER`, against SystemConfig.unsafeBlockSigner()
+#   Arbitrum: tee-node/src/chains/l2/arbitrum.rs `SEQUENCER`, against SequencerInbox.isSequencer()
+base_system_config = "0xf272670eb55e895584501d564AfEB048bEd26194"
+arbitrum_sequencer_inbox = "0x6c97864CE4bEf387dE0b3310A44230f7E3F1be0D"
+
+# ---------------------------------------------------------------- releases
+#
+# GitHub releases, each judged against `manifest` below. `tag_prefix` keeps one package of a
+# monorepo. GITHUB_TOKEN in devnet/.env raises GitHub's limit; without it 60 requests an hour.
+
+[[releases]]
+repo = "ethereum/consensus-specs"
+chain = "ethereum"
+
+[[releases]]
+repo = "ChainSafe/lodestar"
+chain = "ethereum"
+
+[[releases]]
+repo = "paradigmxyz/reth"
+chain = "ethereum"
+
+[[releases]]
+repo = "a16z/helios"
+chain = "ethereum"
+
+[[releases]]
+repo = "base/base"
+chain = "base"
+
+[[releases]]
+repo = "OffchainLabs/nitro"
+chain = "arbitrum"
+
+[[releases]]
+repo = "evstack/ev-node"
+chain = "eden"
+
+[[releases]]
+repo = "celestiaorg/celestia-app"
+chain = "celestia"
+
+[[releases]]
+repo = "celestiaorg/celestia-node"
+chain = "celestia"
+
+[[releases]]
+repo = "Dstack-TEE/dstack"
+chain = "enclave"
+
+[[releases]]
+repo = "automata-network/automata-dcap-attestation"
+chain = "intel"
+
+[[releases]]
+repo = "hyperlane-xyz/hyperlane-monorepo"
+chain = "hyperlane"
+tag_prefix = "@hyperlane-xyz/core@"
+
+# ---------------------------------------------------------------- what we depend on
+#
+# Given to the judge with every release. Precise beats complete: name the exact formats, keys
+# and APIs a change would have to touch to break us.
+
+[manifest]
+text = """
+A Hyperlane bridge between our own Celestia chain and Ethereum Sepolia, Base Sepolia, Arbitrum
+Sepolia and Eden testnet. Each message is authorised by a light client or sequencer-signature
+check running in an Intel TDX enclave on Phala Cloud (dstack), and the destination verifies the
+enclave's TDX quote. No ZK.
+
+Ethereum Sepolia (origin):
+- Our own beacon light client (vendored helios consensus-core, with Gloas changes). It follows
+  sync-committee updates from a Lodestar beacon node's light-client API and needs every
+  consensus fork version and its light-client data format. Any new consensus fork breaks it
+  until the code knows the fork.
+- From Gloas on, the relayer sends the execution header RLP and the enclave checks its keccak
+  against the light client's block hash. New or reordered execution header fields break this.
+- Reads the Hyperlane MerkleTreeHook's storage with eth_getProof (account and storage proofs,
+  MPT format).
+
+Base Sepolia (origin):
+- Blocks gossiped by the sequencer on OP Stack libp2p gossipsub, blocks topics v3 and v4. The
+  enclave reads the SSZ ExecutionPayload at fixed offsets (state root, number, timestamp,
+  extra-data offset, block hash), requires a v3 or v4 layout, and checks the sequencer's
+  signature: keccak(domain 0 || chain id || keccak(envelope)), signed by the unsafeBlockSigner
+  pinned in the image.
+- A new gossip topic or payload version, a changed envelope or signing scheme, or a new signer
+  breaks it. eth_getProof on the MerkleTreeHook at the signed block.
+
+Arbitrum Sepolia (origin):
+- Sequencer feed websocket (wss://sepolia-rollup.arbitrum.io/feed). Each message's signatureV2
+  covers the block hash, signed by the sequencer key pinned in the image. A changed feed message
+  format, signature scheme or key breaks it. eth_getProof on the MerkleTreeHook.
+
+Eden (origin):
+- An Evolve (ev-node / ev-reth) rollup posting its signed headers to Celestia mocha under a
+  fixed namespace. The enclave verifies the Celestia block (light client), the blob inclusion,
+  the header's ed25519 sequencer signature (key pinned in the image) and reads its state root.
+  A changed header or blob format, namespace, signature or key breaks it. Eden runs the Osaka
+  EVM; our verifier contracts there need the P-256 precompile.
+- Reads Celestia mocha through a celestia-node light node (DA API: blobs, namespace data,
+  header sync).
+
+Celestia (our own chain, celestia-app jonas/tee-ism branch, module x/teeism):
+- Origin for the EVM routes: Tendermint light client headers, ICS-23 store proofs of the
+  Hyperlane hook. Destination: x/teeism verifies TDX quotes with go-tdx-guest, quote v4 and v5,
+  Intel collateral shipped with each attestation.
+
+Enclave (Phala Cloud, dstack):
+- Runs on dstack 0.5.x OS images. The enclave identity includes mr_td, os_image_hash,
+  compose_hash, mr_kms (from the event log) and key_provider. dstack 0.6 drops the mr-kms event
+  and breaks the identity. Retiring 0.5 images would stop new deployments.
+
+Intel / Automata (EVM destinations):
+- Our own Automata on-chain PCCS and DCAP verifier (entrypoint, PCCS router, V4/V5 quote
+  verifiers, versioned DAOs per TCB evaluation number). Changes to quote versions, collateral
+  formats (PCS API v4, TCB info and QE identity JSON), the root CA or signing algorithms need
+  new contracts. TCB evaluation numbers need a DAO pair each (handled by our CLI).
+
+Hyperlane:
+- Canonical Mailbox and MerkleTreeHook on Sepolia, Base Sepolia and Arbitrum Sepolia; our own
+  on Eden. HypERC20 warp routers. Our ISM implements IInterchainSecurityModule
+  (moduleType, verify). A change to the message format, the tree hook or these interfaces
+  breaks us.
+"""

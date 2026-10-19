@@ -1,0 +1,110 @@
+# Known history with known answers, for `teeism upstream eval`. Run it after changing the
+# manifest, the prompt or OPENAI_MODEL, before trusting the judge with the real feed.
+# `relevant` passes on breaking or maybe; `irrelevant` only on irrelevant.
+
+[[case]]
+title = "ethereum/consensus-specs v1.6.0: Gloas"
+chain = "ethereum"
+expect = "relevant"
+text = """
+Gloas introduces enshrined proposer-builder separation (EIP-7732). The beacon block body no
+longer carries the execution payload; it carries a signed execution payload bid, and the
+payload is revealed in a separate envelope. LightClientHeader changes accordingly: the
+execution header is no longer part of the light-client header from Gloas on. New fork
+version GLOAS_FORK_VERSION. Scheduled for Sepolia at epoch 353024.
+"""
+
+[[case]]
+title = "ethereum/execution-specs: Amsterdam header fields"
+chain = "ethereum"
+expect = "relevant"
+text = """
+Amsterdam adds EIP-7928 block-level access lists. The execution block header gains a new
+field, block_access_list_hash, appended after requests_hash. Clients must include it when
+encoding and hashing headers from the fork on.
+"""
+
+[[case]]
+title = "Dstack-TEE/dstack dstack OS v0.6.0"
+chain = "enclave"
+expect = "relevant"
+text = """
+The KMS is now measured into RTMR3 through the app's key provider info only; the separate
+mr-kms event is no longer emitted to the event log. Verifiers that read mr-kms from the event
+log must use the key provider instead. The Phala Cloud default OS image moves to 0.6.
+"""
+
+[[case]]
+title = "base/base v1.6.0: Everest"
+chain = "base"
+expect = "relevant"
+text = """
+Everest introduces execution payload v5 with the block access list hash and moves block gossip
+to a new topic, /optimism/84532/4/blocks is retired in favour of /base/84532/5/blocks. The
+signature domain is unchanged. Activation on Base Sepolia to be announced.
+"""
+
+[[case]]
+title = "OffchainLabs/nitro v3.13.0: feed protocol v2"
+chain = "arbitrum"
+expect = "relevant"
+text = """
+The sequencer feed moves to message version 2. signatureV2 is replaced by a signature over the
+message's batch item hash rather than the block hash. Feed clients older than v3.13 cannot
+verify messages after the switch on Arbitrum Sepolia on 2026-11-04.
+"""
+
+[[case]]
+title = "celestiaorg/celestia-node v0.35.0-mocha: blob API"
+chain = "celestia"
+expect = "relevant"
+text = """
+Breaking: the share.GetNamespaceData endpoint is removed in favour of share.GetNamespaceRows,
+which returns rows without inclusion proofs. Light nodes no longer serve proofs for namespace
+data. Mocha upgrades on 2026-11-10.
+"""
+
+[[case]]
+title = "automata-network/automata-dcap-attestation v1.3.0: PCS API v5"
+chain = "intel"
+expect = "relevant"
+text = """
+Adds support for Intel PCS API v5 collateral: TCB info v4 JSON with new tcbLevels fields, and
+quote v6. The v4 collateral DAOs are deprecated and will not accept v5 collateral.
+"""
+
+[[case]]
+title = "paradigmxyz/reth v2.7.1"
+chain = "ethereum"
+expect = "irrelevant"
+text = """
+Performance: parallel sparse trie for state root computation, 15% faster block import. New
+metrics for the transaction pool. CLI: --db.max-size now accepts units.
+"""
+
+[[case]]
+title = "ChainSafe/lodestar v1.50.1"
+chain = "ethereum"
+expect = "irrelevant"
+text = """
+Fix Grafana dashboard panels for peer scoring. Reduce log noise from the discv5 module.
+Dependency updates.
+"""
+
+[[case]]
+title = "celestiaorg/celestia-node v0.34.4-corto"
+chain = "celestia"
+expect = "irrelevant"
+text = """
+Bootstrapper and genesis configuration for the corto test network. No changes for mocha or
+mainnet.
+"""
+
+[[case]]
+title = "hyperlane-xyz/hyperlane-monorepo @hyperlane-xyz/core@12.2.1"
+chain = "hyperlane"
+expect = "irrelevant"
+text = """
+Patch release: NatSpec comments for the TokenRouter, and a deploy script for a new testnet.
+No contract bytecode changes.
+"""

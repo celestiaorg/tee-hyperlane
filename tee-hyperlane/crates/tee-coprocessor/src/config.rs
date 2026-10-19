@@ -32,6 +32,9 @@ pub struct Config {
     /// progress.
     #[serde(default = "default_track")]
     pub track_secs: u64,
+    /// What `teeism upstream check` found, served to the dashboard. Off when absent.
+    #[serde(default)]
+    pub upstream_file: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]

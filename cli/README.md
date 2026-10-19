@@ -18,6 +18,7 @@ src/
     isms.rs          both kinds of ISM
     warp.rs  eden.rs  services.rs  build.rs  preflight.rs  ui.rs  smoke.rs  status.rs
     teardown.rs  check_secrets.rs
+    upstream.rs      upgrades and releases upstream that could break us (deploy/upstream.toml)
   shared/            what at least three steps use; skip it on a first read
     record.rs        devnet/.state/deployment.json: every id a step created
     settings.rs      devnet/.env, and where everything lives

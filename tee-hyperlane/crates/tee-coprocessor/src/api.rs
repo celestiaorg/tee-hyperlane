@@ -25,6 +25,7 @@ const RECENT_BATCHES: usize = 10;
 #[derive(Clone)]
 pub struct Api {
     proof_dir: Arc<PathBuf>,
+    upstream_file: Option<Arc<PathBuf>>,
     routes: Arc<Vec<RouteView>>,
     faucet: Option<Arc<Faucet>>,
 }
@@ -73,6 +74,10 @@ impl Api {
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             proof_dir: Arc::new(config.proof_dir()),
+            upstream_file: config
+                .upstream_file
+                .as_ref()
+                .map(|f| Arc::new(PathBuf::from(f))),
             routes: Arc::new(routes),
             faucet: Faucet::new(config)?.map(Arc::new),
         })
@@ -151,6 +156,7 @@ pub async fn serve(api: Api, tracker: Arc<crate::tracker::Tracker>, listen: &str
         .route("/api/attestation/{message_id}", get(attestation))
         .route("/api/faucet", get(faucet_info).post(faucet_claim))
         .route("/api/faucet/{address}", get(faucet_claimed))
+        .route("/api/v1/upstream", get(upstream))
         .with_state(api);
     let app = Router::new()
         .route(
@@ -163,6 +169,27 @@ pub async fn serve(api: Api, tracker: Arc<crate::tracker::Tracker>, listen: &str
     debug!(listen, "api listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// What `teeism upstream check` found: upgrades and releases that could break the bridge.
+/// Release notes kept for judging are left out; the item links to them.
+async fn upstream(State(api): State<Api>) -> Json<Value> {
+    let Some(path) = api.upstream_file.as_deref() else {
+        return Json(json!({ "configured": false, "items": [], "errors": [] }));
+    };
+    let mut v: Value = std::fs::read(path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .unwrap_or_else(|| json!({ "checked_at": null, "items": [], "errors": [] }));
+    if let Some(items) = v["items"].as_array_mut() {
+        for item in items {
+            if let Some(o) = item.as_object_mut() {
+                o.remove("body");
+            }
+        }
+    }
+    v["configured"] = true.into();
+    Json(v)
 }
 
 async fn status(State(api): State<Api>) -> Json<Vec<Value>> {

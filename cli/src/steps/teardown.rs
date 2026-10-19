@@ -12,7 +12,14 @@ use crate::shared::shell::Cmd;
 use crate::steps::celestia::mocha;
 use crate::steps::enclaves;
 
-const UNITS: [&str; 2] = crate::steps::services::UNITS;
+/// Every unit file `teeism services install` puts in /etc/systemd/system, timers before the
+/// services they start.
+const UNITS: [&str; 4] = [
+    "teeism-upstream.timer",
+    "teeism-upstream.service",
+    "teeism-relayer.service",
+    "teeism-gas-oracle.service",
+];
 const CONTAINERS: [&str; 3] = [
     "teeism-gateway",
     crate::steps::celestia::up::CONTAINER,
@@ -89,7 +96,7 @@ pub async fn run(ctx: &mut Ctx, yes: bool) -> Result<()> {
             .args(["systemctl", "disable", "--now", u])
             .run()?;
         Cmd::new(format!("removing {u}'s unit file"), "sudo")
-            .args(["rm", "-f", &format!("/etc/systemd/system/{u}.service")])
+            .args(["rm", "-f", &format!("/etc/systemd/system/{u}")])
             .run()?;
         print::info(format!("removed {u}"));
     }

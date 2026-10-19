@@ -30,6 +30,8 @@ pub fn check(ctx: &Ctx, staged: bool) -> Result<()> {
     let provider = Regex::new(
         r#"(alchemy|infura|quicknode|blastapi|ankr|zan\.top|drpc|tenderly)\.[a-z.]+/[^" ]*[A-Za-z0-9_-]{24,}"#,
     )?;
+    // OpenAI keys, which no provider host gives away: `sk-`, `sk-proj-`, `sk-svcacct-`.
+    let openai = Regex::new(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}")?;
     let placeholder = Regex::new(r"ALCHEMY_KEY|INFURA_KEY|<[A-Za-z_]+>|YOUR_|KEY_HERE|\$\{|\{k\}|\{key\}")?;
     let hex64 = Regex::new(r"\b(0x)?[0-9a-fA-F]{64}\b")?;
     let key_words = Regex::new(r"(?i)priv|secret|mnemonic|private_key")?;
@@ -50,6 +52,9 @@ pub fn check(ctx: &Ctx, staged: bool) -> Result<()> {
             let at = format!("{f}:{}", n + 1);
             if provider.is_match(line) && !placeholder.is_match(line) {
                 found.push(format!("provider key  {at}"));
+            }
+            if openai.is_match(line) {
+                found.push(format!("openai key    {at}"));
             }
             if key_words.is_match(line) {
                 for m in hex64.find_iter(line) {
