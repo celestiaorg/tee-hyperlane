@@ -6,3 +6,4 @@ pub mod print;
 pub mod record;
 pub mod settings;
 pub mod shell;
+pub mod signer;

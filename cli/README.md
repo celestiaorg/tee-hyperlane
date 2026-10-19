@@ -22,6 +22,7 @@ src/
   shared/            what at least three steps use; skip it on a first read
     record.rs        devnet/.state/deployment.json: every id a step created
     settings.rs      devnet/.env, and where everything lives
+    signer.rs        who signs EVM transactions: the owner (key or Ledger) and the hot key
     chains.rs        the fixed facts about every chain
     evm.rs           sending, deploying and reading EVM contracts; naming reverts
     shell.rs         running external programs

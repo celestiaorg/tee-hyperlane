@@ -14,6 +14,7 @@ use crate::shared::evm::Chain;
 use crate::shared::print;
 use crate::shared::record::{Pccs, VersionedDaos};
 use crate::shared::settings::Ctx;
+use crate::shared::signer::Signer;
 
 fn obj(raw: &str, key: &str) -> Result<JsonObj> {
     let s = signed_object(raw, key)?;
@@ -278,20 +279,7 @@ pub async fn run(ctx: &Ctx, chains: &[String], fmspc: &str, dry_run: bool) -> Re
 /// The relayer's key signs collateral uploads. It needs the uploader role and nothing else, so
 /// a Ledger-owned deployment is still seeded unattended.
 pub async fn seeder(ctx: &Ctx, chain: &'static EvmChain) -> Result<Chain> {
-    let key = ctx.require("EVM_PRIVATE_KEY", "it uploads Intel's collateral")?;
-    let s: alloy::signers::local::PrivateKeySigner = key
-        .trim()
-        .trim_start_matches("0x")
-        .parse()
-        .context("EVM_PRIVATE_KEY is not a valid private key")?;
-    let from = s.address();
-    Chain::with_wallet(
-        chain,
-        chain.rpc(ctx),
-        alloy::network::EthereumWallet::from(s),
-        from,
-    )
-    .await
+    Chain::with_signer(chain, chain.rpc(ctx), Signer::hot_key(ctx)?).await
 }
 
 // ---------------------------------------------------------------- fetching from Intel

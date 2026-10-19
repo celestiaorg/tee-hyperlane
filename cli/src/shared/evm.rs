@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use alloy::network::{EthereumWallet, TransactionBuilder};
+use alloy::network::TransactionBuilder;
 use alloy::primitives::{address, keccak256, Address, Bytes, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
@@ -20,61 +20,10 @@ use anyhow::{bail, Context, Result};
 use crate::shared::chains::EvmChain;
 use crate::shared::print;
 use crate::shared::settings::Ctx;
+use crate::shared::signer::Signer;
 
 /// The deterministic deployment proxy every chain here has: CREATE2 with a caller-chosen salt.
 pub const CREATE2_DEPLOYER: Address = address!("4e59b44847b379578588920cA78FbF26c0B4956C");
-
-/// Who signs EVM owner transactions: EVM_PRIVATE_KEY, or a Ledger with EVM_SIGNER=ledger.
-pub async fn signer(ctx: &Ctx) -> Result<(EthereumWallet, Address)> {
-    match ctx.var_or("EVM_SIGNER", "key").as_str() {
-        "key" => {
-            let key = ctx.require(
-                "EVM_PRIVATE_KEY",
-                "it signs EVM deployments and owner transactions",
-            )?;
-            let s: alloy::signers::local::PrivateKeySigner = key
-                .trim()
-                .trim_start_matches("0x")
-                .parse()
-                .context("EVM_PRIVATE_KEY is not a valid secp256k1 private key")?;
-            let addr = s.address();
-            Ok((EthereumWallet::from(s), addr))
-        }
-        "ledger" => ledger(ctx).await,
-        other => bail!("EVM_SIGNER must be `key` or `ledger`, not `{other}`"),
-    }
-}
-
-#[cfg(feature = "ledger")]
-async fn ledger(ctx: &Ctx) -> Result<(EthereumWallet, Address)> {
-    use alloy::signers::ledger::{HDPath, LedgerSigner};
-    use alloy::signers::Signer;
-    let path = match ctx.var("EVM_LEDGER_PATH") {
-        Some(p) => HDPath::Other(p),
-        None => HDPath::LedgerLive(0),
-    };
-    let s = LedgerSigner::new(path, None).await.context(
-        "could not open the Ledger; is it unlocked, with the Ethereum app open and blind signing on?",
-    )?;
-    let addr = s.address();
-    Ok((EthereumWallet::from(s), addr))
-}
-
-#[cfg(not(feature = "ledger"))]
-async fn ledger(_ctx: &Ctx) -> Result<(EthereumWallet, Address)> {
-    bail!("EVM_SIGNER=ledger needs a build with Ledger support: cargo install --locked --path cli --features ledger")
-}
-
-/// The address EVM_PRIVATE_KEY controls: the relayer, and the account that seeds collateral.
-pub fn relayer_key_address(ctx: &Ctx) -> Result<Address> {
-    let key = ctx.require("EVM_PRIVATE_KEY", "the relayer's EVM key")?;
-    let s: alloy::signers::local::PrivateKeySigner = key
-        .trim()
-        .trim_start_matches("0x")
-        .parse()
-        .context("EVM_PRIVATE_KEY is not a valid private key")?;
-    Ok(s.address())
-}
 
 /// A read-only connection.
 pub fn reader(rpc: &str) -> Result<DynProvider> {
@@ -92,19 +41,18 @@ pub struct Chain {
 }
 
 impl Chain {
+    /// Signed by the contracts' owner (`Signer::owner`).
     pub async fn connect(ctx: &Ctx, chain: &'static EvmChain) -> Result<Self> {
-        let (wallet, from) = signer(ctx).await?;
-        Self::with_wallet(chain, chain.rpc(ctx), wallet, from).await
+        Self::with_signer(chain, chain.rpc(ctx), Signer::owner(ctx).await?).await
     }
 
-    pub async fn with_wallet(
-        chain: &'static EvmChain,
-        rpc: String,
-        wallet: EthereumWallet,
-        from: Address,
-    ) -> Result<Self> {
+    pub async fn with_signer(chain: &'static EvmChain, rpc: String, signer: Signer) -> Result<Self> {
+        let from = signer.address();
         let url = rpc.parse().with_context(|| format!("`{rpc}` is not a URL"))?;
-        let p = ProviderBuilder::new().wallet(wallet).connect_http(url).erased();
+        let p = ProviderBuilder::new()
+            .wallet(signer.into_wallet())
+            .connect_http(url)
+            .erased();
         let id = p
             .get_chain_id()
             .await

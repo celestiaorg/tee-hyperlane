@@ -10,6 +10,7 @@ use crate::shared::evm::{self, fmt_eth};
 use crate::shared::print;
 use crate::shared::settings::Ctx;
 use crate::shared::shell::{on_path, Cmd};
+use crate::shared::signer::Signer;
 use crate::steps::{build, pccs};
 
 pub async fn run(ctx: &Ctx) -> Result<()> {
@@ -64,16 +65,24 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
     }
 
     print::step("settings");
-    let signer = evm::signer(ctx).await;
-    match &signer {
-        Ok((_, a)) => check(true, format!("EVM signer {a}"), ""),
-        Err(e) => check(false, "EVM signer".into(), &format!("{e:#}")),
+    let owner = match Signer::owner(ctx).await {
+        Ok(s) => {
+            check(true, format!("EVM owner {}", s.address()), "");
+            Some(s.address())
+        }
+        Err(e) => {
+            check(false, "EVM owner".into(), &format!("{e:#}"));
+            None
+        }
+    };
+    match Signer::hot_key(ctx) {
+        Ok(s) => check(
+            true,
+            format!("EVM hot key {} (relayer, collateral seeding)", s.address()),
+            "",
+        ),
+        Err(e) => check(false, "EVM hot key".into(), &format!("{e:#}")),
     }
-    check(
-        ctx.var("EVM_PRIVATE_KEY").is_some(),
-        "EVM_PRIVATE_KEY (relayer, collateral seeding)".into(),
-        "set it in devnet/.env",
-    );
     check(
         ctx.var("ALCHEMY_KEY").is_some()
             || ctx.var("ALCHEMY_BASE_KEY").is_some()
@@ -91,7 +100,7 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
     );
 
     print::step("chains");
-    if let Ok((_, from)) = &signer {
+    if let Some(from) = &owner {
         for chain in &EVM_CHAINS {
             let rpc = chain.rpc(ctx);
             let res = async {

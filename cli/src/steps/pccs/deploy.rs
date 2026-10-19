@@ -15,9 +15,10 @@ use super::{
     ca, dcap_dir, pccs_dir, seed, ICrlHelperV2, IDependencyConfig, IEntrypoint, IRoles, IRouter, IStorage,
     IVersioned, ATTESTER_ROLE,
 };
-use crate::shared::evm::{self, salt, Artifact, Chain};
+use crate::shared::evm::{salt, Artifact, Chain};
 use crate::shared::record::{Pccs, VersionedDaos};
 use crate::shared::settings::Ctx;
+use crate::shared::signer::Signer;
 use crate::shared::{chains, print};
 use crate::steps::pccs::seed::{evals_to_deploy, Intel};
 
@@ -532,7 +533,7 @@ pub async fn run(ctx: &Ctx, chains: &[String], namespace: Option<String>, fmspc:
             chain.label
         ));
         let c = Chain::connect(ctx, chain).await?;
-        let p = deploy(ctx, &c, &ns, &evals, evm::relayer_key_address(ctx)?).await?;
+        let p = deploy(ctx, &c, &ns, &evals, Signer::hot_key(ctx)?.address()).await?;
         d.evm_mut(chain.name).pccs = Some(p.clone());
         ctx.save(&d)?;
         print::step(format!("seeding {}", chain.label));
@@ -556,7 +557,7 @@ pub async fn tcb_eval(ctx: &Ctx, chains: &[String], number: u32, fmspc: &str) ->
         let mut p = super::pccs_for(&d, chain)?.clone();
         print::step(format!("evaluation {number} on {}", chain.label));
         let c = Chain::connect(ctx, chain).await?;
-        add_eval(ctx, &c, &mut p, number, evm::relayer_key_address(ctx)?).await?;
+        add_eval(ctx, &c, &mut p, number, Signer::hot_key(ctx)?.address()).await?;
         d.evm_mut(chain.name).pccs = Some(p.clone());
         ctx.save(&d)?;
         seed::publish(&seed::seeder(ctx, chain).await?, &p, fmspc, false).await?;
