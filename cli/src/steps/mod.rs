@@ -3,9 +3,9 @@
 pub mod build;
 pub mod celestia;
 pub mod check_secrets;
-pub mod eden;
 pub mod enclaves;
 pub mod isms;
+pub mod mailbox;
 pub mod pccs;
 pub mod preflight;
 pub mod services;

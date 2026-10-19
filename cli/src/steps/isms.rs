@@ -119,7 +119,7 @@ pub fn mailbox_of(d: &crate::shared::record::Deployment, chain: &EvmChain) -> Re
         None => d
             .evm(chain.name)
             .and_then(|e| e.mailbox)
-            .with_context(|| format!("{} has no mailbox yet; run `teeism eden core`", chain.label)),
+            .with_context(|| format!("{} has no mailbox yet; run `teeism mailbox`", chain.label)),
     }
 }
 
@@ -128,7 +128,7 @@ pub fn merkle_hook_of(d: &crate::shared::record::Deployment, chain: &EvmChain) -
         Some(h) => Ok(h.merkle_hook),
         None => d.evm(chain.name).and_then(|e| e.merkle_hook).with_context(|| {
             format!(
-                "{} has no merkle tree hook yet; run `teeism eden core`",
+                "{} has no merkle tree hook yet; run `teeism mailbox`",
                 chain.label
             )
         }),

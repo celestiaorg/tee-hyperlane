@@ -123,10 +123,10 @@ teeism pccs status
 
 ## 9. ISMs
 
-`cli/src/steps/eden.rs`, `cli/src/steps/isms.rs`.
+`cli/src/steps/mailbox.rs`, `cli/src/steps/isms.rs`.
 
 ```sh
-teeism eden core          # Mailbox and MerkleTreeHook on Eden, which has no canonical Hyperlane
+teeism mailbox            # Mailbox and MerkleTreeHook on EVM chains without a canonical Hyperlane (Eden)
 teeism isms evm           # a TeeDcapIsm per EVM chain, pinning the Celestia enclave; initializes Eden's mailbox
 teeism isms celestia      # an x/teeism ISM per EVM origin, the routing ISM, tokens and mailbox pointed at it
 ```

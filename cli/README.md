@@ -16,7 +16,7 @@ src/
     enclaves/        images.rs, up.rs (CVMs, identities), verify.rs, quote.rs (reading a quote)
     pccs/            deploy.rs, seed.rs (and fetching from Intel), status.rs
     isms.rs          both kinds of ISM
-    warp.rs  eden.rs  services.rs  build.rs  preflight.rs  ui.rs  smoke.rs  status.rs
+    warp.rs  mailbox.rs  services.rs  build.rs  preflight.rs  ui.rs  smoke.rs  status.rs
     teardown.rs  check_secrets.rs
     upstream.rs      upgrades and releases upstream that could break us (deploy/upstream.toml)
   shared/            what at least three steps use; skip it on a first read

@@ -40,7 +40,7 @@ pub struct EvmChain {
     /// else `rpc_default`. The same endpoint the relayer delivers through.
     pub rpc_vars: &'static [&'static str],
     pub rpc_default: &'static str,
-    /// None where there is no canonical Hyperlane: we deploy the mailbox (`teeism eden core`).
+    /// None where there is no canonical Hyperlane: we deploy the mailbox (`teeism mailbox`).
     pub canonical: Option<Canonical>,
     /// The enclave that attests this chain as an origin.
     pub enclave: &'static str,

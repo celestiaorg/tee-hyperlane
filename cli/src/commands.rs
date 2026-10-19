@@ -13,7 +13,7 @@
 //! | pccs deploy, tcb-eval           | steps/pccs/deploy.rs          |
 //! | pccs seed                       | steps/pccs/seed.rs            |
 //! | pccs status, check-quote        | steps/pccs/status.rs          |
-//! | eden core                       | steps/eden.rs                 |
+//! | mailbox                         | steps/mailbox.rs              |
 //! | isms evm, isms celestia         | steps/isms.rs                 |
 //! | warp evm                        | steps/warp.rs                 |
 //! | paymaster                       | steps/celestia/paymaster.rs   |
@@ -75,10 +75,10 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: PccsCmd,
     },
-    /// Hyperlane on Eden, which has no canonical deployment.
-    Eden {
-        #[command(subcommand)]
-        cmd: EdenCmd,
+    /// A Mailbox and MerkleTreeHook on each EVM chain Hyperlane has no deployment on (Eden).
+    Mailbox {
+        #[arg(long = "chain")]
+        chains: Vec<String>,
     },
     /// The ISMs that admit attested messages.
     Isms {
@@ -229,12 +229,6 @@ pub enum EnclavesCmd {
         #[arg(long)]
         retired: bool,
     },
-}
-
-#[derive(Subcommand)]
-pub enum EdenCmd {
-    /// Deploy a Mailbox and MerkleTreeHook on Eden.
-    Core,
 }
 
 #[derive(Subcommand)]
@@ -410,7 +404,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 enclave,
             } => pccs::status::check_quote_cmd(&ctx, &chains, quote, enclave).await,
         },
-        Cmd::Eden { cmd: EdenCmd::Core } => crate::steps::eden::core(&ctx).await,
+        Cmd::Mailbox { chains } => crate::steps::mailbox::run(&ctx, &chains).await,
         Cmd::Isms { cmd } => match cmd {
             IsmsCmd::Evm { chains } => crate::steps::isms::evm(&ctx, &chains).await,
             IsmsCmd::Celestia { chains } => crate::steps::isms::celestia(&ctx, &chains).await,
