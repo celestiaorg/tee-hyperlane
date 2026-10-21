@@ -24,6 +24,7 @@ sol! {
         function enrollRemoteRouter(uint32 _domain, bytes32 _router) external;
         function routers(uint32 _domain) external view returns (bytes32);
         function interchainSecurityModule() external view returns (address);
+        function mailbox() external view returns (address);
         function setInterchainSecurityModule(address _module) external;
         function owner() external view returns (address);
         function symbol() external view returns (string memory);
@@ -95,7 +96,7 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
             let recorded = *router_slot(d.evm_mut(chain.name), asset.symbol);
             let router = match recorded {
                 Some(r) if c.has_code(r).await? => {
-                    reuse(&c, r, ism, asset.symbol).await?;
+                    reuse(&c, r, mailbox, ism, asset.symbol).await?;
                     r
                 }
                 Some(r) => {
@@ -194,8 +195,21 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
 
 /// A live router: point it at the current ISM if it has drifted. A router's ISM is the
 /// owner's to change, so a rotation repoints rather than redeploys.
-async fn reuse(c: &Chain, router: Address, ism: Address, symbol: &str) -> Result<()> {
+async fn reuse(c: &Chain, router: Address, mailbox: Address, ism: Address, symbol: &str) -> Result<()> {
     let r = IRouter::new(router, &c.p);
+    // A router's mailbox is fixed in it. One on another run's mailbox belongs to that run.
+    let wired = r
+        .mailbox()
+        .call()
+        .await
+        .with_context(|| format!("reading {router}'s mailbox"))?;
+    if wired != mailbox {
+        bail!(
+            "the recorded {symbol} router {router} uses mailbox {wired}, but this deployment uses {mailbox}: \
+             it belongs to an earlier deployment. Start over with `teeism teardown`; never point a new \
+             deployment at it"
+        );
+    }
     let cur = r
         .interchainSecurityModule()
         .call()

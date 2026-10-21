@@ -34,6 +34,8 @@ sol! {
         function state() external view returns (bytes memory);
         function owner() external view returns (address);
         function VERSION() external view returns (uint8);
+        function mailbox() external view returns (address);
+        function merkleTreeAddress() external view returns (bytes32);
         function setEnclave(bytes32 _enclaveMeasurements, bytes32 _identityDigest) external;
         function transferOwnership(address newOwner) external;
     }
@@ -42,6 +44,7 @@ sol! {
     interface IMailbox {
         function initialize(address _owner, address _defaultIsm, address _defaultHook, address _requiredHook) external;
         function defaultIsm() external view returns (address);
+        function setDefaultIsm(address _module) external;
     }
 }
 
@@ -195,8 +198,30 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
                 .call()
                 .await
                 .with_context(|| format!("reading {existing}'s verifier"))?;
+            // The mailbox and the Celestia hook are fixed in the ISM. One built against another
+            // run's is never kept: it would leave this deployment wired to that run.
+            let wired_mailbox = ism
+                .mailbox()
+                .call()
+                .await
+                .with_context(|| format!("reading {existing}'s mailbox"))?;
+            let wired_tree = ism
+                .merkleTreeAddress()
+                .call()
+                .await
+                .with_context(|| format!("reading {existing}'s merkle tree address"))?;
+            if wired_mailbox != mailbox || wired_tree != b32(&hook)? {
+                bail!(
+                    "the recorded ISM {existing} on {} was built for mailbox {wired_mailbox} and Celestia hook {wired_tree}, \
+                     but this deployment uses {mailbox} and {hook}: it belongs to an earlier deployment. \
+                     Remove evm.{}.ism from devnet/.state/deployment.json to deploy a new one, or start over with `teeism teardown`",
+                    chain.label,
+                    chain.name
+                );
+            }
             if cur == measurements && cur_rev == rev && cur_dcap == entry {
                 print::info(format!("{existing} already pins this enclave"));
+                own_mailbox(&c, &d, chain, mailbox, existing).await?;
                 continue;
             }
             if cur_dcap != entry {
@@ -220,6 +245,7 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
                         bail!("{existing} pins {got} after the re-pin, expected {measurements}");
                     }
                     print::ok(format!("{existing} re-pinned"));
+                    own_mailbox(&c, &d, chain, mailbox, existing).await?;
                     continue;
                 }
                 print::warn(format!("{existing} is owned by {owner}, not {}; replacing it (its owner should re-pin it instead)", c.from));
@@ -268,34 +294,59 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
         ctx.save(&d)?;
         print::ok(format!("{ism}"));
 
-        // A mailbox of our own (Eden) takes the first ISM as its default.
-        if chain.canonical.is_none() {
-            let mb = IMailbox::new(mailbox, &c.p);
-            if mb
-                .defaultIsm()
-                .call()
-                .await
-                .with_context(|| format!("reading {mailbox}'s default ISM"))?
-                == Address::ZERO
-            {
-                let hook_addr = d
-                    .evm(chain.name)
-                    .and_then(|e| e.merkle_hook)
-                    .context("no merkle tree hook recorded")?;
-                let data = IMailbox::initializeCall {
-                    _owner: c.from,
-                    _defaultIsm: ism,
-                    _defaultHook: hook_addr,
-                    _requiredHook: hook_addr,
-                }
-                .abi_encode();
-                c.send("initializing the mailbox", mailbox, data.into()).await?;
-                print::info(format!(
-                    "mailbox {mailbox} initialized: default ISM {ism}, hooks {hook_addr}"
-                ));
-            }
-        }
+        own_mailbox(&c, &d, chain, mailbox, ism).await?;
     }
+    Ok(())
+}
+
+/// A mailbox of our own (Eden) takes this ISM as its default: initialized with it the first
+/// time, and pointed at it whenever the ISM changes, so it never keeps an earlier ISM.
+async fn own_mailbox(
+    c: &Chain,
+    d: &crate::shared::record::Deployment,
+    chain: &EvmChain,
+    mailbox: Address,
+    ism: Address,
+) -> Result<()> {
+    if chain.canonical.is_some() {
+        return Ok(());
+    }
+    let mb = IMailbox::new(mailbox, &c.p);
+    let cur = mb
+        .defaultIsm()
+        .call()
+        .await
+        .with_context(|| format!("reading {mailbox}'s default ISM"))?;
+    if cur == ism {
+        return Ok(());
+    }
+    if cur == Address::ZERO {
+        let hook_addr = d
+            .evm(chain.name)
+            .and_then(|e| e.merkle_hook)
+            .context("no merkle tree hook recorded")?;
+        let data = IMailbox::initializeCall {
+            _owner: c.from,
+            _defaultIsm: ism,
+            _defaultHook: hook_addr,
+            _requiredHook: hook_addr,
+        }
+        .abi_encode();
+        c.send("initializing the mailbox", mailbox, data.into()).await?;
+        print::info(format!(
+            "mailbox {mailbox} initialized: default ISM {ism}, hooks {hook_addr}"
+        ));
+    } else {
+        print::info(format!("pointing mailbox {mailbox} at {ism}, not {cur}"));
+        let data = IMailbox::setDefaultIsmCall { _module: ism }.abi_encode();
+        c.send("setting the mailbox's default ISM", mailbox, data.into())
+            .await?;
+    }
+    let after = mb.defaultIsm().call().await?;
+    anyhow::ensure!(
+        after == ism,
+        "{mailbox} reports default ISM {after}, expected {ism}"
+    );
     Ok(())
 }
 
