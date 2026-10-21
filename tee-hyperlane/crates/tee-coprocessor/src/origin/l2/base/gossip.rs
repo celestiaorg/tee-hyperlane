@@ -49,6 +49,10 @@ const DISCOVER_EVERY: Duration = Duration::from_secs(5);
 const REDIAL_AFTER: Duration = Duration::from_secs(60);
 /// Lookups kept running while short of peers. Base nodes are a small share of the network.
 const LOOKUPS: usize = 4;
+/// The sequencer signs a block every two seconds or faster. This long without one means the
+/// mesh is dead even if its connections look open, so the listener restarts with fresh peers
+/// rather than wait on them.
+const GOSSIP_SILENCE: Duration = Duration::from_secs(5 * 60);
 
 /// Start the listener in the background, and return where its blocks land.
 pub fn start(port: u16) -> Arc<Recent<SignedHead>> {
@@ -127,11 +131,17 @@ async fn run(port: u16, recent: &Recent<SignedHead>) -> anyhow::Result<()> {
     let mut lookups: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut received = 0u64;
     let mut seen = 0u64;
+    let mut last_block = Instant::now();
     info!("listening for base blocks on p2p");
     loop {
         tokio::select! {
             _ = discover.tick() => {
                 let peers = swarm.connected_peers().count();
+                anyhow::ensure!(
+                    last_block.elapsed() < GOSSIP_SILENCE,
+                    "no signed base block in {}s from {peers} peers",
+                    last_block.elapsed().as_secs()
+                );
                 lookups.retain(|l| !l.is_finished());
                 if peers < TARGET_PEERS {
                     while lookups.len() < LOOKUPS {
@@ -171,6 +181,7 @@ async fn run(port: u16, recent: &Recent<SignedHead>) -> anyhow::Result<()> {
                                 info!(height = head.height, "first signed base block from p2p");
                             }
                             recent.insert(head.height, head);
+                            last_block = Instant::now();
                             MessageAcceptance::Accept
                         }
                         Err(e) => {

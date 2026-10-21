@@ -149,6 +149,16 @@ fn listen(url: String) -> Arc<Recent<FeedMessage>> {
     recent
 }
 
+/// The feed sends messages every few hundred milliseconds, and pings between them. A socket
+/// quiet for this long is dead, whatever TCP says: Cloudflare once dropped the stream without
+/// a close, and the reader waited on it for fifteen hours.
+const FEED_SILENCE: Duration = Duration::from_secs(60);
+/// A connect that has not completed by then never will.
+const FEED_CONNECT: Duration = Duration::from_secs(30);
+/// How often failed messages are summarised at warn: a feed format change and a dead feed must
+/// not look alike in the log.
+const PARSE_WARN_EVERY: Duration = Duration::from_secs(60);
+
 async fn read_feed(url: &str, recent: &Recent<FeedMessage>) -> Result<()> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let mut request = url.into_client_request()?;
@@ -156,12 +166,36 @@ async fn read_feed(url: &str, recent: &Recent<FeedMessage>) -> Result<()> {
     request
         .headers_mut()
         .insert("Arbitrum-Feed-Client-Version", "2".parse()?);
-    let (mut socket, _) = tokio_tungstenite::connect_async(request)
+    let (socket, _) = tokio::time::timeout(FEED_CONNECT, tokio_tungstenite::connect_async(request))
         .await
+        .map_err(|_| anyhow::anyhow!("no connection within {}s", FEED_CONNECT.as_secs()))?
         .context("connecting to the arbitrum feed")?;
     info!("reading the arbitrum sequencer feed");
-    while let Some(frame) = socket.next().await {
-        let frame = frame?;
+    read_frames(socket, recent, FEED_SILENCE).await
+}
+
+/// Read until the feed closes or goes quiet for `silence`; either way the caller reconnects.
+async fn read_frames<S>(
+    mut socket: S,
+    recent: &Recent<FeedMessage>,
+    silence: Duration,
+) -> Result<()>
+where
+    S: futures::Stream<
+            Item = Result<
+                tokio_tungstenite::tungstenite::Message,
+                tokio_tungstenite::tungstenite::Error,
+            >,
+        > + Unpin,
+{
+    let (mut failed, mut last_error, mut warned) = (0u64, String::new(), Instant::now());
+    loop {
+        let frame = match tokio::time::timeout(silence, socket.next()).await {
+            Ok(Some(frame)) => frame?,
+            Ok(None) => anyhow::bail!("the feed closed"),
+            Err(_) => anyhow::bail!("nothing from the feed in {}s", silence.as_secs()),
+        };
+        // Pings arrive as non-text frames; tungstenite answers them on the next read.
         if !frame.is_text() {
             continue;
         }
@@ -169,11 +203,20 @@ async fn read_feed(url: &str, recent: &Recent<FeedMessage>) -> Result<()> {
         for raw in batch["messages"].as_array().into_iter().flatten() {
             match feed_message(raw) {
                 Ok(m) => recent.insert(m.sequence_number, m),
-                Err(e) => debug!(error = %e, "skipping a feed message"),
+                Err(e) => {
+                    failed += 1;
+                    last_error = format!("{e:#}");
+                }
             }
         }
+        if failed > 0 && warned.elapsed() >= PARSE_WARN_EVERY {
+            warn!(
+                failed,
+                last_error, "arbitrum feed messages that did not parse in the last minute"
+            );
+            (failed, warned) = (0, Instant::now());
+        }
     }
-    anyhow::bail!("the feed closed")
 }
 
 /// A feed message as the enclave's input, if the pinned sequencer signed it.
@@ -226,5 +269,37 @@ mod tests {
         tampered["message"]["delayedMessagesRead"] =
             json!(raw["message"]["delayedMessagesRead"].as_u64().unwrap() + 1);
         assert!(feed_message(&tampered).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_silent_feed_is_dropped() {
+        let silent = futures::stream::pending();
+        let e = read_frames(silent, &Recent::default(), Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("nothing from the feed"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_closed_feed_is_dropped() {
+        let closed = futures::stream::empty();
+        let e = read_frames(closed, &Recent::default(), FEED_SILENCE)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("the feed closed"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn pings_then_silence_is_dropped() {
+        use tokio_tungstenite::tungstenite::Message;
+        let pings = futures::stream::iter(vec![
+            Ok(Message::Ping(vec![1].into())),
+            Ok(Message::Ping(vec![2].into())),
+        ])
+        .chain(futures::stream::pending());
+        let e = read_frames(pings, &Recent::default(), Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("nothing from the feed"), "{e}");
     }
 }
