@@ -136,9 +136,11 @@ Celestia (our own chain, celestia-app jonas/tee-ism branch, module x/teeism):
   Intel collateral shipped with each attestation.
 
 Enclave (Phala Cloud, dstack):
-- Runs on dstack 0.5.x OS images. The enclave identity includes mr_td, os_image_hash,
-  compose_hash, mr_kms (from the event log) and key_provider. dstack 0.6 drops the mr-kms event
-  and breaks the identity. Retiring 0.5 images would stop new deployments.
+- Runs on dstack 0.6.x OS images, guest API v0 (GetQuote, Info over /var/run/dstack.sock). The
+  enclave identity pins mr_td and, from the RTMR3 event log (canonical v2 events), os-image-hash,
+  compose-hash and key-provider. A removed or renamed one of these events, a new event log
+  format, or a change to GetQuote or Info breaks it. A host VMM change (e.g. qemu_hotplug_off)
+  moves RTMR0 and needs a re-pin.
 
 Intel / Automata (EVM destinations):
 - Our own Automata on-chain PCCS and DCAP verifier (entrypoint, PCCS router, V4/V5 quote

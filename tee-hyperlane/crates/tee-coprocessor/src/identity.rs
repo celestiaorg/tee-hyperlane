@@ -7,13 +7,13 @@ use sha2::{Digest, Sha384};
 /// dstack records the application's identity in RTMR 3.
 const APPLICATION_IMR: u32 = 3;
 
-/// The five fields both ISMs pin, as `x/teeism`'s `create` and the ISM scripts read them.
+/// The fields the Celestia ISMs pin, as `x/teeism`'s `create` reads them. The KMS is pinned
+/// through `key_provider`: dstack 0.6 no longer records an `mr-kms` event.
 #[derive(Debug, Serialize)]
 pub struct Identity {
     pub mr_td: String,
     pub os_image_hash: String,
     pub compose_hash: String,
-    pub mr_kms: String,
     pub key_provider: String,
 }
 
@@ -37,7 +37,6 @@ impl Identity {
             mr_td: hex::encode(td.mr_td),
             os_image_hash: field("os-image-hash")?,
             compose_hash: field("compose-hash")?,
-            mr_kms: field("mr-kms")?,
             key_provider: field("key-provider")?,
         })
     }

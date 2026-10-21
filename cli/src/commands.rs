@@ -191,8 +191,8 @@ pub enum EnclavesCmd {
     Up {
         #[arg(long = "chain")]
         chains: Vec<String>,
-        /// The dstack OS image (a different one is a different mr_td). It must be a 0.5 image:
-        /// 0.6 drops the `mr-kms` event the enclave identity includes.
+        /// The dstack OS image (a different one is a different mr_td). It must be a 0.6 image:
+        /// the enclave identity has no `mr-kms`, which only 0.5 recorded.
         #[arg(long, default_value = crate::steps::enclaves::quote::DEFAULT_OS_IMAGE)]
         os_image: String,
         /// The Phala instance type. Its vCPU and memory shape is measured too, so a different
