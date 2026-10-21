@@ -10,12 +10,19 @@
 const sameOrigin = (path: string): string =>
   typeof window === "undefined" ? path : `${window.location.origin}${path}`;
 
-/// A deployment value, from .env.local.
-///
-/// `teeism ui` writes these from what the deployment actually created: its ids are minted at
-/// genesis and cannot be known in advance. Unset, each falls back to the value below.
+/// A setting from .env.local, with a default for what is not specific to one deployment
+/// (an endpoint, a name).
 const env = (key: string, fallback: string): string =>
   (import.meta.env[key] as string | undefined) ?? fallback;
+
+/// An id this deployment created, from .env.local, which `teeism ui` writes from the deployment
+/// record. Never a default: a missing id stays empty (a router reads as not deployed) rather
+/// than pointing at a contract from an earlier deployment.
+const deployed = (key: string): string => (import.meta.env[key] as string | undefined) ?? "";
+
+/// An EVM address this deployment did not provide.
+const NO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const deployedAddress = (key: string) => (deployed(key) || NO_ADDRESS) as `0x${string}`;
 
 const envNum = (key: string, fallback: number): number => {
   const raw = import.meta.env[key] as string | undefined;
@@ -74,7 +81,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     // Etherscan link lands on raw bytecode. Verifying both would need an Etherscan API key.
     explorer: "https://eth-sepolia.blockscout.com",
     mailbox: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
-    ism: env("VITE_SEPOLIA_ISM", "0x8DDAB7d98b7C7FC40eb4D54Ae10Da60734f2c5AF") as `0x${string}`,
+    ism: deployedAddress("VITE_SEPOLIA_ISM"),
   },
   arbitrum: {
     kind: "evm",
@@ -85,7 +92,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_ARBITRUM_RPC", "https://arbitrum-sepolia-rpc.publicnode.com"),
     explorer: "https://arbitrum-sepolia.blockscout.com",
     mailbox: "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8",
-    ism: env("VITE_ARBITRUM_ISM", "0xE7eAeb624AB993f2b058E041dd2b762a9F0c038B") as `0x${string}`,
+    ism: deployedAddress("VITE_ARBITRUM_ISM"),
   },
   base: {
     kind: "evm",
@@ -96,7 +103,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_BASE_RPC", "https://base-sepolia-rpc.publicnode.com"),
     explorer: "https://base-sepolia.blockscout.com",
     mailbox: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
-    ism: env("VITE_BASE_ISM", "0x96D3A82398545651117e0B754b55a2cF00A0aA1c") as `0x${string}`,
+    ism: deployedAddress("VITE_BASE_ISM"),
   },
   eden: {
     kind: "evm",
@@ -108,8 +115,8 @@ export const CHAINS: Record<ChainId, Chain> = {
     explorer: "https://eden-testnet.blockscout.com",
     // Ours, unlike the other three. Eden had no Hyperlane deployment, so the mailbox and the
     // merkle tree hook were deployed with the rest of this bridge.
-    mailbox: env("VITE_EDEN_MAILBOX", "0x4D37EeeAE9fA656a85D15366f60dc55aa73a1907") as `0x${string}`,
-    ism: env("VITE_EDEN_ISM", "0xB06dE0F56E05f5af1431708af6B92888d18A9abd") as `0x${string}`,
+    mailbox: deployedAddress("VITE_EDEN_MAILBOX"),
+    ism: deployedAddress("VITE_EDEN_ISM"),
     // Eden pays gas in TIA at 18 decimals, not in ETH. The synthetic TIA this bridge mints
     // here is a separate ERC20 at 6 decimals, matching the collateral on Celestia.
     nativeCurrency: { name: "TIA", symbol: "TIA", decimals: 18 },
@@ -132,45 +139,33 @@ export const CHAINS: Record<ChainId, Chain> = {
     explorer: env("VITE_CELESTIA_EXPLORER", "https://mocha.celenium.io"),
     bech32Prefix: "celestia",
     denom: "utia",
-    mailboxId: env(
-      "VITE_CELESTIA_MAILBOX_ID",
-      "0x68797065726c616e650000000000000000000000000000000000000000000000",
-    ),
+    mailboxId: deployed("VITE_CELESTIA_MAILBOX_ID"),
     /// The paymaster a Celestia-origin transfer pays, quoted live before sending.
     ///
     /// The devnet has no paymaster: its mailbox has no required hook, so dispatch is free and
     /// there is nothing to quote.
-    igpId: env(
-      "VITE_CELESTIA_IGP_ID",
-      "0x726f757465725f706f73745f6469737061746368000000040000000000000002",
-    ),
-    ismId: env(
-      "VITE_CELESTIA_ISM_ID",
-      "0x726f757465725f69736d00000000000000000000000000010000000000000004",
-    ),
+    igpId: deployed("VITE_CELESTIA_IGP_ID"),
+    ismId: deployed("VITE_CELESTIA_ISM_ID"),
   },
 };
 
 /** A warp router, per chain, per token. `null` where the route is not deployed yet. */
 export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
   TIA: {
-    celestia: env(
-      "VITE_CELESTIA_TIA_ROUTER",
-      "0x726f757465725f61707000000000000000000000000000010000000000000000",
-    ),
-    sepolia: env("VITE_SEPOLIA_TIA_ROUTER", "0x7F751c18467C6D00f423BBc8183C38B01898D07c"),
-    arbitrum: env("VITE_ARBITRUM_TIA_ROUTER", "0xDED207d4d9fad5aC89E755D77029453fFa834F2f"),
-    base: env("VITE_BASE_TIA_ROUTER", "0x5F37c2B101527997436de2BB7C8636B356621d7b"),
-    eden: env("VITE_EDEN_TIA_ROUTER", "0xad4471aC85d64E6ea99426EedCB15097EF3EC850"),
+    celestia: deployed("VITE_CELESTIA_TIA_ROUTER"),
+    sepolia: deployed("VITE_SEPOLIA_TIA_ROUTER"),
+    arbitrum: deployed("VITE_ARBITRUM_TIA_ROUTER"),
+    base: deployed("VITE_BASE_TIA_ROUTER"),
+    eden: deployed("VITE_EDEN_TIA_ROUTER"),
   },
   // Ours: a fixed supply minted on Celestia, synthetic everywhere else. A deployment that has
   // not created it leaves these unset, and the route reports itself as not deployed.
   teeUSD: {
-    celestia: env("VITE_CELESTIA_TEEUSD_ROUTER", "0x726f757465725f61707000000000000000000000000000020000000000000001"),
-    sepolia: env("VITE_SEPOLIA_TEEUSD_ROUTER", "0xB2fab15FdC9185b6F15eB383fe57E12cc7Ea5e99"),
-    arbitrum: env("VITE_ARBITRUM_TEEUSD_ROUTER", "0xE7d728A1884C840b4153A0BcAb766e8ebb5352dF"),
-    base: env("VITE_BASE_TEEUSD_ROUTER", "0xdA22F5ebE5e8dF2cbA5a4487622B9EF80BA413e7"),
-    eden: env("VITE_EDEN_TEEUSD_ROUTER", "0x254Fd6b521ac0f6911Ef10846D6fc932D9ed3191"),
+    celestia: deployed("VITE_CELESTIA_TEEUSD_ROUTER"),
+    sepolia: deployed("VITE_SEPOLIA_TEEUSD_ROUTER"),
+    arbitrum: deployed("VITE_ARBITRUM_TEEUSD_ROUTER"),
+    base: deployed("VITE_BASE_TEEUSD_ROUTER"),
+    eden: deployed("VITE_EDEN_TEEUSD_ROUTER"),
   },
 };
 
