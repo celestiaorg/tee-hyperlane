@@ -10,7 +10,7 @@
 # measurement. Written by `teeism images`.
 services:
   eden:
-    image: ghcr.io/jonas089/tee-node@sha256:c874a09bc6647d4394a33776632a1795887afd8d7bb7aa1d3227532ca4e41b36
+    image: ghcr.io/jonas089/tee-node@sha256:4b982eb9a54e07c33964ce64dc5d2ccb83efa98e219017d9bc6a21e39f96ccc4
     ports:
       - "8084:8080"
     volumes:
