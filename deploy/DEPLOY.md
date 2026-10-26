@@ -102,7 +102,7 @@ teeism enclaves verify
 - Refuses unless every image is what this source builds and the pins are pushed (`--unpinned` skips that; never on ark).
 - One CVM on Phala (`--no-dev-os`); Phala picks the node, and the CLI records its gateway, from which every enclave URL is built running all five enclaves, ports 8080 to 8084. `--chain <name>` runs one alone instead.
 - Then reads each enclave's quote: the identity the Celestia ISMs pin, the measurements the EVM ISMs pin, mr_td.
-- `--instance-type` is the VM shape, default `tdx.small`. `--os-image` is the dstack OS image, default `dstack-0.6.1`. It must be a 0.6 image: the enclave identity (`x/teeism` identity v2) pins `os-image-hash`, `compose-hash` and `key-provider`, and has no `mr-kms`, which only 0.5 recorded. The node, URL and gateway are plumbing: the ISMs trust only the quote's measurements.
+- `--instance-type` is the VM shape, default `tdx.small`. `--os-image` is the dstack OS image, default `dstack-0.6.1`. It must be a 0.6 image: the enclave identity (`x/teeism` identity v3) pins mr_td, RTMR0-2 and `os-image-hash`, `compose-hash` and `key-provider`, and has no `mr-kms`, which only 0.5 recorded. The node, URL and gateway are plumbing: the ISMs trust only the quote's measurements.
 - `verify` checks compose file -> `compose_hash` -> `mr_config_id` in the signed quote (dstack 0.6 binds the compose hash through a document, `mr_config_id` v3, which `verify` rebuilds and matches). Every line must say `ok`. `--rebuild` also rebuilds the images and compares them.
 - **Never `phala cvms upgrade`: it changes the enclave identity.**
 
