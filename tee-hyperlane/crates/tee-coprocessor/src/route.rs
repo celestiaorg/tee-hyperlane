@@ -17,7 +17,7 @@ use crate::origin::{Indexer, Message};
 /// its RPCs will serve: four days of that stopped every Celestia route once. Twice the interval
 /// the enclave and both ISMs require between empty batches
 /// (`tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS`), so the origin's clock always clears it.
-pub const HEARTBEAT: Duration = Duration::from_secs(60 * 60);
+pub const HEARTBEAT: Duration = Duration::from_secs(24 * 60 * 60);
 /// A staged batch older than this is rebuilt rather than retried. Both kinds of ISM refuse an
 /// attestation older than 24h, so past that it could never land, and retrying it forever would
 /// stall the route long after whatever delayed it had passed.
@@ -739,13 +739,13 @@ mod tests {
     }
 
     #[test]
-    fn the_heartbeat_is_due_once_the_trusted_state_is_an_hour_old() {
-        let hour = HEARTBEAT.as_secs();
+    fn the_heartbeat_is_due_once_the_trusted_state_is_a_day_old() {
+        let day = HEARTBEAT.as_secs();
         assert!(!heartbeat_due(1_000, 1_000), "just advanced");
-        assert!(!heartbeat_due(1_000, 1_000 + hour - 1), "not yet an hour");
-        assert!(heartbeat_due(1_000, 1_000 + hour), "an hour old");
+        assert!(!heartbeat_due(1_000, 1_000 + day - 1), "not yet a day");
+        assert!(heartbeat_due(1_000, 1_000 + day), "a day old");
         assert!(
-            hour >= 2 * tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS,
+            day >= 2 * tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS,
             "the heartbeat must clear the ISMs' minimum interval with room for origin lag"
         );
     }

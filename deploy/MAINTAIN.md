@@ -27,13 +27,13 @@ teeism pccs tcb-eval 23      # its QE identity and TCB info contracts on every c
 
 ## Heartbeat
 
-Every route attests at least hourly, with no messages if nothing was dispatched, so its ISM stays near its origin's head and the next proof starts from recent state.
+Every route attests at least daily, with no messages if nothing was dispatched, so its ISM stays near its origin's head and the next proof starts from recent state.
 
-- The relayer sends one once an ISM's trusted state is an hour old (`HEARTBEAT`, `tee-coprocessor/src/route.rs`).
+- The relayer sends one once an ISM's trusted state is a day old (`HEARTBEAT`, `tee-coprocessor/src/route.rs`).
 - The enclave, `TeeDcapIsm` and `x/teeism` all refuse an empty batch that moves the origin clock less than 30 minutes, so nobody can use the public enclave to advance an ISM more often.
 - An empty batch cannot skip a message: the enclave replays the batch from the tree under the ISM's own root, and zero ids reproduce the head's tree only if nothing was dispatched.
-- Cost: one attestation per quiet route per hour. On Sepolia at 1.1 gwei that is ~0.006 ETH, about 0.14 ETH a day if the route is idle all day.
-- Check: `teeism status` lists every route's state age; over two hours is reported.
+- Cost: one attestation (~3.87M gas on an EVM destination) per quiet route per day. On Sepolia at 1.1 gwei that is ~0.004 ETH a day.
+- Check: `teeism status` lists every route's state age; over 26 hours is reported.
 
 ## Update: code only
 

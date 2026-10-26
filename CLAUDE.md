@@ -66,6 +66,6 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
   - Owner re-pins in place: `setEnclave` (EVM, revision 3+), `tx teeism update-identity` (Celestia). `teeism isms evm`, `teeism isms celestia` do this.
   - Only ISMs we don't own, or an EVM contract revision change, get a replacement: starts from the old ISM's last state, stops rather than fall back to the head.
   - Only a first deploy anchors at the head.
-- **Heartbeat:** a quiet route attests hourly with no messages. Enclave, `TeeDcapIsm` (`VERSION` 4) and `x/teeism` refuse an empty batch that moves the origin clock < 30 min; the replay from the ISM's own root means it can never skip a message.
+- **Heartbeat:** a quiet route attests daily with no messages (`HEARTBEAT`, `route.rs`). Enclave, `TeeDcapIsm` (`VERSION` 4) and `x/teeism` refuse an empty batch that moves the origin clock < 30 min; the replay from the ISM's own root means it can never skip a message.
 - **Intel root CA:** only the owner can update it on Celestia (`tx teeism set-verifier-overrides --trusted-root-cert`). Nothing skips or relaxes Intel verification.
 - **Ownership:** `tx teeism update-owner`. `teeism isms` re-pins only ISMs owned by the relayer (Celestia) or `EVM_SIGNER` (Ledger, or `EVM_PRIVATE_KEY`) and replace the rest, so after an ownership transfer the new owner re-pins first ([ADMIN.md](deploy/ADMIN.md)).

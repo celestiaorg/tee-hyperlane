@@ -116,7 +116,7 @@ attestation           5,331,900   0.005900   0.000031   0.001330
 delivery, per message   124,000   0.000140   0.000001   0.000030
 ```
 
-Celestia: attestation 343,592 gas, delivery 117,337. Enclaves: $4.38/day. A quiet route also attests once an hour with no messages ([MAINTAIN](MAINTAIN.md#heartbeat)): one attestation's gas per hour. Current quotes: `:3002`, or one round:
+Celestia: attestation 343,592 gas, delivery 117,337. Enclaves: $4.38/day. A quiet route also attests once a day with no messages ([MAINTAIN](MAINTAIN.md#heartbeat)): one attestation's gas per day. Current quotes: `:3002`, or one round:
 `~/tee-ism-nonzk/tee-hyperlane/target/release/gas-oracle --config ~/tee-ism-nonzk/devnet/.state/gas-oracle.toml --once`.
 
 ## Running the UI locally

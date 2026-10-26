@@ -136,7 +136,7 @@ teeism-gas-oracle  systemd  paymaster upkeep
 - `tx teeism set-verifier-overrides`: trust a rotated Intel root CA. Nothing relaxes Intel's verification.
 - `tx teeism update-owner`: hand an ISM to a multisig. EVM controls sit with the Automata owner. See [ADMIN.md](deploy/ADMIN.md).
 - Rollups: enclave checks the sequencer signature, takes the signed state root, proves the tree. No re-execution, no L1 wait.
-- Heartbeat: a quiet route attests hourly with no messages, so its ISM stays near its origin's head. An empty batch cannot skip a message, and the enclave and both ISMs refuse one that moves the origin clock less than 30 minutes.
+- Heartbeat: a quiet route attests daily with no messages, so its ISM stays near its origin's head. An empty batch cannot skip a message, and the enclave and both ISMs refuse one that moves the origin clock less than 30 minutes.
 
 ## Trust
 

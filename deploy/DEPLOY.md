@@ -185,7 +185,7 @@ teeism status
 
 - `smoke`: 0.1 TIA and 0.1 teeUSD Celestia -> each EVM chain, then back from each to the `smoke` key: 16 transfers on 8 routes, each waited on until it arrives.
 - `status`: every id, every enclave, every route's ISM height and the age of its trusted state. Exits 1 if a route is not advancing.
-- An hour later run `status` again: every route's state is under an hour old plus its origin's lag, from the hourly heartbeat ([MAINTAIN](MAINTAIN.md#heartbeat)).
+- Run `status` again over the next day: every route's state stays under a day old plus its origin's lag, from the daily heartbeat ([MAINTAIN](MAINTAIN.md#heartbeat)).
 
 Then copy `teeism status` into `README.md` and refresh `deploy/coprocessor.toml.example`.
 

@@ -86,8 +86,8 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
         Err(e) => anyhow::bail!("the relayer is not answering at {api}: {e}"),
     };
     let mut stale = Vec::new();
-    // With the hourly heartbeat every ISM's trusted state is under an hour old plus the
-    // origin's own lag; much older means the route is not advancing.
+    // With the daily heartbeat every ISM's trusted state is under a day old plus the origin's
+    // own lag; much older means the route is not advancing.
     for r in routes.as_array().into_iter().flatten() {
         let name = r["name"].as_str().unwrap_or("?");
         let ism = &r["ismReading"];
@@ -102,7 +102,7 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
             r["originHead"]["height"],
             age / 60
         );
-        if age > 2 * 3600 || r["status"] != "ok" {
+        if age > 26 * 3600 || r["status"] != "ok" {
             print::bad(line);
             stale.push(name.to_string());
         } else {

@@ -169,7 +169,7 @@ contract TeeDcapIsmTest is Test {
 
     // ---------------------------------------------------------------- empty batches
 
-    /// The hourly heartbeat: nothing dispatched, but the state still moves to the origin's head.
+    /// The daily heartbeat: nothing dispatched, but the state still moves to the origin's head.
     function test_anEmptyBatchAdvancesAQuietRoute() public {
         TeeDcapIsm target = _fresh();
         uint64 later = GENESIS_TIME + target.EMPTY_BATCH_MIN_INTERVAL();
