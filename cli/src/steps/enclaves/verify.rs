@@ -71,12 +71,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
     print::step("2. that hash is inside the signed quote, not only in the unsigned info");
     let body = report_body(&id.quote)?;
     let cfg = &body[184..232];
-    // dstack writes mr_config_id as 0x01, then the compose hash, then zero padding.
-    if cfg[0] == 1 && hex::encode(&cfg[1..33]) == hash {
-        print::ok(format!("mr_config_id carries it: {}", hex::encode(&cfg[1..33])));
-    } else {
-        print::bad(format!("mr_config_id is {}", hex::encode(cfg)));
-        failed.push("mr_config_id");
+    match mr_config_binds(cfg, &id, &hash) {
+        Ok(what) => print::ok(format!("mr_config_id binds it: {what}")),
+        Err(e) => {
+            print::bad(format!("mr_config_id is {}: {e:#}", hex::encode(cfg)));
+            failed.push("mr_config_id");
+        }
     }
 
     print::step("3. the measured compose is this checkout's compose");

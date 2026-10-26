@@ -9,7 +9,8 @@ teeism pccs status          # what expires when; exits 1 if anything is within 1
 teeism pccs seed            # republish all of it; --dry-run checks and fetches without sending
 ```
 
-- Skipped: Celestia -> EVM routes stop 30 days after the last seed, with `TCBR` or `PCKCRLH`.
+- Skipped: Celestia -> EVM routes stop 30 days after the last seed, with `TCBR` or `PCKCRLH`. `pccs status` prints the date per chain; seed a week before it.
+- Collateral is per CPU platform (FMSPC); only `20a06f000000`, the platform our CVMs ran on so far, is seeded. A CVM on a Phala node with a different CPU passes Celestia but fails every EVM route with `TCBR`: seed its platform, `teeism pccs seed --fmspc <hex>`.
 - Celestia-destination routes need nothing: the relayer fetches fresh collateral with each attestation.
 - Where it comes from and what it is checked against: [DEPLOY B](DEPLOY.md#b-intel-root-ca-and-collateral).
 
@@ -45,24 +46,28 @@ teeism services restart
 teeism ui --public-url http://178.199.12.26:3000      # UI changes only
 ```
 
-## Update: enclave code
+## Rotate the enclave (re-pin)
 
-Changes to `crates/tee-node`, `crates/hyperlane-types`, `crates/helios-consensus-core` or `tee-hyperlane/Cargo.lock` move the images and re-pin every ISM the changed CVM attests. In-flight transfers are kept.
+For anything that changes what the ISMs pin: enclave code (`crates/tee-node`, `hyperlane-types`, `helios-consensus-core`, `tee-hyperlane/Cargo.lock`), a new dstack OS image, another instance type, or Phala host maintenance that moved the measurements. Every ISM keeps its address and state; tokens, routers, the PCCS and the Celestia chain are untouched. Done this way on 2026-10-26 (dstack 0.5.12 -> 0.6.1).
 
 ```sh
-git pull && cargo install --locked --path cli && teeism build
+git pull && git -C ../celestia-app-local pull && cargo install --locked --path cli && teeism build
 cp -a devnet/.state ~/teeism-state-$(date +%F)            # backup
-teeism images                                              # then commit and push the pins (DEPLOY step 6)
-teeism enclaves up && teeism enclaves verify
-teeism isms evm && teeism isms celestia                    # re-pin in place; check every line says re-pinning
+teeism images        # only if enclave code changed; enclaves up refuses otherwise. Then: git add deploy/ && git commit && git push
+teeism celestia up --new-image                             # only if x/teeism changed (e.g. its identity)
+teeism enclaves up && teeism enclaves verify               # new CVM; every verify line ok
+teeism isms evm && teeism isms celestia                    # every line must say re-pinning
 teeism services restart
-teeism smoke
+teeism smoke                                               # Sepolia -> Celestia takes up to ~20 min
 teeism enclaves delete --retired                           # only once smoke passed
 ```
 
-- An ISM owned by a multisig: re-pin it from the multisig first ([ADMIN](ADMIN.md#re-pin-the-enclave-identity)); `teeism` re-pins only what its keys own and would otherwise replace it.
+- Anything saying `replacing`, or `belongs to an earlier deployment`, instead of `re-pinning`: stop. An ISM owned by a multisig is re-pinned from the multisig first ([ADMIN](ADMIN.md#re-pin-the-enclave-identity)).
+- `isms celestia` failing with `invalid enclave identity`: the node still runs the old celestia-app; run `teeism celestia up --new-image` first.
+- Expected while switching: routes failing for minutes (`enclave unreachable` on the old CVM, `localhost:26657 connection reset` during the node restart, one `account sequence mismatch`, `nothing from the base sequencer` after the restart). Nothing is lost; they recover on their own.
+- Rollback before `delete --retired`: the old CVM still runs; re-pin to it ([ADMIN](ADMIN.md#re-pin-the-enclave-identity)).
 - A changed `TeeDcapIsm` `VERSION` replaces each EVM ISM from its last state and re-points the routers (`teeism warp evm`). It never redeploys a router: a new router orphans what the old one minted.
-- Then update the ids in `README.md`.
+- Then update the enclave section of `README.md`.
 
 ## Update: celestia-app
 
@@ -76,10 +81,6 @@ teeism services restart
 ```
 
 Only for changes that keep the state machine compatible with the existing chain. Anything else needs a coordinated upgrade or a fresh chain ([DEPLOY](DEPLOY.md)).
-
-## Re-pin to a new mr_td (new dstack OS image)
-
-[DEPLOY A](DEPLOY.md#a-re-pin-with-the-admin-key-a-new-mr_td).
 
 ## One chain in its own CVM
 
@@ -124,6 +125,8 @@ Base or Arbitrum waiting more than a few minutes: stuck, see below. `leaves=N` c
 | `TCBR`, `PCKCRLH` or another collateral code | `teeism pccs seed` |
 | `TCBR` right after a seed | Intel moved the evaluation number: `teeism pccs tcb-eval <n>` |
 | `WrongEnclave`, `IdentityChanged` | `teeism services restart` (rewrites the enclave URLs); `teeism enclaves verify --ism-chain <chain>` |
+| `WrongEnclave` / `identity mismatch` on every route after Phala maintenance, with no change of ours | the host moved the measurements (e.g. a dstack 0.6 VMM changes RTMR0 at the CVM's next start): [rotate the enclave](#rotate-the-enclave-re-pin) |
+| `TCBR` on every EVM route right after a new CVM | its Phala node has another CPU platform (FMSPC): `teeism pccs seed --fmspc <hex>` |
 | `EmptyBatchTooSoon`, `an empty batch must advance the origin clock` | nothing, unless it repeats: someone else advanced the ISM |
 | `unknown command "teeism"` from the relayer | the unit's PATH must start with `.state/bin` |
 | `eth_getProof` fails at an old height | use an archive endpoint ([DEPLOY G](DEPLOY.md#g-endpoints)) |
