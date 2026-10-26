@@ -26,9 +26,9 @@ deploy/                                 the guides, the measured compose files, 
 
 ## Deployments
 
-Deployed with `teeism` on 2026-10-15. `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
+Deployed with `teeism` on 2026-10-15; enclave rotated to dstack 0.6.1 on 2026-10-26 (every ISM re-pinned in place). `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
 
-**Enclaves.** Phala Cloud (node picked by Phala), `tdx.medium`, dstack `0.5.12`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
+**Enclaves.** Phala Cloud (node picked by Phala), `tdx.small`, dstack `0.6.1`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
 
 | enclave | port | attests |
 |---|---|---|
@@ -39,10 +39,12 @@ Deployed with `teeism` on 2026-10-15. `teeism status` prints the live ids. Verif
 | `eden` | 8084 | Eden |
 
 ```
-app id         fcdc75f95d37f0fbccc410b66d51aaf95e13c404   (teeism-all-1792060469)
-urls           https://fcdc75f95d37f0fbccc410b66d51aaf95e13c404-<port>.dstack-pha-prod9.phala.network
-identity       0xe0b5a87fc1ffeeaa334805d111c93e52cfd5da646adf6bc0d0fd39af40e37bcb
-measurements   0xfa5aad91ae47c44139bebe74c7c2747e51223d0a83236557b14550bb6ee7c70f
+app id         4de9f0be7b151f67fd717d8f06ac45da5ff70d84
+urls           https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-<port>.dstack-pha-prod5.phala.network
+mr_td          0x2a674327c50218dba880066b349b8d559d749ed68dce33fd651c184a877d084b07a9e583767a7ad5da13ed91deec2b70
+compose_hash   0xee935eba5e1771db4a3ce71900bed00f77213335a0abbc24d622f64a419bc543
+identity       0x423eea99100f13e07760480ada94552fc50718d36e5ba78e967497f9c840f201
+measurements   0x929f72ee86af73bba9c4ae2664e57f1a08630d5f2b77ddfb896cdbcae48e1cb4
 ```
 
 Image digests per chain: `deploy/images.lock`.
