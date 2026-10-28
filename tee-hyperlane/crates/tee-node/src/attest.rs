@@ -113,6 +113,17 @@ pub fn attest_with(
         );
     }
     verify_message_batch(snapshot.tree, &request.message_ids, &at_head.tree)?;
+    // An empty batch keeps a quiet route close to its origin's head. The replay above already
+    // shows nothing was dispatched in between; this bounds how often anyone can ask for one.
+    if request.message_ids.is_empty() {
+        anyhow::ensure!(
+            head.timestamp >= trusted.timestamp + EMPTY_BATCH_MIN_INTERVAL_SECS,
+            "an empty batch must advance the origin clock by at least {EMPTY_BATCH_MIN_INTERVAL_SECS}s; \
+             this one advances it from {} to {}",
+            trusted.timestamp,
+            head.timestamp
+        );
+    }
 
     let new_state = IsmState {
         state_root: head.root.0,
@@ -140,10 +151,13 @@ pub fn attest_with(
 // root would add nothing - whoever can forge the root can forge a proof under it - so what
 // matters is that this code is inside the measurement, which it is.
 
+/// How far an attestation with no messages must move the origin's verified clock. The ISMs
+/// enforce the same bound, so the relayer's hourly heartbeat always clears it and nobody can use
+/// the public endpoint to advance an ISM with nothing in it more often.
+pub const EMPTY_BATCH_MIN_INTERVAL_SECS: u64 = 30 * 60;
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum BatchError {
-    #[error("a batch must carry at least one message id")]
-    EmptyBatch,
     #[error("replaying {ids} message ids gave root {replayed} at count {count}, but the chain proves {onchain}")]
     ReplayMismatch {
         ids: usize,
@@ -171,11 +185,8 @@ pub fn verify_message_batch(
     message_ids: &[[u8; 32]],
     onchain: &MerkleTree,
 ) -> Result<(), BatchError> {
-    // The destination allows one batch per state root, so attesting nothing still spends that
-    // root's only slot. Nothing to attest is not worth an attestation.
-    if message_ids.is_empty() {
-        return Err(BatchError::EmptyBatch);
-    }
+    // No ids is a batch like any other: it reproduces the on-chain tree only if nothing was
+    // dispatched between the snapshot and the head, so it can never skip a message.
     if snapshot.count > onchain.count {
         return Err(BatchError::SnapshotAhead {
             snapshot: snapshot.count,

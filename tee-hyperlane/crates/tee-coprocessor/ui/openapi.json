@@ -948,7 +948,8 @@
           "expectedLatencySecs",
           "ismReading",
           "counts",
-          "notifications"
+          "notifications",
+          "attestations"
         ],
         "properties": {
           "name": {
@@ -1018,6 +1019,34 @@
               "$ref": "#/components/schemas/Notification"
             },
             "description": "Open notifications about the route, its transfers, its origin watch, or the monitor."
+          },
+          "activity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Activity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextHeartbeatAt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When a quiet route next attests with no messages: an hour after the ISM's trusted state."
+          },
+          "attestations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attestation"
+            },
+            "description": "The latest attestations landed on this route's ISM, newest first."
           }
         }
       },
@@ -1316,6 +1345,119 @@
               {
                 "type": "string",
                 "description": "Address page on the chain's explorer."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Activity": {
+        "type": "object",
+        "description": "What the route's loop is doing right now.",
+        "additionalProperties": false,
+        "required": [
+          "phase",
+          "detail",
+          "since",
+          "at"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "waiting",
+              "attesting",
+              "submitting",
+              "advanced"
+            ],
+            "description": "`idle`: the origin has not moved. `waiting`: nothing to attest yet. `attesting`: asking the enclave. `submitting`: landing it on the destination. `advanced`: done."
+          },
+          "detail": {
+            "type": "string"
+          },
+          "since": {
+            "type": "integer",
+            "description": "When the route entered this phase."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When the loop last confirmed it."
+          }
+        }
+      },
+      "Attestation": {
+        "type": "object",
+        "description": "One attestation this relayer landed on the route's ISM.",
+        "additionalProperties": false,
+        "required": [
+          "height",
+          "stateRoot",
+          "messages",
+          "heartbeat"
+        ],
+        "properties": {
+          "height": {
+            "type": "integer",
+            "description": "The origin height the ISM moved to."
+          },
+          "fromHeight": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stateRoot": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "integer",
+            "description": "Message ids the attestation authorised."
+          },
+          "heartbeat": {
+            "type": "boolean",
+            "description": "No messages: sent only to keep a quiet route near its origin's head."
+          },
+          "attestedAt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "submittedAt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tx": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "txUrl": {
+            "anyOf": [
+              {
+                "type": "string"
               },
               {
                 "type": "null"

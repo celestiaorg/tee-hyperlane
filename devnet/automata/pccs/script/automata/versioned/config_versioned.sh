@@ -56,6 +56,7 @@ show_usage() {
     echo "Optional Environment Variables:"
     echo "  SIMULATED                  Set to 'true' for simulation mode (default: false)"
     echo "  LEGACY                     Set to 'true' for legacy transaction mode"
+    echo "  LEDGER                     Set to 'true' to sign every transaction on a Ledger (LEDGER_PATH for another account)"
     echo "  UNLOCKED                   Set to 'true' to use an unlocked sender on a local fork/anvil"
     echo "  OWNER                      Required when UNLOCKED=true; sender/owner address for forge script"
     echo "  MULTICHAIN                 Set to 'true' to run for all chains (default: false)"
@@ -112,7 +113,13 @@ fi
 # Set up wallet authentication and derive OWNER
 WALLET_ARGS=""
 OWNER="${OWNER:-}"
-if [ "$UNLOCKED" = "true" ]; then
+if [ "${LEDGER:-}" = "true" ]; then
+    # Every transaction is confirmed on a Ledger. LEDGER_PATH picks an account other than the first.
+    OWNER="${OWNER:-$(cast wallet address --ledger ${LEDGER_PATH:+--mnemonic-derivation-path "$LEDGER_PATH"})}"
+    WALLET_ARGS="--ledger --sender $OWNER${LEDGER_PATH:+ --mnemonic-derivation-paths $LEDGER_PATH}"
+    print_info "Using Ledger authentication"
+    print_info "Owner address: $OWNER"
+elif [ "$UNLOCKED" = "true" ]; then
     if [ -z "$OWNER" ]; then
         print_error "OWNER environment variable is required when UNLOCKED=true"
         exit 1

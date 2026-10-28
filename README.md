@@ -1,23 +1,13 @@
 # TEE ISMs
 
-Hyperlane bridging between Celestia and EVM chains, where messages are authorised by a **light
-client running inside a TDX enclave** instead of a validator multisig. The destination
-verifies the enclave's TDX quote directly. There is no zero-knowledge proof anywhere.
+Hyperlane bridging between Celestia and EVM chains. Messages are authorised by a **TDX enclave that verifies the origin chain**, checked on the destination via its TDX quote. No zero-knowledge proofs.
 
 | doc | for |
 |---|---|
-| [deploy/DEPLOY.md](deploy/DEPLOY.md) | standing up the whole bridge, step by step |
-| [deploy/MAINTAIN.md](deploy/MAINTAIN.md) | the monthly job, rolling out new code, diagnosing a route |
-| [deploy/INTERACT.md](deploy/INTERACT.md) | wallets, sending, checking arrival, latency and cost |
-
-## How it works
-
-1. An enclave (a Phala TDX VM) verifies the origin chain, proves which messages were sent, and
-   signs that in a TDX quote.
-2. The relayer submits the quote to the destination's ISM, which checks it came from our
-   enclave, then delivers the messages.
-
-The enclave stores nothing; its state lives in the ISM on chain.
+| [deploy/DEPLOY.md](deploy/DEPLOY.md) | standing up the bridge |
+| [deploy/MAINTAIN.md](deploy/MAINTAIN.md) | monthly job, rollouts, diagnosing a route |
+| [deploy/ADMIN.md](deploy/ADMIN.md) | owner controls and commands, Intel breakage |
+| [deploy/INTERACT.md](deploy/INTERACT.md) | wallets, sending, arrival, latency, cost |
 
 ## Layout
 
@@ -25,42 +15,43 @@ The enclave stores nothing; its state lives in the ISM on chain.
 tee-hyperlane/crates/tee-node/          the enclave
 tee-hyperlane/crates/tee-coprocessor/   the service: every route, the API, the faucet
 tee-hyperlane/contracts/                TeeDcapIsm.sol
+cli/                                    teeism: deploys, rotates, inspects and tears down everything
 bridge-app/                             React UI, MetaMask + Keplr
-devnet/                                 scripts that deploy everything, and the gateway
+devnet/                                 the chain's and the gateway's compose files, vendored Automata
 deploy/                                 the guides, the measured compose files, systemd units
 ```
 
-Both crates have one file per chain: everything about Base is `tee-node/src/ethereum/base.rs`
-(how the enclave verifies it) and `tee-coprocessor/src/origin/ethereum/base.rs` (how its proofs
-are fetched). The coprocessor splits into `origin/` and `destination/`, each with its trait in
-`mod.rs` and one file per implementation.
+- `l1/`: light-client chains (Celestia, Ethereum). `l2/`: sequencer-signed rollups (Base, Arbitrum, Eden).
+- Per chain: `tee-node/src/chains/l2/base.rs` (verification), `tee-coprocessor/src/origin/l2/base.rs` (fetching).
 
 ## Deployments
 
-Check any value here yourself with `FAMILY=<family> deploy/verify-digest.sh <app-id>`.
+Deployed with `teeism` on 2026-10-15; enclave rotated to dstack 0.6.1 on 2026-10-26 (every ISM re-pinned in place). `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
 
-**Enclaves.** Phala Cloud `prod9`, `tdx.small`, OS `dstack-0.5.9`, image
-`ghcr.io/jonas089/tee-node`.
+**Enclaves.** Phala Cloud (node picked by Phala), `tdx.small`, dstack `0.6.1`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
 
-| family | app id | attests | identity |
-|---|---|---|---|
-| `celestia` | `e6a9dc0dcf0b905cbcb561562cbcd6c814adb126` | Celestia | `0xf3640dbb03c52fa649ae03431a8511e431f78f00d9b8cb622dcd21c9716a82b5` |
-| `ethereum` | `6479fb4b957ce078ede97d5999232210eea646ef` | Sepolia, Arbitrum, Base | `0xbc84fb7140c6bd6e432bcb13b18f2ab5065068803582cf075e688df9d0878b62` |
-| `evolve` | `c3789ecebee1956df200741e968814f4608847bb` | Eden | `0x9bb4f75ab3efe61eafb15bb261d5fccfce81af9252da89e37b571ca3daec2e78` |
+| enclave | port | attests |
+|---|---|---|
+| `celestia` | 8080 | Celestia |
+| `ethereum` | 8081 | Sepolia |
+| `base` | 8082 | Base Sepolia |
+| `arbitrum` | 8083 | Arbitrum Sepolia |
+| `eden` | 8084 | Eden |
 
 ```
-mr_td          f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077
-os_image_hash  bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033
-mr_kms         92a4bf40c88734b0e56f54b09b1f0fe4b8d3e230047e9298f491968ada8dedf8
-
-                celestia                                                           ethereum                                                           evolve
-compose_hash    37d2642c1dfdff01c93e8b5c931d0ce6e681d88cb2403c2ff98eb84ed7b246a2   8f294a664953f6db736f2a944b2acbc4d0ffd89a0e8e092cf071ab969501ba43   c72ffa5756938376495269366d58a89fcecb3646ac5cfde0bfdff4b7b92647fb
-measurements    0x85db587bf21fad1c4648f368d4fbc1cb95222765274c2ee643e717ef142ec921 0xcd9f2141389162348a791c449e2b63bca2170b0d71b986cb2f1348ca052437d2 0xece515445d5d05f08f2590936d884776a5dd02244e555cefedb14b4f928b9c84
+app id         4de9f0be7b151f67fd717d8f06ac45da5ff70d84
+urls           https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-<port>.dstack-pha-prod5.phala.network
+mr_td          0x2a674327c50218dba880066b349b8d559d749ed68dce33fd651c184a877d084b07a9e583767a7ad5da13ed91deec2b70
+compose_hash   0xee935eba5e1771db4a3ce71900bed00f77213335a0abbc24d622f64a419bc543
+identity       0x423eea99100f13e07760480ada94552fc50718d36e5ba78e967497f9c840f201
+measurements   0x929f72ee86af73bba9c4ae2664e57f1a08630d5f2b77ddfb896cdbcae48e1cb4
 ```
 
-The EVM ISMs pin `measurements`; the Celestia ISMs pin the fields behind `identity`.
+Image digests per chain: `deploy/images.lock`.
 
-**Chain.** Our own devnet, not mocha, with pruning off.
+EVM ISMs pin `measurements`; Celestia ISMs pin the fields behind `identity`.
+
+**Chain.** Own devnet (not mocha), pruning off.
 
 ```
 chain id   teeism-local
@@ -70,44 +61,60 @@ merkle     0x726f757465725f706f73745f6469737061746368000000030000000000000000
 igp        0x726f757465725f706f73745f6469737061746368000000040000000000000002
 ```
 
-**ISMs.** One per origin domain, so eight.
+**ISMs.**
 
 | Celestia-origin, `TeeDcapIsm` on | address |
 |---|---|
-| Ethereum Sepolia | `0x865264E0ae7b173943e34c493E7851B895F37E3F` |
-| Arbitrum Sepolia | `0x39b7Cefe6523c474A31652cc297bA2b06ac53AB3` |
-| Base Sepolia | `0x94cC258254B4e9ef6675E6f3a2Ee023D3D21bFcC` |
-| Eden | `0xe686F221B7A2B641574340F43Ad5cD59707791Ca` |
+| Ethereum Sepolia | `0x8DDAB7d98b7C7FC40eb4D54Ae10Da60734f2c5AF` |
+| Arbitrum Sepolia | `0xE7eAeb624AB993f2b058E041dd2b762a9F0c038B` |
+| Base Sepolia | `0x96D3A82398545651117e0B754b55a2cF00A0aA1c` |
+| Eden | `0xB06dE0F56E05f5af1431708af6B92888d18A9abd` |
 
 | EVM-origin, `x/teeism` on `teeism-local` | id |
 |---|---|
-| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b000000000000003c` |
-| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b000000000000003d` |
-| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b000000000000003e` |
-| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b000000000000003f` |
-| routing ISM over all four | `0x726f757465725f69736d00000000000000000000000000010000000000000035` |
+| Sepolia `11155111` | `0x726f757465725f69736d000000000000000000000000002b0000000000000001` |
+| Arbitrum `421614` | `0x726f757465725f69736d000000000000000000000000002b0000000000000005` |
+| Base `84532` | `0x726f757465725f69736d000000000000000000000000002b0000000000000002` |
+| Eden `3735928814` | `0x726f757465725f69736d000000000000000000000000002b0000000000000003` |
+| routing ISM over all four | `0x726f757465725f69736d00000000000000000000000000010000000000000004` |
 
-**Tokens.** Each asset has its collateral on its home chain and is a synthetic elsewhere.
+**Tokens.** Synthetic on every EVM chain. EVM to EVM is two hops via Celestia.
 
 | | collateral | synthetic |
 |---|---|---|
-| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x9822eE81C82138F88D759faef1AC168aDfEe1467`<br>Arbitrum `0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB`<br>Base `0xF50470146B36c638b981e437AB37DfEd9a02FAb3`<br>Eden `0xD2babc9BE1055551b7AB98c440222862a1646158` |
-| USDC | Sepolia `0xfb611B6f6CE92033960e99C2D65cee4237e64cDD` (Circle's `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`) | Celestia `0x726f757465725f61707000000000000000000000000000020000000000000001`<br>Arbitrum `0x8C87fd144006C651430450df8b61A15EeB3FF436`<br>Base `0x285b590ee43A1374AA131e7390D0CA687Be43DF9`<br>Eden `0xc09fbf8F17E96ce746D39f9d11a9dD1813F2d220` |
+| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x7F751c18467C6D00f423BBc8183C38B01898D07c`<br>Arbitrum `0xDED207d4d9fad5aC89E755D77029453fFa834F2f`<br>Base `0x5F37c2B101527997436de2BB7C8636B356621d7b`<br>Eden `0xad4471aC85d64E6ea99426EedCB15097EF3EC850` |
+| teeUSD | none: minted on Celestia, as the synthetic `0x726f757465725f61707000000000000000000000000000020000000000000001` (denom `hyperlane/<that id>`) | Sepolia `0xB2fab15FdC9185b6F15eB383fe57E12cc7Ea5e99`<br>Arbitrum `0xE7d728A1884C840b4153A0BcAb766e8ebb5352dF`<br>Base `0xdA22F5ebE5e8dF2cbA5a4487622B9EF80BA413e7`<br>Eden `0x254Fd6b521ac0f6911Ef10846D6fc932D9ed3191` |
 
-Every route runs through Celestia, so EVM to EVM is two hops.
-
-**Eden.** An evolve-stack chain. It had no Hyperlane deployment, so the mailbox and hook are
-ours.
+**Eden.** Evolve-stack; mailbox and hook are ours.
 
 ```
 chain id     3735928814      ~10 blocks/s
-mailbox      0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729
-merkle hook  0xCfBE7016D123d52A7Db4fc7D087cCb5421dbF8db   (tree at slot 151)
+mailbox      0x4D37EeeAE9fA656a85D15366f60dc55aa73a1907
+merkle hook  0xDF59A3c135B159a7Ac81b0140425C3B4Ba0407a9   (tree at slot 151)
 DA           mocha-5, namespace 0000000000000000000000000000000000005d2e074163aa3b4d9818
 sequencer    ed25519 4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d630b68d51
 ```
 
-**Host.** One server, `ark`, runs everything except the enclaves.
+**Base and Arbitrum.** Canonical Hyperlane deployments. Pinned sequencer keys:
+
+```
+base       0xb830b99c95Ea32300039624Cb567d324D4b1D83C   SystemConfig 0xf272670eb55e895584501d564AfEB048bEd26194 unsafeBlockSigner
+arbitrum   0x9396c22161c821231ad4ae8fcf991b4beee39990   SequencerInbox 0x6c97864CE4bEf387dE0b3310A44230f7E3F1be0D isSequencer
+```
+
+**Intel collateral (PCCS).** Ours, Automata's contracts at the same CREATE2 addresses on all four EVM chains (namespace `tee-isms/v2`, owner `0x318d22faa1e0f29eac7ef644a8fac676f6688d1e`):
+
+```
+entrypoint   0x1AeAc1f7280fb57c1A2d82bD7f76875a7C32A9d3
+router       0x46ccfafa9413dc904eb6dd07e5b3ef1ad6dc8cee
+v4 verifier  0xbdde242942c2c6dbd8194235d4011d8296aa6b08
+v5 verifier  0xccc63af1c2ed8777c31ed90a1acec8ef1c08e83f
+storage      0x7a58de47eb15fa9bcac84e1d917046c3792e85c9
+```
+
+The DAOs and helpers: `devnet/.state/deployment.json`, `evm.<chain>.pccs`.
+
+**Host.** `ark` runs everything except the enclaves.
 
 ```
 :3000  UI, and the only public way to reach the chain (/rpc /rest /api /evm/<chain>/ /tx/<hash>)
@@ -123,25 +130,25 @@ teeism-gas-oracle  systemd  paymaster upkeep
 
 ## Design
 
-- **One enclave per origin family.** A code change to one family only replaces that family's
-  ISMs: celestia → 4, ethereum → 3, evolve → 1. Shared code or `Cargo.lock` → all 8.
-- **Arbitrum and Base are slow on purpose.** A message waits until its rollup block is
-  confirmed on L1: ~1h40m for Arbitrum, 5 days for Base.
-- **Eden is re-executed.** The enclave replays Eden's blocks with ev-reth's own executor and
-  must reach the root the sequencer signed. The sequencer can reorder or stop, not invent state.
+- Enclave is stateless; its state lives in the ISM.
+- Shared CVM = one identity: any image change re-pins all 8 ISMs. A chain in its own CVM re-pins only its ISMs.
+- Re-pin in place: `TeeDcapIsm.setEnclave` (EVM, revision 3), `tx teeism update-identity` (Celestia). Address, root, height kept; no router moves.
+- `tx teeism set-verifier-overrides`: trust a rotated Intel root CA. Nothing relaxes Intel's verification.
+- `tx teeism update-owner`: hand an ISM to a multisig. EVM controls sit with the Automata owner. See [ADMIN.md](deploy/ADMIN.md).
+- Rollups: enclave checks the sequencer signature, takes the signed state root, proves the tree. No re-execution, no L1 wait.
+- Heartbeat: a quiet route attests daily with no messages, so its ISM stays near its origin's head. An empty batch cannot skip a message, and the enclave and both ISMs refuse one that moves the origin clock less than 30 minutes.
 
 ## Trust
 
-- **Trusted:** Intel TDX, the pinned enclave identity, each ISM's starting state, and on EVM
-  chains our Automata contracts.
-- **Not trusted:** RPCs, the relayer (it can stall, not forge), Phala beyond uptime, anything
-  sent to the enclave.
-- **Risks:** a TDX break forges anything; one EOA owns the ISMs, routers and Automata roles.
+- **Trusted:** Intel TDX, pinned identity and its re-pin key, each ISM's starting state, our Automata contracts (EVM), Base/Arbitrum/Eden sequencer keys.
+- **Not trusted:** RPCs, the relayer (can stall, not forge), Phala beyond uptime, enclave inputs.
+- **Risks:** a TDX break forges anything. The owner can re-pin any ISM to an enclave of its choice. One EOA owns ISMs, routers and Automata roles. Moves to a multisig before mainnet (`update-owner` on Celestia, `transferOwnership` on EVM).
 
 ## Tests
 
 ```sh
 cd tee-hyperlane && cargo test                        # state proofs, trees, L2 roots, Eden execution
 cd tee-hyperlane/contracts && forge test              # TeeDcapIsm.sol
+cd cli && cargo test                                  # teeism
 cd ../celestia-app-local && go test ./x/teeism/...    # the Celestia verifier
 ```

@@ -25,6 +25,7 @@ const RECENT_BATCHES: usize = 10;
 #[derive(Clone)]
 pub struct Api {
     proof_dir: Arc<PathBuf>,
+    upstream_file: Option<Arc<PathBuf>>,
     routes: Arc<Vec<RouteView>>,
     faucet: Option<Arc<Faucet>>,
 }
@@ -73,6 +74,10 @@ impl Api {
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             proof_dir: Arc::new(config.proof_dir()),
+            upstream_file: config
+                .upstream_file
+                .as_ref()
+                .map(|f| Arc::new(PathBuf::from(f))),
             routes: Arc::new(routes),
             faucet: Faucet::new(config)?.map(Arc::new),
         })
@@ -151,6 +156,7 @@ pub async fn serve(api: Api, tracker: Arc<crate::tracker::Tracker>, listen: &str
         .route("/api/attestation/{message_id}", get(attestation))
         .route("/api/faucet", get(faucet_info).post(faucet_claim))
         .route("/api/faucet/{address}", get(faucet_claimed))
+        .route("/api/v1/upstream", get(upstream))
         .with_state(api);
     let app = Router::new()
         .route(
@@ -163,6 +169,27 @@ pub async fn serve(api: Api, tracker: Arc<crate::tracker::Tracker>, listen: &str
     debug!(listen, "api listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// What `teeism upstream check` found: upgrades and releases that could break the bridge.
+/// Release notes kept for judging are left out; the item links to them.
+async fn upstream(State(api): State<Api>) -> Json<Value> {
+    let Some(path) = api.upstream_file.as_deref() else {
+        return Json(json!({ "configured": false, "items": [], "errors": [] }));
+    };
+    let mut v: Value = std::fs::read(path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .unwrap_or_else(|| json!({ "checked_at": null, "items": [], "errors": [] }));
+    if let Some(items) = v["items"].as_array_mut() {
+        for item in items {
+            if let Some(o) = item.as_object_mut() {
+                o.remove("body");
+            }
+        }
+    }
+    v["configured"] = true.into();
+    Json(v)
 }
 
 async fn status(State(api): State<Api>) -> Json<Vec<Value>> {
@@ -203,11 +230,9 @@ pub fn measurements(quote: &str, event_log: &str) -> Result<Measurements> {
 
 // ---------------------------------------------------------------- faucet
 //
-// One grant of test TIA per Celestia address, from the chain named by `[faucet]` in the config.
+// One grant per Celestia address, of every coin `[faucet]` lists, from the chain it names.
 // A claim is recorded as a file before anything is sent, so two requests racing for one address
 // cannot both be paid.
-
-const GRANT_UTIA: u64 = 1_000_000_000;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -217,6 +242,38 @@ pub struct FaucetConfig {
     /// The funded key in that chain's keyring.
     #[serde(default = "default_faucet_key")]
     pub key: String,
+    /// What each address gets, all in one send. 1000 TIA when absent.
+    #[serde(default = "default_grants")]
+    pub grants: Vec<Grant>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Grant {
+    pub symbol: String,
+    pub denom: String,
+    /// Base units.
+    pub amount: u64,
+    #[serde(default = "default_grant_decimals")]
+    pub decimals: u8,
+    /// The faucet stops paying once its key holds less than this, in base units, so the
+    /// account it pays from keeps a reserve.
+    #[serde(default)]
+    pub floor: Option<u64>,
+}
+
+fn default_grants() -> Vec<Grant> {
+    vec![Grant {
+        symbol: "TIA".into(),
+        denom: "utia".into(),
+        amount: 1_000_000_000,
+        decimals: 6,
+        floor: None,
+    }]
+}
+
+fn default_grant_decimals() -> u8 {
+    6
 }
 
 fn default_faucet_key() -> String {
@@ -229,6 +286,7 @@ struct Faucet {
     chain_id: String,
     home: String,
     key: String,
+    grants: Vec<Grant>,
 }
 
 impl Faucet {
@@ -236,7 +294,7 @@ impl Faucet {
         let Some(faucet) = &config.faucet else {
             return Ok(None);
         };
-        let chain: crate::origin::celestia::Config = config.chain(&faucet.chain)?;
+        let chain: crate::origin::l1::celestia::Config = config.chain(&faucet.chain)?;
         Ok(Some(Self {
             claims: config.proof_dir().join(".faucet"),
             rpc: chain.rpc,
@@ -246,6 +304,7 @@ impl Faucet {
                 .or_else(|| std::env::var("CELHOME").ok())
                 .context("the faucet chain needs `home` or CELHOME")?,
             key: faucet.key.clone(),
+            grants: faucet.grants.clone(),
         }))
     }
 
@@ -264,6 +323,9 @@ impl Faucet {
                 format!("the faucet could not send: {e}"),
             )
         };
+        if let Some(why) = self.paused().await.map_err(|e| fail(e.to_string()))? {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, why));
+        }
         std::fs::create_dir_all(&self.claims).map_err(|e| fail(e.to_string()))?;
         let marker = self.claims.join(address);
         let mut file = match std::fs::OpenOptions::new()
@@ -281,7 +343,12 @@ impl Faucet {
             Err(e) => return Err(fail(e.to_string())),
         };
         let appd = std::env::var("APPD").unwrap_or_else(|_| "celestia-appd".into());
-        let amount = format!("{GRANT_UTIA}utia");
+        let amount = self
+            .grants
+            .iter()
+            .map(|g| format!("{}{}", g.amount, g.denom))
+            .collect::<Vec<_>>()
+            .join(",");
         let sent = tokio::process::Command::new(&appd)
             .args([
                 "tx",
@@ -303,7 +370,7 @@ impl Faucet {
                 "--fees",
                 "200000utia",
                 "--gas",
-                "200000",
+                "300000",
                 "-y",
                 "-o",
                 "json",
@@ -341,8 +408,81 @@ impl Faucet {
     }
 }
 
+impl Faucet {
+    /// Why the faucet is not paying, when one of its grants would take the key below its floor.
+    async fn paused(&self) -> Result<Option<String>> {
+        let appd = std::env::var("APPD").unwrap_or_else(|_| "celestia-appd".into());
+        let mut address: Option<String> = None;
+        for g in self.grants.iter().filter(|g| g.floor.is_some()) {
+            let floor = g.floor.unwrap_or(0);
+            if address.is_none() {
+                let out = tokio::process::Command::new(&appd)
+                    .args([
+                        "keys",
+                        "show",
+                        &self.key,
+                        "-a",
+                        "--home",
+                        &self.home,
+                        "--keyring-backend",
+                        "test",
+                    ])
+                    .output()
+                    .await?;
+                address = Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
+            }
+            let out = tokio::process::Command::new(&appd)
+                .args([
+                    "query",
+                    "bank",
+                    "balance",
+                    address.as_deref().unwrap_or(""),
+                    &g.denom,
+                ])
+                .args(["--node", &self.rpc, "-o", "json"])
+                .output()
+                .await?;
+            let body: Value = serde_json::from_slice(&out.stdout)
+                .with_context(|| String::from_utf8_lossy(&out.stderr).trim().to_string())?;
+            let held: u128 = body["balance"]["amount"]
+                .as_str()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
+            if held < floor as u128 + g.amount as u128 {
+                let whole = |n: u128| n / 10u128.pow(g.decimals as u32);
+                return Ok(Some(format!(
+                    "The faucet is paused: it keeps a reserve of {} {}, and holds {}.",
+                    whole(floor as u128),
+                    g.symbol,
+                    whole(held)
+                )));
+            }
+        }
+        Ok(None)
+    }
+}
+
 async fn faucet_info(State(api): State<Api>) -> Json<Value> {
-    Json(json!({ "enabled": api.faucet.is_some(), "amountTia": GRANT_UTIA / 1_000_000 }))
+    let grants = api
+        .faucet
+        .as_ref()
+        .map(|f| f.grants.clone())
+        .unwrap_or_default();
+    let tia = grants
+        .iter()
+        .find(|g| g.denom == "utia")
+        .map_or(0, |g| g.amount / 1_000_000);
+    let paused = match &api.faucet {
+        Some(f) => f
+            .paused()
+            .await
+            .unwrap_or_else(|e| Some(format!("The faucet cannot read its balance: {e}"))),
+        None => None,
+    };
+    Json(
+        json!({ "enabled": api.faucet.is_some(), "amountTia": tia, "grants": grants, "paused": paused }),
+    )
 }
 
 async fn faucet_claimed(State(api): State<Api>, Path(address): Path<String>) -> Json<Value> {
@@ -370,6 +510,6 @@ async fn faucet_claim(
         .unwrap_or_default();
     let tx = faucet.claim(&address).await.map_err(deny)?;
     Ok(Json(
-        json!({ "address": address, "amount_tia": GRANT_UTIA / 1_000_000, "tx_hash": tx }),
+        json!({ "address": address, "grants": faucet.grants, "tx_hash": tx }),
     ))
 }

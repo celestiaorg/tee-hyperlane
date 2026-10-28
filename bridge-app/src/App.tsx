@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   CELESTIA_DENOM,
   CHAINS,
   RELAYER_API,
-  ORIGIN_FINALITY,
-  SLOW_ORIGIN_SECONDS,
   expectedSeconds,
   routeIsLive,
   whyNotLive,
@@ -15,32 +14,36 @@ import {
   describeError,
   fetchBalance,
   formatAmount,
-  formatFee,
   quoteBridgeFee,
-  messageIdFromReceipt,
+  waitForCelestiaMessageId,
+  waitForMessageId,
+  NONCE_RETRYING,
+  normaliseAttestation,
   refresh,
   sendFromEvm,
-  STEPS,
   toBaseUnits,
   toRecipientBytes32,
 } from "./bridge";
-import type { BridgeFee, Step, Transfer } from "./bridge";
+import type { BridgeFee, Transfer } from "./bridge";
 import type { WiredIsm } from "./ism";
-import { resolveWiredIsm, shortId } from "./ism";
-import { messageIdFromCelestiaTx, sendFromCelestia } from "./celestia";
+import { resolveWiredIsm } from "./ism";
+import { sendFromCelestia } from "./celestia";
 import {
   connectKeplr,
   connectMetaMask,
   restoreKeplr,
   restoreMetaMask,
-  walletFor,
 } from "./wallets";
 import type { Account } from "./wallets";
+import { BridgeView } from "./ui/BridgeView";
+import { FaucetView } from "./ui/FaucetView";
+import { HistoryView } from "./ui/HistoryView";
+import { describeDuration, shorten } from "./ui/shared";
 
 /// Every route has Celestia on one side. The bridge is a hub, not a mesh: each EVM chain's
 /// ISM trusts Celestia and Celestia's trusts each EVM chain, and no EVM chain trusts another.
 const COUNTERPARTIES: ChainId[] = ["sepolia", "arbitrum", "base", "eden"];
-const TOKENS: TokenId[] = ["TIA", "USDC"];
+const TOKENS: TokenId[] = ["TIA", "teeUSD"];
 
 /// The relayer and the gas oracle serve their own dashboards beside this one. Linking out
 /// beats reimplementing them here, which is what the Prover tab was doing, worse.
@@ -52,17 +55,33 @@ function service(port: number): string {
   return `${window.location.protocol}//${window.location.hostname}:${port}/`;
 }
 
-const STEP_LABEL: Record<Step, string> = {
-  dispatched: "Dispatched",
-  attested: "Attested by enclave",
-  authorised: "Authorised by ISM",
-  delivered: "Delivered",
-};
+type Tab = "bridge" | "faucet" | "history";
+
+function tabFromHash(): Tab {
+  const name = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+  return name === "history" || name === "faucet" ? name : "bridge";
+}
+
+/// The search a `#history?q=…` link carries.
+function queryFromHash(): string {
+  const [, query = ""] = window.location.hash.split("?");
+  return new URLSearchParams(query).get("q") ?? "";
+}
 
 export default function App() {
   const [evm, setEvm] = useState<Account | null>(null);
   const [cosmos, setCosmos] = useState<Account | null>(null);
-  const [tab, setTab] = useState<"bridge" | "faucet" | "history">("bridge");
+  // The tab lives in the URL hash, so a reload keeps it and `#history?q=<tx>` links a search.
+  const [tab, setTabState] = useState<Tab>(tabFromHash);
+  const setTab = useCallback((next: Tab) => {
+    setTabState(next);
+    if (tabFromHash() !== next) window.location.hash = next === "bridge" ? "" : next;
+  }, []);
+  useEffect(() => {
+    const onHash = () => setTabState(tabFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [counterparty, setCounterparty] = useState<ChainId>("sepolia");
   const [outbound, setOutbound] = useState(true);
   const [token, setToken] = useState<TokenId>("TIA");
@@ -75,6 +94,22 @@ export default function App() {
   const [ismError, setIsmError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  // A passing message about the send in progress, such as a retry.
+  const [notice, setNotice] = useState<string | null>(null);
+  // The relayer's own delivery accounts, so connecting one of them can be warned about.
+  const [relayerWallets, setRelayerWallets] = useState<string[]>([]);
+  useEffect(() => {
+    fetch(`${RELAYER_API}/v1/wallets`)
+      .then((r) => r.json())
+      .then((wallets: { address?: string }[]) =>
+        setRelayerWallets(
+          (Array.isArray(wallets) ? wallets : [])
+            .map((w) => (w.address ?? "").toLowerCase())
+            .filter(Boolean),
+        ),
+      )
+      .catch(() => {});
+  }, []);
   // Shown once the origin transaction is in a block and the message id is known, which is the
   // moment the relayer can actually see it. Anything earlier would be claiming more than we know.
   const [confirmed, setConfirmed] = useState<Confirmation | null>(null);
@@ -260,7 +295,9 @@ export default function App() {
           recipient: target,
           amount: wanted,
           sender: evm.address,
+          onNonceRetry: () => setNotice(NONCE_RETRYING),
         });
+        setNotice(null);
         messageId = await waitForMessageId(source as EvmChain, tx);
       } else {
         if (!cosmos) throw new Error("Connect Keplr first");
@@ -305,6 +342,7 @@ export default function App() {
       setAmount("");
       loadBalances();
     } catch (e) {
+      setNotice(null);
       setError(describeError(e));
     } finally {
       setSending(false);
@@ -313,6 +351,35 @@ export default function App() {
     amount, cosmos, defaultRecipient, destination, evm, from, loadBalances, recipient, source,
     to, token,
   ]);
+
+  // Transfers that have not landed are re-checked on load and every 15 seconds, so their
+  // status moves on its own. Refs keep the timer from restarting on every change.
+  const transfersRef = useRef(transfers);
+  transfersRef.current = transfers;
+  const loadBalancesRef = useRef(loadBalances);
+  loadBalancesRef.current = loadBalances;
+  useEffect(() => {
+    let busy = false;
+    const tick = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const open = transfersRef.current.filter((t) => t.reached !== "delivered").slice(0, 20);
+        for (const t of open) {
+          const next = await refresh(t).catch(() => t);
+          // An unreachable RPC is not a failed transfer; only real progress is applied here.
+          if (next.failure || next.reached === t.reached) continue;
+          setTransfers((all) => all.map((x) => (x.messageId === t.messageId ? next : x)));
+          if (next.reached === "delivered") loadBalancesRef.current();
+        }
+      } finally {
+        busy = false;
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 15_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const update = useCallback(
     async (messageId: string) => {
@@ -325,391 +392,134 @@ export default function App() {
     [transfers, loadBalances],
   );
 
+  const tabs: { id: typeof tab; label: string }[] = [
+    { id: "bridge", label: "Bridge" },
+    { id: "history", label: "History" },
+    { id: "faucet", label: "Faucet" },
+  ];
+
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand">TEE Bridge</span>
-        <nav className="tabs">
-          <button
-            className={tab === "bridge" ? "tab on" : "tab"}
-            onClick={() => setTab("bridge")}
-          >
-            Bridge
-          </button>
-          <button
-            className={tab === "history" ? "tab on" : "tab"}
-            onClick={() => setTab("history")}
-          >
-            History
-            {/* The count is the reason to look, so it belongs on the tab rather than behind it. */}
-            {transfers.length > 0 && <span className="tab-count">{transfers.length}</span>}
-          </button>
-          <button
-            className={tab === "faucet" ? "tab on" : "tab"}
-            onClick={() => setTab("faucet")}
-          >
-            Faucet
-          </button>
-          <a className="tab" href={service(RELAYER_PORT)} target="_blank" rel="noreferrer">
-            Relayer
+        <div className="topbar-inner">
+          <a className="brand" href="#" onClick={(e) => { e.preventDefault(); setTab("bridge"); }}>
+            <span>TEE Interchain Solutions</span>
           </a>
-          <a className="tab" href={service(ORACLE_PORT)} target="_blank" rel="noreferrer">
-            Gas Oracle
-          </a>
-        </nav>
-        <div className="wallets">
-          {evm ? (
-            <span className="pill">{shorten(evm.address)}</span>
-          ) : (
-            <button className="pill action" onClick={() => connect(counterparty)}>
-              Connect MetaMask
-            </button>
-          )}
-          {cosmos ? (
-            <span className="pill">{shorten(cosmos.address)}</span>
-          ) : (
-            <button className="pill action" onClick={() => connect("celestia")}>
-              Connect Keplr
-            </button>
-          )}
+          <nav className="tabs">
+            {tabs.map((t) => (
+              <button key={t.id} className={tab === t.id ? "tab on" : "tab"} onClick={() => setTab(t.id)}>
+                {t.label}
+                {t.id === "history" && transfers.length > 0 && <span className="tab-count">{transfers.length}</span>}
+              </button>
+            ))}
+            <a className="tab ext" href={service(RELAYER_PORT)} target="_blank" rel="noreferrer">
+              Relayer ↗
+            </a>
+            <a className="tab ext" href={service(ORACLE_PORT)} target="_blank" rel="noreferrer">
+              Gas Oracle ↗
+            </a>
+          </nav>
+          <div className="wallets">
+            <WalletButton label="MetaMask" account={evm} onConnect={() => connect(counterparty)} />
+            <WalletButton label="Keplr" account={cosmos} onConnect={() => connect("celestia")} />
+          </div>
         </div>
       </header>
 
-      <main className="center">
-        {tab === "faucet" ? (
-          <Faucet address={cosmos?.address ?? null} onFunded={loadBalances} />
+      <main className={tab === "history" ? "page" : "page bridge-page"}>
+        <ViewBoundary key={tab}>
+        {tab === "bridge" ? (
+          <BridgeView
+            from={from}
+            to={to}
+            token={token}
+            tokens={TOKENS}
+            amount={amount}
+            recipient={recipient}
+            defaultRecipient={defaultRecipient}
+            sourceBalance={sourceBalance}
+            destinationBalance={destinationBalance}
+            fee={fee}
+            ism={ism}
+            ismError={ismError}
+            live={live}
+            notLive={whyNotLive(token, from, to)}
+            error={error}
+            sending={sending}
+            connected={Boolean(accountFor(from))}
+            notice={notice}
+            relayerAccount={Boolean(evm && relayerWallets.includes(evm.address.toLowerCase()))}
+            onConnect={() => connect(from)}
+            onPickFrom={pickFrom}
+            onPickTo={pickTo}
+            onFlip={() => setOutbound((v) => !v)}
+            onToken={setToken}
+            onAmount={setAmount}
+            onRecipient={setRecipient}
+            onSend={send}
+          />
         ) : tab === "history" ? (
-          <section className="card history">
-            <div className="card-head">
-              <h1>History</h1>
-              {transfers.length > 0 && (
-                <span className="history-count">
-                  {transfers.length} transfer{transfers.length === 1 ? "" : "s"}
-                </span>
-              )}
-            </div>
-            {transfers.length === 0 ? (
-              <p className="note">
-                Nothing sent from this browser yet. Transfers are kept locally, so this list is
-                per browser and not per wallet.
-              </p>
-            ) : (
-              // Scrolls inside the card rather than the page, so the heading and the count stay
-              // put while a long history moves under them.
-              <div className="history-scroll">
-                <ul className="transfers">
-                  {transfers.map((t) => (
-                    <TransferRow
-                      key={t.messageId}
-                      transfer={t}
-                      onRefresh={() => update(t.messageId)}
-                    />
-                  ))}
-                </ul>
-              </div>
-            )}
-          </section>
+          <HistoryView
+            transfers={transfers}
+            onRefresh={update}
+            relayerUrl={service(RELAYER_PORT)}
+            initialQuery={queryFromHash()}
+          />
         ) : (
-          <>
-          <section className="card">
-            <div className="card-head">
-              <h1>Bridge</h1>
-            </div>
-
-            <div className="field">
-              <div className="field-top">
-                <span className="panel-label">From</span>
-                <ChainPicker value={from} onChange={pickFrom} />
-              </div>
-              <div className="field-row">
-                <input
-                  className="amount"
-                  value={amount}
-                  placeholder="0"
-                  inputMode="decimal"
-                  onChange={(e) => setAmount(e.target.value)}
-                />
-                <select
-                  className="token-select"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value as TokenId)}
-                  aria-label="Token"
-                >
-                  {TOKENS.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="field-bottom">
-                <span>
-                  {sourceBalance === undefined
-                    ? `Connect ${walletFor(source)} to see your balance`
-                    : `Balance ${formatAmount(sourceBalance, token)} ${token}`}
-                </span>
-                {sourceBalance !== undefined && sourceBalance > 0n && (
-                  <button
-                    className="max"
-                    onClick={() => setAmount(formatAmount(sourceBalance, token))}
-                  >
-                    Max
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <button
-              className="flip"
-              onClick={() => setOutbound((v) => !v)}
-              title="Swap direction"
-              aria-label="Swap direction"
-            >
-              ↓
-            </button>
-
-            <div className="field">
-              <div className="field-top">
-                <span className="panel-label">To</span>
-                <ChainPicker value={to} onChange={pickTo} />
-              </div>
-              <div className="field-row">
-                <span className={amount ? "amount received" : "amount received empty"}>
-                  {amount || "0"}
-                </span>
-                <span className="token-pill">{token}</span>
-              </div>
-              <div className="field-bottom">
-                <span>
-                  {destinationBalance === undefined
-                    ? `Connect ${walletFor(destination)} to see your balance`
-                    : `Balance ${formatAmount(destinationBalance, token)} ${token}`}
-                </span>
-              </div>
-            </div>
-
-            <label className="recipient">
-              Recipient on {destination.name}
-              <input
-                value={recipient}
-                placeholder={defaultRecipient || `Address on ${destination.name}`}
-                onChange={(e) => setRecipient(e.target.value)}
-              />
-            </label>
-
-            {ORIGIN_FINALITY[from].seconds >= SLOW_ORIGIN_SECONDS && (
-              <p className="wait">
-                <strong>
-                  Expected {describeWhen(Date.now() + expectedSeconds(from) * 1000)}, about{" "}
-                  {describeDuration(expectedSeconds(from))} from now.
-                </strong>{" "}
-                {ORIGIN_FINALITY[from].reason} The transfer is safe to leave. It appears below
-                with its expected arrival, and you can close this page.
-              </p>
-            )}
-
-            <dl className="quote">
-              <dt>Delivery fee</dt>
-              <dd>{fee ? formatFee(fee) : "quoting…"}</dd>
-              <dt>Arrives</dt>
-              <dd>{describeDuration(expectedSeconds(from))} from now</dd>
-              <dt>Verified on arrival by</dt>
-              <dd>
-                {ismError ? (
-                  <span className="ism-bad">could not read it: {ismError}</span>
-                ) : !ism ? (
-                  "reading…"
-                ) : (
-                  <>
-                    {ism.url ? (
-                      <a href={ism.url} target="_blank" rel="noreferrer" title={ism.id}>
-                        {shortId(ism.id)}
-                      </a>
-                    ) : (
-                      <span title={ism.id}>{shortId(ism.id)}</span>
-                    )}
-                    <span className="ism-where"> on {destination.name}</span>
-                    {ism.via && <span className="ism-via">{ism.via}</span>}
-                  </>
-                )}
-              </dd>
-            </dl>
-
-            {!live && <p className="note">{whyNotLive(token, from, to)}</p>}
-            {error && <p className="error">{error}</p>}
-
-            <button className="primary" onClick={send} disabled={!live || sending || !amount}>
-              {sending ? "Confirm in your wallet…" : `Bridge ${token}`}
-            </button>
-
-            <p className="note">
-              Signed in {walletFor(source)}. Arrival waits for {source.name} to finalise, then the
-              enclave attests it and the destination verifies the quote. About{" "}
-              {describeDuration(expectedSeconds(from))}.
-            </p>
-          </section>
-
-          {/* Transfers live on their own tab now. What belongs beside the form is the one
-              transfer you just sent, not a growing list that pushes the form off screen. */}
-          {transfers.length > 0 && (
-            <p className="note recent">
-              <button className="linklike" onClick={() => setTab("history")}>
-                {transfers.length} transfer{transfers.length === 1 ? "" : "s"} in History
-              </button>
-              , most recently {describeWhen(transfers[0].sentAt)}.
-            </p>
-          )}
-          </>
+          <FaucetView
+            address={cosmos?.address ?? null}
+            onFunded={loadBalances}
+            onConnect={() => connect("celestia")}
+          />
         )}
+        </ViewBoundary>
       </main>
+
       {confirmed && <ConfirmedDialog confirmation={confirmed} onClose={() => setConfirmed(null)} />}
     </div>
   );
 }
 
-
-const ALL_CHAINS: ChainId[] = ["celestia", ...COUNTERPARTIES];
-
-/// A chain pill, as in a swap form's token picker: every chain on both sides, and the form
-/// works out the other side.
-function ChainPicker({ value, onChange }: { value: ChainId; onChange: (c: ChainId) => void }) {
-  return (
-    <select
-      className="chain-select"
-      value={value}
-      onChange={(e) => onChange(e.target.value as ChainId)}
-      aria-label="Chain"
-    >
-      {ALL_CHAINS.map((id) => (
-        <option key={id} value={id}>{CHAINS[id].name}</option>
-      ))}
-    </select>
-  );
+/// One broken view shows a message instead of blanking the whole page.
+class ViewBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+  static getDerivedStateFromError(e: unknown) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <section className="panel">
+        <p className="error">This view hit an error: {this.state.error}</p>
+        <button className="secondary" onClick={() => this.setState({ error: null })}>
+          Try again
+        </button>
+      </section>
+    );
+  }
 }
 
-function TransferRow({
-  transfer,
-  onRefresh,
+function WalletButton({
+  label,
+  account,
+  onConnect,
 }: {
-  transfer: Transfer;
-  onRefresh: () => void;
+  label: string;
+  account: Account | null;
+  onConnect: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const reachedIndex = STEPS.indexOf(transfer.reached);
-  const expected = transfer.sentAt + expectedSeconds(transfer.from) * 1000;
-  const slow = ORIGIN_FINALITY[transfer.from].seconds >= SLOW_ORIGIN_SECONDS;
-
-  return (
-    <li>
-      <div className="row">
-        <div>
-          <strong>{transfer.amount} {transfer.token}</strong>
-          <span className="muted">
-            {CHAINS[transfer.from].name} → {CHAINS[transfer.to].name}
-          </span>
-        </div>
-        <button className="pill action" onClick={onRefresh}>Check</button>
-      </div>
-
-      <p className="timing">
-        {transfer.reached === "delivered"
-          ? `Landed ${describeWhen(transfer.deliveredAt ?? Date.now())}`
-          : `Sent ${describeWhen(transfer.sentAt)}, expected ${describeWhen(expected)}` +
-            (slow ? `, waiting on ${CHAINS[transfer.from].name}'s dispute window` : "")}
-      </p>
-
-      <ol className="steps">
-        {STEPS.map((step, index) => (
-          <li key={step} className={index <= reachedIndex ? "done" : ""}>
-            {STEP_LABEL[step]}
-          </li>
-        ))}
-      </ol>
-
-      <dl className="detail">
-        <dt>Message</dt>
-        <dd><code>{shorten(transfer.messageId, 10)}</code></dd>
-        <dt>Origin transaction</dt>
-        <dd>
-          <a
-            href={`${(CHAINS[transfer.from] as any).explorer}/tx/${transfer.originTx}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {shorten(transfer.originTx, 10)}
-          </a>
-        </dd>
-      </dl>
-
-      {transfer.failure && <p className="error">{transfer.failure}</p>}
-
-      {transfer.attestation && (
-        <div className="attestation">
-          <button className="link" onClick={() => setOpen(!open)}>
-            {open ? "Hide attestation" : "Show attestation"}
-          </button>
-          {open && (
-            <dl className="detail">
-              <dt>Origin block</dt>
-              <dd>{transfer.attestation.height}</dd>
-              <dt>State root</dt>
-              <dd><code>{shorten(transfer.attestation.stateRoot, 10)}</code></dd>
-              <dt>Enclave image</dt>
-              <dd><code>{shorten(transfer.attestation.measurements.composeHash, 10)}</code></dd>
-              <dt>OS image</dt>
-              <dd><code>{shorten(transfer.attestation.measurements.osImageHash, 10)}</code></dd>
-              <dt>Batch</dt>
-              <dd>
-                {transfer.attestation.batch.length} message
-                {transfer.attestation.batch.length === 1 ? "" : "s"} attested together
-              </dd>
-              <dt>Quote</dt>
-              <dd className="quote"><code>{transfer.attestation.quote.slice(0, 96)}…</code></dd>
-            </dl>
-          )}
-        </div>
-      )}
-    </li>
+  return account ? (
+    <span className="wallet on" title={account.address}>
+      <span className="wallet-dot" />
+      {shorten(account.address, 4)}
+    </span>
+  ) : (
+    <button className="wallet" onClick={onConnect}>
+      Connect {label}
+    </button>
   );
 }
 
-/// Times within a day are a clock reading; anything further out needs the date, or a
-/// five-day wait reads as "arrives at 3pm" and looks broken.
-function describeWhen(at: number): string {
-  const withinADay = Math.abs(at - Date.now()) < 24 * 60 * 60 * 1000;
-  return new Date(at).toLocaleString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    ...(withinADay ? {} : { month: "short", day: "numeric" }),
-  });
-}
-
-function describeDuration(seconds: number): string {
-  if (seconds < 90 * 60) return `${Math.round(seconds / 60)} minutes`;
-  if (seconds < 36 * 60 * 60) return `${Math.round(seconds / 3600)} hours`;
-  return `${Math.round(seconds / 86400)} days`;
-}
-
-function shorten(value: string, keep = 6): string {
-  if (value.length <= keep * 2 + 2) return value;
-  return `${value.slice(0, keep + 2)}…${value.slice(-keep)}`;
-}
-
-async function waitForCelestiaMessageId(chain: CosmosChain, tx: string): Promise<string> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const id = await messageIdFromCelestiaTx(chain, tx);
-    if (id) return id;
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-  }
-  throw new Error("Transaction did not confirm in time; check the explorer");
-}
-
-async function waitForMessageId(chain: EvmChain, tx: string): Promise<string> {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const id = await messageIdFromReceipt(chain, tx);
-    if (id) return id;
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-  }
-  throw new Error("Transaction did not confirm in time; check the explorer");
-}
 
 /// What the dialog needs to say, captured at the moment the send succeeded.
 ///
@@ -727,9 +537,9 @@ type Confirmation = {
 
 /// Confirmation of a send, and an honest description of what happens next.
 ///
-/// It says "added to the prover queue" rather than "sent", because that is the true state:
-/// the origin chain has the transaction, and the relayer will pick it up, attest it, and
-/// prove it. Calling it complete here is what would make the following hour feel broken.
+/// It says the transfer is on its way rather than done, because that is the true state: the
+/// origin chain has the transaction, and the relayer still has to have it attested and
+/// delivered.
 function ConfirmedDialog({
   confirmation,
   onClose,
@@ -762,7 +572,7 @@ function ConfirmedDialog({
         </svg>
 
         <h3 id="confirm-title">Transaction confirmed</h3>
-        <p className="confirm-lead">Added to the prover queue</p>
+        <p className="confirm-lead">On its way to the enclave</p>
 
         <dl className="confirm-facts">
           <div>
@@ -804,7 +614,11 @@ const STORAGE_KEY = `tee-bridge-transfers:${(CHAINS.celestia as CosmosChain).cha
 
 function loadTransfers(): Transfer[] {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+    const stored: Transfer[] = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+    return stored.map((t) => ({
+      ...t,
+      attestation: t.attestation ? (normaliseAttestation(t.attestation) ?? undefined) : undefined,
+    }));
   } catch {
     return [];
   }
@@ -818,136 +632,5 @@ function saveTransfers(transfers: Transfer[]) {
   }
 }
 
-
-/// The devnet faucet: a fixed grant of TIA, once per address.
-///
-/// It asks the relayer API rather than signing anything here. The grant comes out of an
-/// account on the deployment host, so the browser's only job is to name a recipient.
-function Faucet({
-  address,
-  onFunded,
-}: {
-  address: string | null;
-  onFunded: () => void;
-}) {
-  const [amount, setAmount] = useState<number | null>(null);
-  const [enabled, setEnabled] = useState(true);
-  const [claimed, setClaimed] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [txHash, setTxHash] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    fetch(`${RELAYER_API}/faucet`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (!live) return;
-        setEnabled(Boolean(d.enabled));
-        setAmount(Number(d.amountTia));
-      })
-      .catch(() => live && setEnabled(false));
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  // Asked per address rather than remembered in the browser: the claim is recorded on the
-  // host, so clearing site data or opening another browser must not offer a second grant.
-  useEffect(() => {
-    setTxHash(null);
-    setError(null);
-    setClaimed(false);
-    if (!address) return;
-    let live = true;
-    fetch(`${RELAYER_API}/faucet/${address}`)
-      .then((r) => r.json())
-      .then((d) => live && setClaimed(Boolean(d.claimed)))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [address]);
-
-  const claim = useCallback(async () => {
-    if (!address) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`${RELAYER_API}/faucet`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error ?? `the faucet returned ${res.status}`);
-      setClaimed(true);
-      setTxHash(String(body.tx_hash));
-      onFunded();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }, [address, onFunded]);
-
-  return (
-    <section className="card">
-      <div className="card-head">
-        <h1>Faucet</h1>
-      </div>
-
-      {!enabled ? (
-        <p className="note">The faucet is not configured on this deployment.</p>
-      ) : (
-        <>
-          <p className="note">
-            {amount ?? 1000} TIA on the test chain, once per address. Enough to try every
-            route a few times over.
-          </p>
-
-          <div className="field">
-            <div className="field-top">
-              <span>Recipient</span>
-            </div>
-            <div className="field-row">
-              <input
-                className="amount"
-                readOnly
-                value={address ?? ""}
-                placeholder="Connect Keplr to claim"
-              />
-            </div>
-          </div>
-
-          {!address ? (
-            <p className="note">Connect Keplr and the faucet will send to that address.</p>
-          ) : claimed && !txHash ? (
-            <p className="note">This address has already claimed.</p>
-          ) : (
-            <button
-              className="primary"
-              disabled={busy || (claimed && !txHash)}
-              onClick={claim}
-            >
-              {busy ? "Sending" : `Claim ${amount ?? 1000} TIA`}
-            </button>
-          )}
-
-          {txHash && (
-            <p className="note">
-              Sent.{" "}
-              <a href={`/tx/${txHash}`} target="_blank" rel="noreferrer">
-                {shorten(txHash, 8)}
-              </a>{" "}
-              It lands in the next block.
-            </p>
-          )}
-          {error && <p className="note error">{error}</p>}
-        </>
-      )}
-    </section>
-  );
-}
 
 export { formatAmount, CELESTIA_DENOM };

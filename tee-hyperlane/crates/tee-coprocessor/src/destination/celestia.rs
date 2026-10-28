@@ -7,7 +7,7 @@ use serde_json::Value;
 use tee_node::state::IsmState;
 use tracing::debug;
 
-use super::{run, Batch, Delivery, Destination, Outcome, Wallet};
+use super::{run, Batch, Delivery, Destination, Outcome, Wallet, Submitted};
 
 /// Celestia: `x/teeism` submit-attestation, with fresh Intel collateral carried in the
 /// transaction, then `hyperlane mailbox process` per message.
@@ -34,9 +34,9 @@ impl Celestia {
     }
 
     /// Broadcast and wait for inclusion, since `sync` only means the node accepted it.
-    async fn send(&self, args: &[&str]) -> Result<()> {
+    async fn send(&self, args: &[&str]) -> Result<String> {
         match self.send_checked(args).await? {
-            Ok(_) => Ok(()),
+            Ok(hash) => Ok(hash),
             Err(Refusal { reason, .. }) => Err(anyhow::anyhow!(reason)),
         }
     }
@@ -133,10 +133,11 @@ impl Destination for Celestia {
         Ok(IsmState::decode(&raw)?)
     }
 
-    async fn submit(&self, batch: &Batch) -> Result<Vec<Delivery>> {
+    async fn submit(&self, batch: &Batch) -> Result<Submitted> {
         let ism = self.query(&["teeism", "ism", &self.ism]).await?;
         let state = base64::engine::general_purpose::STANDARD
             .decode(ism["ism"]["state"].as_str().context("ism.state")?)?;
+        let mut attestation_tx = None;
         if !batch.advanced(&state)? {
             // The module verifies the quote itself, against collateral it is handed rather than
             // collateral stored on chain, so nothing here expires.
@@ -166,13 +167,15 @@ impl Destination for Celestia {
                     "collateral": serde_json::from_slice::<Value>(&std::fs::read(&collateral)?)?,
                 }))?,
             )?;
-            self.send(&[
-                "teeism",
-                "submit-attestation",
-                &self.ism,
-                bundle.to_str().unwrap(),
-            ])
-            .await?;
+            attestation_tx = Some(
+                self.send(&[
+                    "teeism",
+                    "submit-attestation",
+                    &self.ism,
+                    bundle.to_str().unwrap(),
+                ])
+                .await?,
+            );
         }
         let mut out = Vec::new();
         for (id, message) in batch.for_domain(self.domain) {
@@ -188,7 +191,10 @@ impl Destination for Celestia {
                 outcome,
             });
         }
-        Ok(out)
+        Ok(Submitted {
+            attestation_tx,
+            deliveries: out,
+        })
     }
 
     async fn deliver(&self, message: &[u8]) -> Result<Outcome> {

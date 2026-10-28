@@ -10,13 +10,19 @@
 const sameOrigin = (path: string): string =>
   typeof window === "undefined" ? path : `${window.location.origin}${path}`;
 
-/// A deployment value that the local devnet overrides.
-///
-/// `make start` writes these into .env.local from what `make init` actually deployed, so the
-/// devnet points at a chain whose ids are minted at genesis and cannot be known in advance.
-/// Unset, every one of them falls back to the live testnet value below.
+/// A setting from .env.local, with a default for what is not specific to one deployment
+/// (an endpoint, a name).
 const env = (key: string, fallback: string): string =>
   (import.meta.env[key] as string | undefined) ?? fallback;
+
+/// An id this deployment created, from .env.local, which `teeism ui` writes from the deployment
+/// record. Never a default: a missing id stays empty (a router reads as not deployed) rather
+/// than pointing at a contract from an earlier deployment.
+const deployed = (key: string): string => (import.meta.env[key] as string | undefined) ?? "";
+
+/// An EVM address this deployment did not provide.
+const NO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const deployedAddress = (key: string) => (deployed(key) || NO_ADDRESS) as `0x${string}`;
 
 const envNum = (key: string, fallback: number): number => {
   const raw = import.meta.env[key] as string | undefined;
@@ -25,7 +31,7 @@ const envNum = (key: string, fallback: number): number => {
 };
 
 export type ChainId = "sepolia" | "arbitrum" | "base" | "eden" | "celestia";
-export type TokenId = "TIA" | "USDC";
+export type TokenId = "TIA" | "teeUSD";
 
 export interface EvmChain {
   kind: "evm";
@@ -75,7 +81,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     // Etherscan link lands on raw bytecode. Verifying both would need an Etherscan API key.
     explorer: "https://eth-sepolia.blockscout.com",
     mailbox: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
-    ism: env("VITE_SEPOLIA_ISM", "0x83B41448ADfBdde1926575f774489892F88190A8") as `0x${string}`,
+    ism: deployedAddress("VITE_SEPOLIA_ISM"),
   },
   arbitrum: {
     kind: "evm",
@@ -86,7 +92,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_ARBITRUM_RPC", "https://arbitrum-sepolia-rpc.publicnode.com"),
     explorer: "https://arbitrum-sepolia.blockscout.com",
     mailbox: "0x598facE78a4302f11E3de0bee1894Da0b2Cb71F8",
-    ism: env("VITE_ARBITRUM_ISM", "0xD50322542cCA994322760f170D3A2df8d7f5817e") as `0x${string}`,
+    ism: deployedAddress("VITE_ARBITRUM_ISM"),
   },
   base: {
     kind: "evm",
@@ -97,7 +103,7 @@ export const CHAINS: Record<ChainId, Chain> = {
     rpc: env("VITE_BASE_RPC", "https://base-sepolia-rpc.publicnode.com"),
     explorer: "https://base-sepolia.blockscout.com",
     mailbox: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
-    ism: env("VITE_BASE_ISM", "0xcF5929abd3Baa03BB161745319C9E2d2Ce1201C4") as `0x${string}`,
+    ism: deployedAddress("VITE_BASE_ISM"),
   },
   eden: {
     kind: "evm",
@@ -109,8 +115,8 @@ export const CHAINS: Record<ChainId, Chain> = {
     explorer: "https://eden-testnet.blockscout.com",
     // Ours, unlike the other three. Eden had no Hyperlane deployment, so the mailbox and the
     // merkle tree hook were deployed with the rest of this bridge.
-    mailbox: "0x1D32350f3440BEa7f7E450Aa085f63E0d7E38729",
-    ism: env("VITE_EDEN_ISM", "0x84D9b9223609CEd908f247DD88f9Ae306a768E2e") as `0x${string}`,
+    mailbox: deployedAddress("VITE_EDEN_MAILBOX"),
+    ism: deployedAddress("VITE_EDEN_ISM"),
     // Eden pays gas in TIA at 18 decimals, not in ETH. The synthetic TIA this bridge mints
     // here is a separate ERC20 at 6 decimals, matching the collateral on Celestia.
     nativeCurrency: { name: "TIA", symbol: "TIA", decimals: 18 },
@@ -133,50 +139,37 @@ export const CHAINS: Record<ChainId, Chain> = {
     explorer: env("VITE_CELESTIA_EXPLORER", "https://mocha.celenium.io"),
     bech32Prefix: "celestia",
     denom: "utia",
-    mailboxId: env(
-      "VITE_CELESTIA_MAILBOX_ID",
-      "0x68797065726c616e650000000000000000000000000000000000000000000000",
-    ),
+    mailboxId: deployed("VITE_CELESTIA_MAILBOX_ID"),
     /// The paymaster a Celestia-origin transfer pays, quoted live before sending.
     ///
     /// The devnet has no paymaster: its mailbox has no required hook, so dispatch is free and
     /// there is nothing to quote.
-    igpId: env(
-      "VITE_CELESTIA_IGP_ID",
-      "0x726f757465725f706f73745f6469737061746368000000040000000000000002",
-    ),
-    ismId: env(
-      "VITE_CELESTIA_ISM_ID",
-      "0x726f757465725f69736d00000000000000000000000000010000000000000011",
-    ),
+    igpId: deployed("VITE_CELESTIA_IGP_ID"),
+    ismId: deployed("VITE_CELESTIA_ISM_ID"),
   },
 };
 
 /** A warp router, per chain, per token. `null` where the route is not deployed yet. */
 export const ROUTERS: Record<TokenId, Partial<Record<ChainId, string>>> = {
   TIA: {
-    celestia: env(
-      "VITE_CELESTIA_TIA_ROUTER",
-      "0x726f757465725f61707000000000000000000000000000010000000000000000",
-    ),
-    sepolia: env("VITE_SEPOLIA_TIA_ROUTER", "0x9822eE81C82138F88D759faef1AC168aDfEe1467"),
-    arbitrum: env("VITE_ARBITRUM_TIA_ROUTER", "0x41f992F671D04c5C26350E64FFA3E1D90bc33bcB"),
-    base: env("VITE_BASE_TIA_ROUTER", "0xF50470146B36c638b981e437AB37DfEd9a02FAb3"),
-    eden: env("VITE_EDEN_TIA_ROUTER", "0xD2babc9BE1055551b7AB98c440222862a1646158"),
+    celestia: deployed("VITE_CELESTIA_TIA_ROUTER"),
+    sepolia: deployed("VITE_SEPOLIA_TIA_ROUTER"),
+    arbitrum: deployed("VITE_ARBITRUM_TIA_ROUTER"),
+    base: deployed("VITE_BASE_TIA_ROUTER"),
+    eden: deployed("VITE_EDEN_TIA_ROUTER"),
   },
-  // A deployment that has not created these leaves them unset, and the route reports itself
-  // as not deployed rather than offering a Bridge button that cannot work. The addresses are
-  // the previous deployment's; they are defaults, not a claim that this one has them.
-  USDC: {
-    celestia: env("VITE_CELESTIA_USDC_ROUTER", "0x726f757465725f61707000000000000000000000000000020000000000000001"),
-    sepolia: env("VITE_SEPOLIA_USDC_ROUTER", "0xfb611B6f6CE92033960e99C2D65cee4237e64cDD"),
-    arbitrum: env("VITE_ARBITRUM_USDC_ROUTER", "0x8C87fd144006C651430450df8b61A15EeB3FF436"),
-    base: env("VITE_BASE_USDC_ROUTER", "0x285b590ee43A1374AA131e7390D0CA687Be43DF9"),
-    eden: env("VITE_EDEN_USDC_ROUTER", "0xc09fbf8F17E96ce746D39f9d11a9dD1813F2d220"),
+  // Ours: a fixed supply minted on Celestia, synthetic everywhere else. A deployment that has
+  // not created it leaves these unset, and the route reports itself as not deployed.
+  teeUSD: {
+    celestia: deployed("VITE_CELESTIA_TEEUSD_ROUTER"),
+    sepolia: deployed("VITE_SEPOLIA_TEEUSD_ROUTER"),
+    arbitrum: deployed("VITE_ARBITRUM_TEEUSD_ROUTER"),
+    base: deployed("VITE_BASE_TEEUSD_ROUTER"),
+    eden: deployed("VITE_EDEN_TEEUSD_ROUTER"),
   },
 };
 
-export const DECIMALS: Record<TokenId, number> = { TIA: 6, USDC: 6 };
+export const DECIMALS: Record<TokenId, number> = { TIA: 6, teeUSD: 6 };
 
 /// Gas each warp router is enrolled with, and therefore what the paymaster quotes against.
 export const REMOTE_ROUTER_GAS = 50000;
@@ -185,7 +178,8 @@ export const REMOTE_ROUTER_GAS = 50000;
 /// ERC20, so its address is enough and there is nothing to name here.
 export const CELESTIA_DENOM: Record<TokenId, string> = {
   TIA: "utia",
-  USDC: "hyperlane/0x726f757465725f61707000000000000000000000000000020000000000000001",
+  // A synthetic's bank denom is its token id under `hyperlane/`.
+  teeUSD: `hyperlane/${ROUTERS.teeUSD.celestia}`,
 };
 
 /// What happens between the origin finalising and the funds arriving.
@@ -198,9 +192,8 @@ export const PROVING_SECONDS = envNum("VITE_PROVING_SECONDS", 45);
 
 /// How long each origin takes to reach the finality the enclave will attest, and why.
 ///
-/// Arbitrum and Base are both optimistic rollups, so both wait out a challenge window before
-/// their state root is trustless. They differ only in how long that window is configured to
-/// be - which is the difference between half an hour and most of a week.
+/// Arbitrum, Base and Eden are attested from a block their sequencer signed, so they are as
+/// quick as the chains with fast finality.
 export interface OriginFinality {
   seconds: number;
   /// Shown to the sender before they commit to a transfer they cannot speed up.
@@ -217,18 +210,16 @@ export const ORIGIN_FINALITY: Record<ChainId, OriginFinality> = {
     reason: "Ethereum is attested at its finalized head, roughly two epochs behind.",
   },
   arbitrum: {
-    seconds: 35 * 60,
+    seconds: 30,
     reason:
-      "Arbitrum is an optimistic rollup: its state root is only trustless once Ethereum " +
-      "confirms the assertion, about every half hour on Sepolia.",
+      "Arbitrum's sequencer signs every block it produces, and the enclave checks that " +
+      "signature before it attests the root.",
   },
   base: {
-    // Measured on Base Sepolia: the game the anchor points at was created 120.1 hours before
-    // it resolved, and the portal adds no further delay.
-    seconds: 120 * 60 * 60,
+    seconds: 30,
     reason:
-      "Base is an optimistic rollup. Its root only becomes final once a dispute game has " +
-      "run its full challenge clock, which on Sepolia takes five days.",
+      "Base's sequencer signs every block it produces, and the enclave checks that " +
+      "signature before it attests the root.",
   },
   eden: {
     // Eden's sequencer batches roughly every eleventh block into one Celestia blob, and the
@@ -236,9 +227,8 @@ export const ORIGIN_FINALITY: Record<ChainId, OriginFinality> = {
     // about ninety seconds; the margin covers a slow blob.
     seconds: 3 * 60,
     reason:
-      "Eden has no consensus of its own. Its sequencer publishes each header to Celestia, " +
-      "and the enclave waits for that blob and re-runs the blocks behind it before it will " +
-      "attest the root.",
+      "Eden has no consensus of its own. Its sequencer publishes each signed header to " +
+      "Celestia, and the enclave waits for that blob before it will attest the root.",
   },
 };
 

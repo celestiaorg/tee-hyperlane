@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+
 /// Automata's deployed DCAP quote verifier.
 ///
 /// This is the whole of the cryptography, and none of it is ours. It checks Intel's signature
@@ -33,7 +35,11 @@ interface IInterchainSecurityModule {
 /// travels in the transaction; Automata keeps it in an on-chain PCCS, so the platform's TCB
 /// record must have been published on this chain. That is a data prerequisite, not a trust
 /// one: the record is signed by Intel and checked on upload.
-contract TeeDcapIsm is IInterchainSecurityModule {
+///
+/// Which enclave it admits is the owner's to change (`setEnclave`), so that a platform update
+/// under the enclave (a new OS image, new firmware) or a replacement enclave is a transaction
+/// rather than a new ISM. That is emergency control over the bridge, held by one key for now.
+contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     // ---------------------------------------------------------------- layout
     //
     // Automata returns abi.encodePacked(uint16 version, uint16 bodyType, uint8 tcbStatus,
@@ -73,13 +79,22 @@ contract TeeDcapIsm is IInterchainSecurityModule {
     uint256 private constant ATTESTED_HEAD = 2 * STATE_BYTES + 48;
     uint256 public constant MAX_MESSAGE_ID_COUNT = 1_000_000;
 
+    /// How far an attestation with no messages must move the origin's clock. An empty batch
+    /// keeps a quiet route's trusted state close to its origin's head; it cannot skip a
+    /// message, because the enclave replays the batch from the tree under this ISM's own root
+    /// and zero ids reproduce the head's tree only if nothing was dispatched. The interval
+    /// bounds how often anyone, through the public enclave, can advance this ISM with nothing
+    /// in it. The same bound holds in the enclave and in the Celestia module.
+    uint64 public constant EMPTY_BATCH_MIN_INTERVAL = 30 minutes;
+
     /// Hyperlane's module type for this bridge's ISMs, matching the Celestia module id.
     uint8 public constant MODULE_TYPE = 43;
 
-    /// Which revision of this contract is deployed. `80-evm-isms.sh` replaces an ISM whose
+    /// Which revision of this contract is deployed. `teeism isms evm` replaces an ISM whose
     /// `VERSION` differs even when it pins the right enclave. 2 accepts v5 quotes; the first
-    /// deployments have no `VERSION` at all.
-    uint8 public constant VERSION = 2;
+    /// deployments have no `VERSION` at all. 3 lets the owner re-pin the enclave. 4 bounds how
+    /// often a batch with no messages may advance the state.
+    uint8 public constant VERSION = 4;
 
     IDcapAttestation public immutable dcap;
 
@@ -98,12 +113,12 @@ contract TeeDcapIsm is IInterchainSecurityModule {
     /// the first enclave replacement. Leaving it out costs nothing, because `mr_config_id`
     /// already carries the compose hash that the Celestia module has to replay the event log
     /// to recover.
-    bytes32 public immutable enclaveMeasurements;
+    bytes32 public enclaveMeasurements;
 
     /// The identity digest the attested state must carry, which is the same 32 bytes the
     /// Celestia ISM pins. Redundant with the measurements above and kept anyway, so the two
     /// chains name the same enclave in a form a human can compare.
-    bytes32 public immutable identityDigest;
+    bytes32 public identityDigest;
 
     /// Origin merkle tree hook, as a Hyperlane message addresses it.
     bytes32 public immutable merkleTreeAddress;
@@ -119,6 +134,9 @@ contract TeeDcapIsm is IInterchainSecurityModule {
 
     event StateAdvanced(bytes32 indexed stateRoot, uint64 height, uint64 timestamp, uint256 messageCount);
     event MessageConsumed(bytes32 indexed messageId);
+    event EnclaveChanged(
+        bytes32 previousMeasurements, bytes32 measurements, bytes32 previousIdentity, bytes32 identity
+    );
 
     /// The verifier refused the quote. `code` is Automata's four-letter reason, kept raw so
     /// the failure path stays cheap; call `describeQuoteError` off chain to expand it.
@@ -142,6 +160,7 @@ contract TeeDcapIsm is IInterchainSecurityModule {
     error AttestationTooOld(uint64 blockTime, uint64 attestedAt, uint256 maxSkew);
     error AttestedBeforeState(uint64 attestedAt, uint64 stateTimestamp);
     error TooManyMessages();
+    error EmptyBatchTooSoon(uint64 previous, uint64 next, uint64 minInterval);
     error NotMailbox();
 
     constructor(
@@ -152,7 +171,7 @@ contract TeeDcapIsm is IInterchainSecurityModule {
         address _mailbox,
         bytes memory _genesisState,
         uint256 _maxQuoteSkew
-    ) {
+    ) Ownable() {
         if (_genesisState.length != STATE_BYTES) revert MalformedPayload();
         // The genesis state has to name the enclave this ISM pins, or the first attestation
         // would be refused and the ISM would be dead on arrival.
@@ -165,6 +184,20 @@ contract TeeDcapIsm is IInterchainSecurityModule {
         mailbox = _mailbox;
         state = _genesisState;
         maxQuoteSkew = _maxQuoteSkew;
+    }
+
+    /// Admit a different enclave from now on. The trusted state keeps its root, height and
+    /// light client store; only the identity digest it carries is swapped, because the enclave
+    /// copies that forward into every state it attests. So nothing in flight is lost.
+    function setEnclave(bytes32 _enclaveMeasurements, bytes32 _identityDigest) external onlyOwner {
+        emit EnclaveChanged(enclaveMeasurements, _enclaveMeasurements, identityDigest, _identityDigest);
+        enclaveMeasurements = _enclaveMeasurements;
+        identityDigest = _identityDigest;
+        bytes memory current = state;
+        assembly {
+            mstore(add(add(current, 32), 84), _identityDigest)
+        }
+        state = current;
     }
 
     function moduleType() external pure returns (uint8) {
@@ -262,6 +295,13 @@ contract TeeDcapIsm is IInterchainSecurityModule {
 
         _requireLegalTransition(prev, next);
         _requireFresh(attestedAt, uint64(bytes8(next[44:52])));
+        if (count == 0) {
+            uint64 previousTime = uint64(bytes8(prev[44:52]));
+            uint64 nextTime = uint64(bytes8(next[44:52]));
+            if (nextTime < previousTime + EMPTY_BATCH_MIN_INTERVAL) {
+                revert EmptyBatchTooSoon(previousTime, nextTime, EMPTY_BATCH_MIN_INTERVAL);
+            }
+        }
 
         state = next;
 

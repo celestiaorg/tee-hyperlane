@@ -1,0 +1,431 @@
+//! `teeism services` and `teeism config`: the relayer and the gas oracle.
+//!
+//! `config` writes their config (devnet/.state/coprocessor.toml, gas-oracle.toml) from what the
+//! deployment created; regenerated every time, so editing either by hand does not survive.
+//! `services` installs and runs them as the systemd units in deploy/server/ (with sudo).
+
+use std::fmt::Write as _;
+use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
+
+use crate::shared::chains::{self, celestia as cel, EVM_CHAINS};
+use crate::shared::print;
+use crate::shared::record::Deployment;
+use crate::shared::settings::Ctx;
+use crate::shared::shell::Cmd;
+
+pub const UNITS: [&str; 2] = ["teeism-relayer", "teeism-gas-oracle"];
+/// `teeism upstream check`, once a day. A oneshot service and the timer that starts it; never
+/// restarted with the others, since it is not a long-running process.
+pub const UPSTREAM_UNITS: [&str; 2] = ["teeism-upstream.service", "teeism-upstream.timer"];
+
+fn sudo(what: &str, args: &[&str]) -> Result<()> {
+    Cmd::new(what, "sudo").args(args).run()
+}
+
+pub async fn install(ctx: &Ctx) -> Result<()> {
+    write_config(ctx)?;
+    for unit in UNITS {
+        let src = ctx.repo.join(format!("deploy/server/{unit}.service"));
+        if !src.is_file() {
+            bail!("no unit file at {}", src.display());
+        }
+        sudo(
+            &format!("installing {unit}"),
+            &[
+                "cp",
+                &src.to_string_lossy(),
+                &format!("/etc/systemd/system/{unit}.service"),
+            ],
+        )?;
+    }
+    for unit in UPSTREAM_UNITS {
+        let src = ctx.repo.join(format!("deploy/server/{unit}"));
+        if !src.is_file() {
+            bail!("no unit file at {}", src.display());
+        }
+        sudo(
+            &format!("installing {unit}"),
+            &[
+                "cp",
+                &src.to_string_lossy(),
+                &format!("/etc/systemd/system/{unit}"),
+            ],
+        )?;
+    }
+    sudo("reloading systemd", &["systemctl", "daemon-reload"])?;
+    let mut args = vec!["systemctl", "enable", "--now"];
+    args.extend(UNITS);
+    sudo("enabling and starting the services", &args)?;
+    sudo(
+        "enabling the daily upstream check",
+        &["systemctl", "enable", "--now", "teeism-upstream.timer"],
+    )?;
+    restart(ctx).await
+}
+
+pub async fn restart(ctx: &Ctx) -> Result<()> {
+    write_config(ctx)?;
+    let mut args = vec!["systemctl", "restart"];
+    args.extend(UNITS);
+    sudo("restarting the services", &args)?;
+    wait_for_relayer(ctx).await
+}
+
+pub fn stop() -> Result<()> {
+    let mut args = vec!["systemctl", "stop"];
+    args.extend(UNITS);
+    sudo("stopping the services", &args)
+}
+
+/// Block until the relayer's API answers with every configured route.
+pub async fn wait_for_relayer(ctx: &Ctx) -> Result<()> {
+    let api = ctx.var_or("RELAYER_API", "http://localhost:3001");
+    let want = std::fs::read_to_string(ctx.coprocessor_config())?
+        .matches("[[routes]]")
+        .count();
+    let mut last = String::new();
+    for _ in 0..60 {
+        match reqwest::Client::new()
+            .get(format!("{api}/api/status"))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {
+                let v: serde_json::Value = r.json().await.context("the relayer's /api/status is not JSON")?;
+                let n = v.as_array().map(|a| a.len()).unwrap_or(0);
+                if n == want {
+                    for route in v.as_array().into_iter().flatten() {
+                        print::info(format!(
+                            "{} ism {}",
+                            route["name"].as_str().unwrap_or("?"),
+                            route["ism"].as_str().unwrap_or("?")
+                        ));
+                    }
+                    print::ok(format!("relayer up with {n} routes"));
+                    return Ok(());
+                }
+                last = format!("{n} of {want} routes");
+            }
+            Ok(r) => last = format!("HTTP {}", r.status()),
+            Err(e) => last = e.to_string(),
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    bail!("the relayer did not come up with its {want} routes within 5 minutes ({last}); see `journalctl -u teeism-relayer -n 100`")
+}
+
+// ---------------------------------------------------------------- teeism config
+
+/// The Base and Arbitrum archives: BASE_ARCHIVE / ARBITRUM_ARCHIVE as URLs, else Alchemy with
+/// ALCHEMY_KEY (or ALCHEMY_BASE_KEY, its older name). Only these two
+/// `rpc` fields ever carry the metered key; logs and reads near the head use public endpoints.
+fn archive(ctx: &Ctx, var: &str, alchemy_host: &str, fallback: &str) -> String {
+    if let Some(url) = ctx.var(var) {
+        return url;
+    }
+    let key = ctx
+        .var("ALCHEMY_KEY")
+        .or_else(|| ctx.var("ALCHEMY_BASE_KEY"))
+        .filter(|k| !k.is_empty());
+    match key {
+        Some(k) => format!("https://{alchemy_host}/v2/{k}"),
+        None => fallback.to_string(),
+    }
+}
+
+/// The relayer config, as TOML text.
+pub fn coprocessor_toml(ctx: &Ctx, d: &Deployment) -> Result<String> {
+    let mut s = String::new();
+    let c = &d.celestia;
+    let w = &mut s;
+    writeln!(
+        w,
+        "# Generated by `teeism config` from devnet/.state/deployment.json; edits do not survive."
+    )?;
+    writeln!(w, "# See deploy/coprocessor.toml.example.")?;
+    writeln!(w, "tick_secs = {}", ctx.var_or("TICK_SECS", "2"))?;
+    writeln!(w, "proof_dir = \"{}\"", ctx.state_dir.join("proofs").display())?;
+    writeln!(w, "api_listen = \"{}\"", ctx.var_or("API_LISTEN", "0.0.0.0:3001"))?;
+    // What `teeism upstream check` found, for the dashboard.
+    writeln!(
+        w,
+        "upstream_file = \"{}\"",
+        ctx.state_dir.join("upstream.json").display()
+    )?;
+
+    // The faucet pays from `user`, which holds the TIA and the teeUSD supply. Each grant stops
+    // once the key would fall below its floor, so the account keeps a reserve.
+    if let Some(denom) = d.teeusd_denom() {
+        writeln!(
+            w,
+            "\n[faucet]\nchain = \"celestia\"\nkey = \"{}\"",
+            ctx.var_or("FAUCET_KEY", "user")
+        )?;
+        writeln!(w, "grants = [")?;
+        writeln!(
+            w,
+            "  {{ symbol = \"TIA\", denom = \"utia\", amount = {}, floor = {} }},",
+            ctx.var_or("FAUCET_TIA", "5000000000"),
+            ctx.var_or("FAUCET_TIA_FLOOR", "500000000000000")
+        )?;
+        writeln!(
+            w,
+            "  {{ symbol = \"teeUSD\", denom = \"{denom}\", amount = {}, floor = {} }},",
+            ctx.var_or("FAUCET_TEEUSD", "20000000000"),
+            ctx.var_or("FAUCET_TEEUSD_FLOOR", "1000000000000000")
+        )?;
+        writeln!(w, "]")?;
+    }
+
+    writeln!(
+        w,
+        "\n[chains.celestia]\nkind = \"celestia\"\ndomain = {}",
+        cel::DOMAIN
+    )?;
+    writeln!(w, "rpc = \"{}\"", chains::celestia_rpc(ctx))?;
+    writeln!(w, "mailbox = \"{}\"", c.mailbox.as_deref().unwrap_or(""))?;
+    writeln!(
+        w,
+        "merkle_tree_hook = \"{}\"",
+        c.merkle_hook.as_deref().unwrap_or("")
+    )?;
+    writeln!(
+        w,
+        "lag = 1\nchain_id = \"{}\"\nhome = \"{}\"",
+        cel::CHAIN_ID,
+        ctx.celestia_home().display()
+    )?;
+
+    writeln!(w, "\n[chains.mocha]\nkind = \"celestia\"\ndomain = 1297040200")?;
+    writeln!(
+        w,
+        "rpc = \"{}\"",
+        ctx.var_or("MOCHA_RPC", "https://rpc.celestia-mocha.com")
+    )?;
+
+    for chain in &EVM_CHAINS {
+        let (mailbox, hook) = match chain.canonical {
+            Some(h) => (Some(h.mailbox), Some(h.merkle_hook)),
+            None => {
+                let e = d.evm(chain.name);
+                (e.and_then(|e| e.mailbox), e.and_then(|e| e.merkle_hook))
+            }
+        };
+        let (Some(mailbox), Some(hook)) = (mailbox, hook) else {
+            continue;
+        };
+        writeln!(
+            w,
+            "\n[chains.{}]\nkind = \"{}\"\ndomain = {}",
+            chain.name, chain.kind, chain.domain
+        )?;
+        match chain.name {
+            // Read from the host's own nodes: reth for execution, Lodestar for the beacon chain
+            // (the only client that serves Gloas light-client data).
+            "sepolia" => {
+                writeln!(
+                    w,
+                    "rpc = \"{}\"",
+                    ctx.var_or("SEPOLIA_RPC", "http://127.0.0.1:8545")
+                )?;
+                writeln!(
+                    w,
+                    "beacon_rpc = \"{}\"",
+                    ctx.var_or("SEPOLIA_BEACON", "http://127.0.0.1:9596")
+                )?;
+                // Deliveries go through `rpc` unless this is set; whichever it is must be at the
+                // head, or the ISM refuses an attestation newer than its block.
+                if let Some(send) = ctx.var("SEPOLIA_SEND_RPC") {
+                    writeln!(w, "send_rpc = \"{send}\"")?;
+                }
+            }
+            "arbitrum" => {
+                writeln!(
+                    w,
+                    "rpc = \"{}\"",
+                    archive(
+                        ctx,
+                        "ARBITRUM_ARCHIVE",
+                        "arb-sepolia.g.alchemy.com",
+                        "https://api.zan.top/arb-sepolia"
+                    )
+                )?;
+                writeln!(
+                    w,
+                    "feed = \"{}\"",
+                    ctx.var_or("ARBITRUM_FEED", "wss://sepolia-rollup.arbitrum.io/feed")
+                )?;
+                // Serves eth_getLogs over a million blocks; publicnode caps at 50k.
+                writeln!(
+                    w,
+                    "logs_rpc = \"{}\"",
+                    ctx.var_or("ARBITRUM_LOGS", "https://sepolia-rollup.arbitrum.io/rpc")
+                )?;
+                writeln!(w, "send_rpc = \"{}\"", chain.rpc(ctx))?;
+            }
+            "base" => {
+                writeln!(
+                    w,
+                    "rpc = \"{}\"",
+                    archive(
+                        ctx,
+                        "BASE_ARCHIVE",
+                        "base-sepolia.g.alchemy.com",
+                        "https://sepolia.base.org"
+                    )
+                )?;
+                writeln!(w, "p2p_port = {}", ctx.var_or("BASE_P2P_PORT", "9222"))?;
+                writeln!(w, "logs_rpc = \"{}\"", chain.rpc(ctx))?;
+                writeln!(w, "send_rpc = \"{}\"", chain.rpc(ctx))?;
+            }
+            "eden" => {
+                writeln!(w, "celestia = \"mocha\"")?;
+                writeln!(
+                    w,
+                    "da_rpc = \"{}\"",
+                    ctx.var_or("EDEN_DA_RPC", "http://localhost:26658")
+                )?;
+                writeln!(
+                    w,
+                    "rpc = \"{}\"",
+                    ctx.var_or(
+                        "EDEN_ARCHIVE",
+                        "https://ev-reth-eden-testnet.binarybuilders.services:8545/"
+                    )
+                )?;
+                writeln!(w, "logs_rpc = \"{}\"", chain.rpc(ctx))?;
+                writeln!(w, "send_rpc = \"{}\"", chain.rpc(ctx))?;
+            }
+            other => anyhow::bail!("no relayer settings for chain {other}"),
+        }
+        writeln!(w, "mailbox = \"{mailbox}\"\nmerkle_tree_hook = \"{hook}\"")?;
+    }
+
+    // A route only once its ISM and its enclave exist.
+    let enclave_url = |origin: &str| {
+        d.enclaves
+            .chains
+            .get(chains::enclave_for(origin))
+            .map(|e| e.url.clone())
+    };
+    let quote = |v: &[String]| {
+        v.iter()
+            .map(|r| format!("\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for chain in &EVM_CHAINS {
+        let e = d.evm(chain.name);
+        let (Some(ism), Some(url)) = (e.and_then(|e| e.ism), enclave_url("celestia")) else {
+            continue;
+        };
+        let routers: Vec<String> = [e.and_then(|e| e.tia_router), e.and_then(|e| e.teeusd_router)]
+            .into_iter()
+            .flatten()
+            .map(|a| a.to_string())
+            .collect();
+        writeln!(
+            w,
+            "\n[[routes]]\nname = \"celestia-to-{0}\"\nfrom = \"celestia\"\nto = \"{0}\"",
+            chain.name
+        )?;
+        writeln!(
+            w,
+            "enclave = \"{url}\"\nism = \"{ism}\"\nrouters = [{}]",
+            quote(&routers)
+        )?;
+    }
+    for chain in &EVM_CHAINS {
+        let (Some(ism), Some(url)) = (c.isms.get(chain.name), enclave_url(chain.name)) else {
+            continue;
+        };
+        let routers: Vec<String> = [c.tia_token.clone(), c.teeusd_token.clone()]
+            .into_iter()
+            .flatten()
+            .collect();
+        writeln!(
+            w,
+            "\n[[routes]]\nname = \"{0}-to-celestia\"\nfrom = \"{0}\"\nto = \"celestia\"",
+            chain.name
+        )?;
+        writeln!(
+            w,
+            "enclave = \"{url}\"\nism = \"{ism}\"\nrouters = [{}]",
+            quote(&routers)
+        )?;
+        // Sepolia is read from a full node, whose proofs at an old block slow down the further
+        // back it is; about an hour of blocks keeps them to seconds however quiet the route.
+        if chain.name == "sepolia" {
+            writeln!(w, "max_lag = {}", ctx.var_or("SEPOLIA_MAX_LAG", "300"))?;
+        }
+    }
+    Ok(s)
+}
+
+/// The gas oracle's config: what a transfer is charged for gas on the far side.
+pub fn gas_oracle_toml(ctx: &Ctx, d: &Deployment) -> Result<Option<String>> {
+    let Some(igp) = &d.celestia.igp else {
+        return Ok(None);
+    };
+    let mut s = String::new();
+    let w = &mut s;
+    writeln!(
+        w,
+        "# Generated by `teeism config`; edits do not survive. See deploy/gas-oracle.toml.example."
+    )?;
+    writeln!(
+        w,
+        "# Once an hour is enough: between rounds the paymaster keeps the last values."
+    )?;
+    writeln!(w, "interval_secs = {}", ctx.var_or("GAS_ORACLE_INTERVAL", "3600"))?;
+    writeln!(w, "igp_id = \"{igp}\"")?;
+    writeln!(w, "celestia_rpc = \"{}\"", chains::celestia_rpc(ctx))?;
+    writeln!(w, "chain_id = \"{}\"", cel::CHAIN_ID)?;
+    writeln!(w, "local_price_id = \"celestia\"")?;
+    for (chain, rpc, price_id) in [
+        (
+            "sepolia",
+            "https://ethereum-sepolia-rpc.publicnode.com",
+            "ethereum",
+        ),
+        (
+            "arbitrum",
+            "https://arbitrum-sepolia-rpc.publicnode.com",
+            "ethereum",
+        ),
+        ("base", "https://base-sepolia-rpc.publicnode.com", "ethereum"),
+        // Eden pays gas in TIA, so its price id is the local one and the ratio posted is one.
+        ("eden", "https://rpc.testnet.eden.gateway.fm/", "celestia"),
+    ] {
+        let c = chains::evm(chain)?;
+        writeln!(
+            w,
+            "\n[[destinations]]\nname = \"{}\"\ndomain = {}\nrpc = \"{rpc}\"",
+            c.label, c.domain
+        )?;
+        // Measured: mailbox.process cost 89k to 127k across this deployment's transfers.
+        writeln!(
+            w,
+            "decimals = 18\nprice_id = \"{price_id}\"\ngas_overhead = 150000"
+        )?;
+    }
+    Ok(Some(s))
+}
+
+pub fn write_config(ctx: &Ctx) -> Result<()> {
+    let d = ctx.deployment()?;
+    let path = ctx.coprocessor_config();
+    std::fs::create_dir_all(ctx.state_dir.join("proofs"))?;
+    std::fs::write(&path, coprocessor_toml(ctx, &d)?)
+        .with_context(|| format!("writing {}", path.display()))?;
+    print::info(format!("wrote {}", path.display()));
+    if let Some(g) = gas_oracle_toml(ctx, &d)? {
+        let p = ctx.state_dir.join("gas-oracle.toml");
+        std::fs::write(&p, g).with_context(|| format!("writing {}", p.display()))?;
+        print::info(format!("wrote {}", p.display()));
+    }
+    Ok(())
+}

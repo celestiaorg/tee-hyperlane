@@ -19,6 +19,8 @@ import {
 } from "./config";
 import type { Chain, ChainId, EvmChain, TokenId } from "./config";
 import { switchEvmChain } from "./wallets";
+import { messageIdFromCelestiaTx } from "./celestia";
+import type { CosmosChain } from "./config";
 
 export type Step = "dispatched" | "attested" | "authorised" | "delivered";
 export const STEPS: Step[] = ["dispatched", "attested", "authorised", "delivered"];
@@ -150,6 +152,8 @@ export async function sendFromEvm(opts: {
   recipient: string;
   amount: bigint;
   sender: string;
+  /// Called when a stale-nonce rejection is about to be retried, so the page can say so.
+  onNonceRetry?: () => void;
 }): Promise<string> {
   const router = routerFor(opts.token, opts.chain.id);
   if (!router) throw new Error(`${opts.token} is not deployed on ${opts.chain.name}`);
@@ -161,6 +165,25 @@ export async function sendFromEvm(opts: {
     args: [opts.destination, toRecipientBytes32(opts.recipient), opts.amount],
   });
 
+  return sendEvmTx({
+    chain: opts.chain,
+    sender: opts.sender,
+    to: router,
+    data,
+    value: fee,
+    onNonceRetry: opts.onNonceRetry,
+  });
+}
+
+/** Send one transaction from MetaMask on `chain`. Returns its hash. */
+async function sendEvmTx(opts: {
+  chain: EvmChain;
+  sender: string;
+  to: string;
+  data: string;
+  value: bigint;
+  onNonceRetry?: () => void;
+}): Promise<string> {
   // The wallet follows the chain it was connected on, not the one picked in the form, and a
   // router address means something different on every chain. Sending without this put a
   // Base router address into a Sepolia transaction: no contract there, so MetaMask sent the
@@ -180,9 +203,9 @@ export async function sendFromEvm(opts: {
 
   // Cheap last guard: on the right chain this address is a contract. If it has no code we are
   // about to repeat the same mistake in a new disguise.
-  const code = await rpc(opts.chain, "eth_getCode", [router, "latest"]);
+  const code = await rpc(opts.chain, "eth_getCode", [opts.to, "latest"]);
   if (!code || code === "0x") {
-    throw new Error(`no router deployed at ${router} on ${opts.chain.name}`);
+    throw new Error(`no contract at ${opts.to} on ${opts.chain.name}`);
   }
 
   // Price the transaction ourselves rather than letting the wallet do it. On Arbitrum Sepolia
@@ -196,19 +219,55 @@ export async function sendFromEvm(opts: {
   // EIP-1559, but not worth finding out which of four chains rejects it.
   const tip = baseFee / 10n || 1n;
 
-  return window.ethereum!.request({
-    method: "eth_sendTransaction",
-    params: [
-      {
-        from: opts.sender,
-        to: router,
-        data,
-        value: toHex(fee),
-        maxFeePerGas: toHex(baseFee * 2n + tip),
-        maxPriorityFeePerGas: toHex(tip),
-      },
-    ],
-  });
+  const params = [
+    {
+      from: opts.sender,
+      to: opts.to,
+      data: opts.data,
+      value: toHex(opts.value),
+      maxFeePerGas: toHex(baseFee * 2n + tip),
+      maxPriorityFeePerGas: toHex(tip),
+    },
+  ];
+  const send = () => window.ethereum!.request({ method: "eth_sendTransaction", params });
+
+  // MetaMask's cached nonce goes stale when another transaction from the same account lands
+  // between its last refresh and this send (the relayer's deliveries, when its key is the one
+  // connected), and the node rejects the signed transaction. That transaction never reached
+  // the network, so sending again is safe: MetaMask refreshes the nonce before the second
+  // prompt. Only this error is retried, once, and never a rejection by the user.
+  try {
+    return await send();
+  } catch (e) {
+    if (!isNonceTooLow(e)) throw e;
+    opts.onNonceRetry?.();
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      return await send();
+    } catch (again) {
+      if (isNonceTooLow(again)) throw new Error(NONCE_STILL_FAILING);
+      throw again;
+    }
+  }
+}
+
+export const NONCE_RETRYING =
+  "Your wallet used a stale nonce, usually because another transaction from this account was just sent. Retrying.";
+const NONCE_STILL_FAILING =
+  "Still failing. Reset the account activity in MetaMask under Settings, Advanced, Clear activity tab data, then try again.";
+
+/// A "nonce too low" rejection from the node, anywhere in the provider's error, and not a
+/// user rejection (4001).
+export function isNonceTooLow(e: unknown): boolean {
+  const err = e as { code?: number } | null;
+  if (err?.code === 4001) return false;
+  let text: string;
+  try {
+    text = `${(e as Error)?.message ?? ""} ${JSON.stringify(e)}`;
+  } catch {
+    text = String((e as Error)?.message ?? e);
+  }
+  return text.toLowerCase().includes("nonce too low");
 }
 
 /** The message id the mailbox emitted, read back from the receipt. */
@@ -225,6 +284,24 @@ export async function messageIdFromReceipt(
     (l: any) => l.topics[0] === DISPATCH_ID_TOPIC && l.topics.length === 2,
   );
   return log?.topics[1] ?? null;
+}
+
+export async function waitForCelestiaMessageId(chain: CosmosChain, tx: string): Promise<string> {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const id = await messageIdFromCelestiaTx(chain, tx);
+    if (id) return id;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  throw new Error("Transaction did not confirm in time; check the explorer");
+}
+
+export async function waitForMessageId(chain: EvmChain, tx: string): Promise<string> {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const id = await messageIdFromReceipt(chain, tx);
+    if (id) return id;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  throw new Error("Transaction did not confirm in time; check the explorer");
 }
 
 /** Whether the destination mailbox has processed this message. This is the real check. */
@@ -283,7 +360,7 @@ export async function quoteBridgeFee(from: ChainId, to: ChainId): Promise<Bridge
     return { amount: BigInt(amount), symbol: "TIA", decimals: 6 };
   }
 
-  const router = routerFor("TIA", origin.id) ?? routerFor("USDC", origin.id);
+  const router = routerFor("TIA", origin.id) ?? routerFor("teeUSD", origin.id);
   if (!router) throw new Error(`no router on ${origin.name}`);
   const data = encodeFunctionData({
     abi: ROUTER_ABI,
@@ -374,7 +451,25 @@ export async function fetchBalance(
 export async function fetchAttestation(messageId: string): Promise<Attestation | null> {
   const response = await fetch(`${RELAYER_API}/attestation/${messageId}`);
   if (!response.ok) return null;
-  return (await response.json()) as Attestation;
+  return normaliseAttestation(await response.json());
+}
+
+/// The relayer answers in snake_case (`state_root`); the UI reads camelCase. Also used on
+/// attestations stored by an earlier build that kept the relayer's shape.
+export function normaliseAttestation(raw: any): Attestation | null {
+  if (!raw || typeof raw !== "object") return null;
+  const m = raw.measurements ?? {};
+  return {
+    height: Number(raw.height ?? 0),
+    stateRoot: String(raw.stateRoot ?? raw.state_root ?? ""),
+    quote: String(raw.quote ?? ""),
+    measurements: {
+      mrTd: String(m.mrTd ?? m.mr_td ?? ""),
+      osImageHash: String(m.osImageHash ?? m.os_image_hash ?? ""),
+      composeHash: String(m.composeHash ?? m.compose_hash ?? ""),
+    },
+    batch: Array.isArray(raw.batch) ? raw.batch : [],
+  };
 }
 
 /** Advance a transfer's state. Called on demand, not on a timer. */

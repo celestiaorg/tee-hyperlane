@@ -7,13 +7,18 @@ use sha2::{Digest, Sha384};
 /// dstack records the application's identity in RTMR 3.
 const APPLICATION_IMR: u32 = 3;
 
-/// The five fields both ISMs pin, as `x/teeism`'s `create` and the ISM scripts read them.
+/// The fields the Celestia ISMs pin, as `x/teeism`'s `create` reads them. The KMS is pinned
+/// through `key_provider`: dstack 0.6 no longer records an `mr-kms` event.
 #[derive(Debug, Serialize)]
 pub struct Identity {
     pub mr_td: String,
+    /// The boot chain: VM configuration and ACPI tables, kernel, command line and initrd. mr_td
+    /// covers only the firmware, so without these any kernel could replay the pinned events.
+    pub rtmr0: String,
+    pub rtmr1: String,
+    pub rtmr2: String,
     pub os_image_hash: String,
     pub compose_hash: String,
-    pub mr_kms: String,
     pub key_provider: String,
 }
 
@@ -35,9 +40,11 @@ impl Identity {
         };
         Ok(Identity {
             mr_td: hex::encode(td.mr_td),
+            rtmr0: hex::encode(td.rt_mr0),
+            rtmr1: hex::encode(td.rt_mr1),
+            rtmr2: hex::encode(td.rt_mr2),
             os_image_hash: field("os-image-hash")?,
             compose_hash: field("compose-hash")?,
-            mr_kms: field("mr-kms")?,
             key_provider: field("key-provider")?,
         })
     }
@@ -94,21 +101,40 @@ fn replay(log: &[EventLog]) -> [[u8; 48]; 4] {
     rtmrs
 }
 
-/// A named value, only if exactly one entry carries the name and its digest commits to its
-/// text. Otherwise an attacker keeps every genuine digest, so the replay still matches, and
-/// relabels the text around one to impersonate a pinned field.
+/// A named value, by the rules `x/teeism`'s `GetEventValue` pins with:
+/// - only from IMR 3, the register the replay binds it into;
+/// - exactly one entry carries the name;
+/// - every IMR 3 entry with a digest commits to its own text, so a measured entry cannot be
+///   relabelled out of the way of a forged one;
+/// - no IMR 3 entry is named `name:…`: the v1 preimage does not mark where a name ends, so such
+///   an entry hashes the same as `name` with a `:` in its payload.
 fn value<'a>(log: &'a [EventLog], name: &str) -> Option<&'a [u8]> {
-    let mut named = log.iter().filter(|e| e.event == name);
-    let e = named.next()?;
-    if named.next().is_some() {
-        return None;
+    let resplit = format!("{name}:");
+    let mut found = None;
+    for e in log {
+        if e.imr == APPLICATION_IMR && e.digest != [0u8; 48] && !commits(e) {
+            return None;
+        }
+        if e.imr == APPLICATION_IMR && e.event.starts_with(&resplit) {
+            return None;
+        }
+        if e.event != name {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(e);
     }
-    let committed = if e.digest == [0u8; 48] {
-        e.imr == APPLICATION_IMR // the replay recomputed it, which binds the text already
-    } else {
-        e.digest == sha384(&preimage_v1(e)) || e.digest == sha384(&preimage_v2(e))
-    };
-    committed.then_some(e.event_payload.as_slice())
+    // An IMR 3 entry either has no digest, so the replay recomputed one that binds its text,
+    // or passed the commitment check above.
+    let e = found?;
+    (e.imr == APPLICATION_IMR).then_some(e.event_payload.as_slice())
+}
+
+/// Whether an entry's digest is the hash of its own text, in either dstack format.
+fn commits(e: &EventLog) -> bool {
+    e.digest == sha384(&preimage_v1(e)) || e.digest == sha384(&preimage_v2(e))
 }
 
 /// dstack v1: `event_type_le ":" name ":" payload`.
@@ -188,6 +214,40 @@ mod tests {
         .unwrap();
         assert_eq!(id.mr_td.len(), 96);
         assert_eq!(id.compose_hash.len(), 64);
+        for rtmr in [&id.rtmr0, &id.rtmr1, &id.rtmr2] {
+            assert_eq!(rtmr.len(), 96);
+        }
+    }
+
+    #[test]
+    fn a_value_reads_only_from_imr3() {
+        let mut l = log();
+        assert_eq!(value(&l, "compose-hash"), Some(&[0xaa; 32][..]));
+        l[1].imr = 2;
+        assert_eq!(value(&l, "compose-hash"), None);
+    }
+
+    #[test]
+    fn a_relabelled_imr3_entry_refuses_every_value() {
+        let mut l = log();
+        l[2].event = "other".into(); // its digest no longer commits to its text
+        assert_eq!(value(&l, "compose-hash"), None);
+    }
+
+    #[test]
+    fn a_resplit_name_refuses_the_value() {
+        // `compose-hash:x` with payload `y` hashes like `compose-hash` with payload `x:y`.
+        let mut l = log();
+        l.push(ev("compose-hash:x", b"y"));
+        assert_eq!(value(&l, "compose-hash"), None);
+        assert_eq!(value(&l, "os-image-hash"), Some(&[0xbb; 32][..]));
+    }
+
+    #[test]
+    fn a_duplicated_name_refuses_the_value() {
+        let mut l = log();
+        l.push(ev("compose-hash", &[0xcc; 32]));
+        assert_eq!(value(&l, "compose-hash"), None);
     }
 
     /// A v5 quote puts a body descriptor between the header and the same report body. Phala's

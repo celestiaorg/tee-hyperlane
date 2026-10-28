@@ -45,6 +45,14 @@ contract TeeDcapIsmTest is Test {
 
     /// The 116-byte ISM state, matching the Celestia module's layout exactly.
     function _state(uint8 rootSeed, uint64 height, uint64 timestamp) internal pure returns (bytes memory) {
+        return _stateOf(rootSeed, height, timestamp, IDENTITY);
+    }
+
+    function _stateOf(uint8 rootSeed, uint64 height, uint64 timestamp, bytes32 identity)
+        internal
+        pure
+        returns (bytes memory)
+    {
         bytes memory s = new bytes(116);
         for (uint256 i = 0; i < 32; i++) {
             s[i] = bytes1(rootSeed);
@@ -56,7 +64,7 @@ contract TeeDcapIsmTest is Test {
             s[44 + i] = bytes1(uint8(timestamp >> (8 * (7 - i))));
         }
         for (uint256 i = 0; i < 32; i++) {
-            s[84 + i] = IDENTITY[i];
+            s[84 + i] = identity[i];
         }
         return s;
     }
@@ -103,8 +111,14 @@ contract TeeDcapIsmTest is Test {
             _state(1, GENESIS_HEIGHT, GENESIS_TIME),
             _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME),
             uint64(block.timestamp),
-            new bytes32[](0)
+            _oneId()
         );
+    }
+
+    /// A batch of one message, for tests about everything except the batch itself.
+    function _oneId() internal pure returns (bytes32[] memory ids) {
+        ids = new bytes32[](1);
+        ids[0] = keccak256("one");
     }
 
     function _zeroMeasurements() internal pure returns (bytes32) {
@@ -151,6 +165,46 @@ contract TeeDcapIsmTest is Test {
         assertTrue(target.verify(hex"", message));
         vm.prank(MAILBOX);
         assertFalse(target.verify(hex"", message), "a delivered message must not verify twice");
+    }
+
+    // ---------------------------------------------------------------- empty batches
+
+    /// The daily heartbeat: nothing dispatched, but the state still moves to the origin's head.
+    function test_anEmptyBatchAdvancesAQuietRoute() public {
+        TeeDcapIsm target = _fresh();
+        uint64 later = GENESIS_TIME + target.EMPTY_BATCH_MIN_INTERVAL();
+        vm.warp(later + 60);
+        bytes memory next = _state(2, GENESIS_HEIGHT + 300, later);
+        bytes memory payload = _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), next, uint64(block.timestamp), new bytes32[](0));
+        dcap.set(true, _output(payload, 0, false));
+
+        vm.expectEmit(address(target));
+        emit TeeDcapIsm.StateAdvanced(bytes32(uint256(0x0202020202020202020202020202020202020202020202020202020202020202)), GENESIS_HEIGHT + 300, later, 0);
+        target.submitAttestation(hex"00", payload);
+        assertEq(keccak256(target.state()), keccak256(next));
+    }
+
+    /// Anyone can obtain one from the public enclave, so how often is bounded by the origin's clock.
+    function test_anEmptyBatchTooSoonIsRefused() public {
+        TeeDcapIsm target = _fresh();
+        uint64 interval = target.EMPTY_BATCH_MIN_INTERVAL();
+        uint64 early = GENESIS_TIME + interval - 1;
+        vm.warp(early + 60);
+        bytes memory payload =
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, early), uint64(block.timestamp), new bytes32[](0));
+        dcap.set(true, _output(payload, 0, false));
+        vm.expectRevert(abi.encodeWithSelector(TeeDcapIsm.EmptyBatchTooSoon.selector, GENESIS_TIME, early, interval));
+        target.submitAttestation(hex"00", payload);
+    }
+
+    /// A batch with messages is never held back by the interval.
+    function test_aBatchWithMessagesIsNotHeldBack() public {
+        TeeDcapIsm target = _fresh();
+        bytes memory payload =
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId());
+        dcap.set(true, _output(payload, 0, false));
+        target.submitAttestation(hex"00", payload);
+        assertTrue(target.authorizedMessages(keccak256("one")));
     }
 
     // ---------------------------------------------------------------- quote versions
@@ -206,7 +260,60 @@ contract TeeDcapIsmTest is Test {
     }
 
     function test_reportsItsRevision() public view {
-        assertEq(ism.VERSION(), 2);
+        assertEq(ism.VERSION(), 4);
+    }
+
+    // ---------------------------------------------------------------- re-pinning
+
+    function test_onlyTheOwnerRepins() public {
+        assertEq(ism.owner(), address(this));
+        vm.prank(address(0xBAD));
+        vm.expectRevert("Ownable: caller is not the owner");
+        ism.setEnclave(_zeroMeasurements(), bytes32(uint256(0xfeed)));
+    }
+
+    function test_aRepinSwapsOnlyTheIdentity() public {
+        bytes32 next = bytes32(uint256(0xfeed));
+        vm.expectEmit(address(ism));
+        emit TeeDcapIsm.EnclaveChanged(MEASUREMENTS, _zeroMeasurements(), IDENTITY, next);
+        ism.setEnclave(_zeroMeasurements(), next);
+
+        assertEq(ism.enclaveMeasurements(), _zeroMeasurements());
+        assertEq(ism.identityDigest(), next);
+        assertEq(keccak256(ism.state()), keccak256(_stateOf(1, GENESIS_HEIGHT, GENESIS_TIME, next)));
+    }
+
+    /// After a re-pin the new enclave carries on from the same state, and the old one is refused.
+    function test_aRepinnedIsmAdmitsTheNewEnclaveOnly() public {
+        bytes32 next = bytes32(uint256(0xfeed));
+        ism.setEnclave(_zeroMeasurements(), next);
+
+        bytes memory stale = _payload(
+            _state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId()
+        );
+        dcap.set(true, _output(stale, 0, false));
+        vm.expectRevert(TeeDcapIsm.TrustedStateMismatch.selector);
+        ism.submitAttestation(hex"00", stale);
+
+        bytes memory payload = _payload(
+            _stateOf(1, GENESIS_HEIGHT, GENESIS_TIME, next),
+            _stateOf(2, GENESIS_HEIGHT + 1, GENESIS_TIME, next),
+            uint64(block.timestamp),
+            _oneId()
+        );
+        dcap.set(true, _output(payload, 0, false));
+        ism.submitAttestation(hex"00", payload);
+        assertEq(keccak256(ism.state()), keccak256(_stateOf(2, GENESIS_HEIGHT + 1, GENESIS_TIME, next)));
+    }
+
+    function test_ownershipCanBeHandedToAMultisig() public {
+        address multisig = address(0x5AFE);
+        ism.transferOwnership(multisig);
+        vm.expectRevert("Ownable: caller is not the owner");
+        ism.setEnclave(_zeroMeasurements(), IDENTITY);
+        vm.prank(multisig);
+        ism.setEnclave(_zeroMeasurements(), IDENTITY);
+        assertEq(ism.enclaveMeasurements(), _zeroMeasurements());
     }
 
     function test_verifyOnlyFromMailbox() public {
@@ -258,7 +365,7 @@ contract TeeDcapIsmTest is Test {
     function test_rejectsUnacceptableTcb() public {
         TeeDcapIsm target = _fresh();
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId());
         dcap.set(true, _output(payload, 4, false)); // TCB_OUT_OF_DATE
         vm.expectRevert(abi.encodeWithSelector(TeeDcapIsm.TcbNotAcceptable.selector, uint8(4)));
         target.submitAttestation(hex"00", payload);
@@ -267,7 +374,7 @@ contract TeeDcapIsmTest is Test {
     function test_rejectsDebugEnclave() public {
         TeeDcapIsm target = _fresh();
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId());
         dcap.set(true, _output(payload, 0, true));
         vm.expectRevert(TeeDcapIsm.DebugEnclave.selector);
         target.submitAttestation(hex"00", payload);
@@ -275,7 +382,7 @@ contract TeeDcapIsmTest is Test {
 
     function test_rejectsWrongEnclave() public {
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId());
         dcap.set(true, _output(payload, 0, false)); // zero measurements, but `ism` pins the real ones
         vm.expectRevert(
             abi.encodeWithSelector(TeeDcapIsm.WrongEnclave.selector, MEASUREMENTS, _zeroMeasurements())
@@ -290,7 +397,7 @@ contract TeeDcapIsmTest is Test {
     /// rtmr3, which is what lets a replacement enclave keep serving an existing ISM.
     function test_acceptsSameEnclaveOnADifferentInstance() public {
         TeeDcapIsm target = _fresh();
-        bytes32[] memory ids = new bytes32[](0);
+        bytes32[] memory ids = _oneId();
         bytes memory payload =
             _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), ids);
 
@@ -309,7 +416,7 @@ contract TeeDcapIsmTest is Test {
     function test_rejectsADifferentEnclaveImage() public {
         TeeDcapIsm target = _fresh();
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId());
 
         bytes memory out = _output(payload, 0, false);
         // A different compose hash is a different image; mr_config_id carries it.
@@ -334,9 +441,9 @@ contract TeeDcapIsmTest is Test {
     function test_rejectsPayloadTheQuoteDoesNotCommitTo() public {
         TeeDcapIsm target = _fresh();
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId());
         bytes memory other =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(3, GENESIS_HEIGHT + 2, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(3, GENESIS_HEIGHT + 2, GENESIS_TIME), uint64(block.timestamp), _oneId());
         dcap.set(true, _output(other, 0, false));
         vm.expectRevert(TeeDcapIsm.PayloadNotAttested.selector);
         target.submitAttestation(hex"00", payload);
@@ -345,7 +452,7 @@ contract TeeDcapIsmTest is Test {
     function test_rejectsReplayOnceStateMoved() public {
         TeeDcapIsm target = _fresh();
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId());
         dcap.set(true, _output(payload, 0, false));
         target.submitAttestation(hex"00", payload);
 
@@ -356,7 +463,7 @@ contract TeeDcapIsmTest is Test {
     function test_rejectsHeightThatDoesNotAdvance() public {
         TeeDcapIsm target = _fresh();
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT, GENESIS_TIME), uint64(block.timestamp), _oneId());
         dcap.set(true, _output(payload, 0, false));
         vm.expectRevert(TeeDcapIsm.HeightNotAdvanced.selector);
         target.submitAttestation(hex"00", payload);
@@ -365,7 +472,7 @@ contract TeeDcapIsmTest is Test {
     function test_rejectsUnchangedStateRoot() public {
         TeeDcapIsm target = _fresh();
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(1, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(1, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId());
         dcap.set(true, _output(payload, 0, false));
         vm.expectRevert(TeeDcapIsm.StateRootUnchanged.selector);
         target.submitAttestation(hex"00", payload);
@@ -375,7 +482,7 @@ contract TeeDcapIsmTest is Test {
         TeeDcapIsm target = _fresh();
         uint64 attestedAt = uint64(block.timestamp);
         bytes memory payload =
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), attestedAt, new bytes32[](0));
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), attestedAt, _oneId());
         dcap.set(true, _output(payload, 0, false));
         vm.warp(block.timestamp + SKEW + 1);
         vm.expectRevert(
@@ -389,7 +496,7 @@ contract TeeDcapIsmTest is Test {
     function test_rejectsTrailingBytesAfterIds() public {
         TeeDcapIsm target = _fresh();
         bytes memory payload = abi.encodePacked(
-            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), new bytes32[](0)),
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), _oneId()),
             hex"00"
         );
         dcap.set(true, _output(payload, 0, false));

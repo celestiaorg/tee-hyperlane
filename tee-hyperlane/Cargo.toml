@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hyperlane-types", "crates/tee-node", "crates/tee-coprocessor", "crates/gas-oracle"]
+members = ["crates/hyperlane-types", "crates/helios-consensus-core", "crates/tee-node", "crates/tee-coprocessor", "crates/gas-oracle"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,21 +25,8 @@ tiny-keccak = { version = "2.0", features = ["keccak"] }
 alloy-rlp = "0.3"
 alloy-trie = { version = "0.9", features = ["serde", "ethereum"] }
 
-# Eden's state root is re-derived rather than believed, so the enclave carries an EVM and a
-# merkle-patricia trie.
-#
-# The EVM is ev-reth's own, not a stock revm: Eden runs ev-reth, which redirects the base fee
-# to a configured sink, adds mint, proposer-control and deploy-permission precompiles, and
-# accepts sponsor-payer and batch-call transactions. An executor that reimplements Ethereum
-# agrees with it only on blocks that use none of that.
-#
-# The trie is still ours. ev-reth's is an update over a database, and what an enclave holding
-# no state needs is an update over a witness.
-ev-revm = { git = "https://github.com/evstack/ev-reth", tag = "v0.6.0" }
-alloy-evm = { version = "0.38.0", default-features = false }
-revm = { version = "42", features = ["std", "secp256k1", "blst", "c-kzg", "portable"] }
+# Only the coprocessor uses this, to re-encode block headers it reads over JSON-RPC.
 alloy-consensus = { version = "1.0", default-features = false, features = ["std", "k256", "serde"] }
-alloy-eips = { version = "1.0", default-features = false, features = ["std", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
@@ -56,8 +43,8 @@ base64 = "0.22"
 
 # Ethereum consensus light client: pure verify_update/apply_update over a LightClientStore,
 # no networking, which is exactly what a stateless enclave needs. Pinned by commit because
-# helios publishes only nightly tags.
-helios-consensus-core = { git = "https://github.com/a16z/helios", rev = "43a8c9f3cdda41a6f383c4db41d9a83f102638b1" }
+# a16z/helios's light client, vendored to add Gloas: see crates/helios-consensus-core/README.md.
+helios-consensus-core = { path = "crates/helios-consensus-core" }
 
 # Celestia consensus light client.
 tendermint = { version = "0.40", default-features = false }

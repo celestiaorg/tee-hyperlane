@@ -13,7 +13,8 @@ use tracing::{debug, info, warn};
 
 use crate::config::{self, Config};
 use crate::destination::Destination;
-use crate::origin::{celestia, evm};
+use crate::origin::evm;
+use crate::origin::l1::celestia;
 use crate::route::{now, Delivered, Parked};
 
 /// The most origin blocks one poll reads, so catching up after downtime is spread out.
@@ -33,6 +34,13 @@ pub struct TrackedRoute {
     /// The route loop's directory: its markers, staged batch, parked and delivered messages.
     pub dir: PathBuf,
     pub destination: Box<dyn Destination>,
+}
+
+impl TrackedRoute {
+    /// Is `recipient` one of our routers on this route's destination?
+    pub fn accepts(&self, recipient: &[u8; 32]) -> bool {
+        self.routers.contains(recipient)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,14 +65,12 @@ impl ChainInfo {
 pub fn expected_latency(kind: &str) -> u64 {
     match kind {
         "celestia" => 15 * 60,
-        // Eden headers reach Celestia every few minutes, then the blocks are re-executed.
-        "eden" => 45 * 60,
+        // Eden's signed headers reach Celestia every minute or two.
+        "eden" => 15 * 60,
         // Finality is two epochs, about 13 minutes, then one attestation.
         "ethereum" => 60 * 60,
-        // Assertions on Arbitrum Sepolia confirm within a couple of hours.
-        "arbitrum" => 6 * 60 * 60,
-        // Base Sepolia's dispute games resolve exactly five days after they are created.
-        "base" => 5 * 24 * 60 * 60 + 6 * 60 * 60,
+        // Every block is signed by the sequencer as it is made, so one attestation.
+        "arbitrum" | "base" => 15 * 60,
         _ => 60 * 60,
     }
 }
@@ -73,10 +79,10 @@ pub fn expected_latency(kind: &str) -> u64 {
 pub fn waiting_on(kind: &str) -> &'static str {
     match kind {
         "celestia" => "the next attestation of Celestia",
-        "eden" => "Eden's block reaching Celestia and being re-executed",
+        "eden" => "Eden's signed header reaching Celestia",
         "ethereum" => "Sepolia finality, about 13 minutes",
-        "arbitrum" => "Arbitrum's assertion covering this block to be confirmed on Sepolia",
-        "base" => "Base's dispute game covering this block to resolve on Sepolia, five days after it was proposed",
+        "arbitrum" => "the next block Arbitrum's sequencer signs on its feed",
+        "base" => "the next block Base's sequencer signs on p2p",
         _ => "the origin to finalize",
     }
 }
@@ -615,7 +621,10 @@ impl Tracker {
             return Ok(());
         }
         let to = tip.min(cursor + watcher.span());
-        let recipients: Vec<[u8; 32]> = routes.iter().flat_map(|r| r.routers.clone()).collect();
+        let recipients: Vec<[u8; 32]> = routes
+            .iter()
+            .flat_map(|r| r.routers.iter().copied())
+            .collect();
         let found = watcher.scan(&recipients, cursor + 1, to).await?;
 
         let mut state = self.lock();
@@ -624,8 +633,7 @@ impl Tracker {
                 continue;
             };
             let Some(route) = routes.iter().find(|r| {
-                r.destination_domain == decoded.destination
-                    && r.routers.contains(&decoded.recipient)
+                r.destination_domain == decoded.destination && r.accepts(&decoded.recipient)
             }) else {
                 continue;
             };
@@ -894,8 +902,7 @@ fn backfill(
             let Ok(decoded) = hyperlane_types::decode_hyperlane_message(&bytes) else {
                 continue;
             };
-            if decoded.destination != route.destination_domain
-                || !route.routers.contains(&decoded.recipient)
+            if decoded.destination != route.destination_domain || !route.accepts(&decoded.recipient)
             {
                 continue;
             }

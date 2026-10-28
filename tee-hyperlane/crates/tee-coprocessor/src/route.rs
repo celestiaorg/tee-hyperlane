@@ -12,10 +12,12 @@ use crate::config::{self, Config};
 use crate::destination::{Batch, Delivery, Destination, Outcome, Stale};
 use crate::origin::{Indexer, Message};
 
-/// A route that has not advanced in this long attests anyway, if its origin has any new leaf.
+/// A route whose trusted state is this old attests anyway, with no messages if there are none.
 /// Quiet routes otherwise fall far behind, and a route far behind has to read further back than
-/// its RPCs will serve: four days of that stopped every Celestia route once.
-const HEARTBEAT: Duration = Duration::from_secs(12 * 60 * 60);
+/// its RPCs will serve: four days of that stopped every Celestia route once. Twice the interval
+/// the enclave and both ISMs require between empty batches
+/// (`tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS`), so the origin's clock always clears it.
+pub const HEARTBEAT: Duration = Duration::from_secs(24 * 60 * 60);
 /// A staged batch older than this is rebuilt rather than retried. Both kinds of ISM refuse an
 /// attestation older than 24h, so past that it could never land, and retrying it forever would
 /// stall the route long after whatever delayed it had passed.
@@ -143,20 +145,86 @@ impl Route {
             .context("reading the ISM's trusted state")?;
         let step = self.origin.gather(&trusted).await?;
         self.record_head(step.head);
-        if step.leaves.is_empty() {
+        // An idle step carries no proofs: the origin has not moved past the trusted height.
+        if step.chain.is_empty() {
             debug!(route = %self.config.name, head = step.head, "idle");
+            self.record_activity(
+                "idle",
+                format!("the origin has not moved past the ISM's height {}", trusted.height),
+            );
+            return Ok(None);
+        }
+        // Both ISMs refuse a transition that leaves the state root where it is, and the enclave
+        // does not check that, so it would attest one anyway. An origin can sit on one root for
+        // many blocks (Eden's empty blocks change nothing), so wait for the root to move rather
+        // than stage a batch no retry can land.
+        if step.state_root.0 == trusted.state_root {
+            debug!(route = %self.config.name, head = step.head, "state root unchanged");
+            self.record_activity(
+                "waiting",
+                format!(
+                    "the origin's state root at height {} is the one the ISM holds from height {}",
+                    step.head, trusted.height
+                ),
+            );
+            return Ok(None);
+        }
+        let heartbeat = heartbeat_due(trusted.timestamp, now());
+        if step.leaves.is_empty() && !heartbeat {
+            debug!(route = %self.config.name, head = step.head, "nothing dispatched");
+            self.record_activity(
+                "waiting",
+                format!("nothing dispatched between heights {} and {}", trusted.height, step.head),
+            );
             return Ok(None);
         }
 
-        let messages = self.origin.index(trusted.height, step.head).await?;
-        check_index(step.leaves.len(), messages.len())?;
+        let messages = if step.leaves.is_empty() {
+            Vec::new()
+        } else {
+            let messages = self.origin.index(trusted.height, step.head).await?;
+            check_index(step.leaves.len(), messages.len())?;
+            messages
+        };
+        // Also advance when the trusted height falls too far behind, so the next proof at it
+        // stays cheap: a full node rebuilds an old block's trie from the head, and on Sepolia
+        // that took longer than any timeout once the route sat idle for a few hours.
+        let lagging = self
+            .config
+            .max_lag
+            .is_some_and(|max| step.head.saturating_sub(trusted.height) >= max);
         if !worth_attesting(&messages, self.destination_domain, &self.config.routers)
-            && !self.heartbeat_due()
+            && !heartbeat
+            && !lagging
         {
             debug!(route = %self.config.name, leaves = messages.len(), "nothing for our routes");
+            self.record_activity(
+                "waiting",
+                format!(
+                    "{} new leaves since height {}, none for our routers",
+                    messages.len(),
+                    trusted.height
+                ),
+            );
             return Ok(None);
         }
 
+        if messages.is_empty() {
+            info!(route = %self.config.name, from = trusted.height, to = step.head, "heartbeat: advancing with no messages");
+        }
+        self.record_activity(
+            "attesting",
+            if messages.is_empty() {
+                format!("heartbeat: asking the enclave to attest heights {} to {} with no messages", trusted.height, step.head)
+            } else {
+                format!(
+                    "asking the enclave to attest heights {} to {} with {} messages",
+                    trusted.height,
+                    step.head,
+                    messages.len()
+                )
+            },
+        );
         debug!(route = %self.config.name, from = trusted.height, to = step.head, leaves = messages.len(), "attesting");
         let request = json!({
             "protocol": tee_node::attest::PROTOCOL_VERSION,
@@ -179,7 +247,6 @@ impl Route {
             "messages": messages.iter().map(|m| hex::encode(&m.bytes)).collect::<Vec<_>>(),
         });
         std::fs::write(self.staged(), serde_json::to_vec_pretty(&record)?)?;
-        let _ = std::fs::write(self.dir.join("advanced"), b"");
         self.submit_staged().await
     }
 
@@ -215,12 +282,22 @@ impl Route {
                 .filter_map(|m| hex::decode(m.as_str()?).ok())
                 .collect(),
         };
+        let update = tee_node::state::AttestedUpdate::decode(&batch.payload)?;
+        self.record_activity(
+            "submitting",
+            format!(
+                "submitting the attestation for heights {} to {} ({} messages) and delivering",
+                update.prev_state.height,
+                update.new_state.height,
+                update.message_ids.len()
+            ),
+        );
         if age > STAGED_BATCH_MAX_AGE {
             warn!(route = %self.config.name, age_secs = age.as_secs(), "discarding a staged batch too old to be accepted; rebuilding");
             self.discard(&batch, &path).await?;
             return Ok(None);
         }
-        let deliveries = match self.destination.submit(&batch).await {
+        let submitted = match self.destination.submit(&batch).await {
             Ok(d) => d,
             // The ISM moved past this batch's start, so no retry can land it. The next pass
             // builds from where the ISM actually is, which skips nothing.
@@ -231,12 +308,17 @@ impl Route {
             }
             Err(e) => return Err(e),
         };
-        for d in deliveries {
+        for d in submitted.deliveries {
             self.settle(d);
         }
 
-        let update = tee_node::state::AttestedUpdate::decode(&batch.payload)?;
         let height = update.new_state.height;
+        // What the dashboard lists for each attestation.
+        record["from_height"] = update.prev_state.height.into();
+        record["attested_at"] = update.attested_at.into();
+        record["submitted_at"] = now().into();
+        record["attestation_tx"] = submitted.attestation_tx.clone().into();
+        record["heartbeat"] = update.message_ids.is_empty().into();
         record["height"] = height.into();
         record["state_root"] = format!("0x{}", hex::encode(update.new_state.state_root)).into();
         record["quote"] = batch.quote.clone().into();
@@ -253,6 +335,18 @@ impl Route {
             serde_json::to_vec_pretty(&record)?,
         )?;
         std::fs::remove_file(&path)?;
+        self.record_activity(
+            "advanced",
+            format!(
+                "the ISM moved from height {} to {}{}",
+                update.prev_state.height,
+                height,
+                match &submitted.attestation_tx {
+                    Some(tx) => format!(" in {tx}"),
+                    None => String::new(),
+                }
+            ),
+        );
         Ok(Some(height))
     }
 
@@ -375,8 +469,21 @@ impl Route {
         }
     }
 
-    fn heartbeat_due(&self) -> bool {
-        heartbeat_due(&self.dir)
+    /// What the route is doing right now, for the dashboard. `since` moves only when the phase
+    /// changes, so it says how long the route has been waiting, attesting or submitting.
+    fn record_activity(&self, phase: &str, detail: String) {
+        let path = self.dir.join("activity.json");
+        let now = now();
+        let since = std::fs::read(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+            .filter(|old| old["phase"] == phase)
+            .and_then(|old| old["since"].as_u64())
+            .unwrap_or(now);
+        let _ = std::fs::write(
+            path,
+            json!({ "phase": phase, "detail": detail, "since": since, "at": now }).to_string(),
+        );
     }
 
     /// How far the origin could go, for the dashboard; written even when idle, which is exactly
@@ -481,18 +588,16 @@ fn worth_attesting(messages: &[Message], destination: u32, routers: &[String]) -
         .collect();
     messages.iter().any(|m| {
         hyperlane_types::decode_hyperlane_message(&m.bytes).is_ok_and(|d| {
-            d.destination == destination && (ours.is_empty() || ours.contains(&d.recipient))
+            d.destination == destination
+                && (ours.is_empty() || ours.contains(&d.recipient))
         })
     })
 }
 
-fn heartbeat_due(dir: &std::path::Path) -> bool {
-    match std::fs::metadata(dir.join("advanced")).and_then(|m| m.modified()) {
-        Ok(at) => at.elapsed().is_ok_and(|d| d > HEARTBEAT),
-        // Never advanced under this binary: take the heartbeat rather than wait twelve hours to
-        // find out the route is stuck.
-        Err(_) => true,
-    }
+/// Whether the ISM's trusted state is old enough for a heartbeat. Read from the state itself,
+/// the origin's own clock at the last advance, so it holds across restarts and hosts.
+fn heartbeat_due(trusted_timestamp: u64, now: u64) -> bool {
+    now.saturating_sub(trusted_timestamp) >= HEARTBEAT.as_secs()
 }
 
 fn backoff(tick: Duration, failures: u32) -> Duration {
@@ -634,18 +739,15 @@ mod tests {
     }
 
     #[test]
-    fn the_heartbeat_is_due_until_the_route_advances() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(heartbeat_due(dir.path()), "never advanced");
-        std::fs::write(dir.path().join("advanced"), b"").unwrap();
-        assert!(!heartbeat_due(dir.path()), "just advanced");
-        let old = std::time::SystemTime::now() - HEARTBEAT - Duration::from_secs(60);
-        filetime::set_file_mtime(
-            dir.path().join("advanced"),
-            filetime::FileTime::from_system_time(old),
-        )
-        .unwrap();
-        assert!(heartbeat_due(dir.path()), "quiet for over twelve hours");
+    fn the_heartbeat_is_due_once_the_trusted_state_is_a_day_old() {
+        let day = HEARTBEAT.as_secs();
+        assert!(!heartbeat_due(1_000, 1_000), "just advanced");
+        assert!(!heartbeat_due(1_000, 1_000 + day - 1), "not yet a day");
+        assert!(heartbeat_due(1_000, 1_000 + day), "a day old");
+        assert!(
+            day >= 2 * tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS,
+            "the heartbeat must clear the ISMs' minimum interval with room for origin lag"
+        );
     }
 
     #[test]
