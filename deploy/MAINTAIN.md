@@ -30,8 +30,8 @@ teeism pccs tcb-eval 23      # its QE identity and TCB info contracts on every c
 Every route attests at least daily, with no messages if nothing was dispatched, so its ISM stays near its origin's head and the next proof starts from recent state.
 
 - The relayer sends one once an ISM's trusted state is a day old (`HEARTBEAT`, `tee-coprocessor/src/route.rs`).
-- The enclave, `TeeDcapIsm` and `x/teeism` all refuse an empty batch that moves the origin clock less than 30 minutes, so nobody can use the public enclave to advance an ISM more often.
-- An empty batch cannot skip a message: the enclave replays the batch from the tree under the ISM's own root, and zero ids reproduce the head's tree only if nothing was dispatched.
+- `TeeDcapIsm` and `x/teeism` refuse an attestation that leaves the tree root unchanged and moves the origin clock less than 30 minutes, so nobody can use the public enclave to advance an ISM more often with nothing in it.
+- An attestation cannot skip a message: it carries the tree's root, and every message in the tree proves itself against that root at delivery (`root(32) index(4) proof(32 * 32)` in the Hyperlane metadata). Every root an ISM has attested stays accepted, so a message delivered late proves against the root it was attested under.
 - Cost: one attestation (~3.87M gas on an EVM destination) per quiet route per day. On Sepolia at 1.1 gwei that is ~0.004 ETH a day.
 - Check: `teeism status` lists every route's state age; over 26 hours is reported.
 
@@ -127,7 +127,8 @@ Base or Arbitrum waiting more than a few minutes: stuck, see below. `leaves=N` c
 | `WrongEnclave`, `IdentityChanged` | `teeism services restart` (rewrites the enclave URLs); `teeism enclaves verify --ism-chain <chain>` |
 | `WrongEnclave` / `identity mismatch` on every route after Phala maintenance, with no change of ours | the host moved the measurements (e.g. a dstack 0.6 VMM changes RTMR0 at the CVM's next start): [rotate the enclave](#rotate-the-enclave-re-pin) |
 | `TCBR` on every EVM route right after a new CVM | its Phala node has another CPU platform (FMSPC): `teeism pccs seed --fmspc <hex>` |
-| `EmptyBatchTooSoon`, `an empty batch must advance the origin clock` | nothing, unless it repeats: someone else advanced the ISM |
+| `EmptyBatchTooSoon`, `an attestation with no new leaves must advance the origin clock` | nothing, unless it repeats: someone else advanced the ISM |
+| `process` reverts or `verification failed` with the ISM's state ahead of the message | the delivery's metadata names a root the ISM never attested, or the proof is for another index: remove the parked message (`undelivered/<id>.json`); the next pass re-indexes and rebuilds it |
 | `unknown command "teeism"` from the relayer | the unit's PATH must start with `.state/bin` |
 | `eth_getProof` fails at an old height | use an archive endpoint ([DEPLOY G](DEPLOY.md#g-endpoints)) |
 | Sepolia: `eth_getProof` ... `operation timed out` against `127.0.0.1:8545` | point `SEPOLIA_RPC` at an archive for one pass |

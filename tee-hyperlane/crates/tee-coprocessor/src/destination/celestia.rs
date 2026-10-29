@@ -7,7 +7,7 @@ use serde_json::Value;
 use tee_node::state::IsmState;
 use tracing::debug;
 
-use super::{run, Batch, Delivery, Destination, Outcome, Wallet, Submitted};
+use super::{run, Batch, Delivery, Destination, Outcome, Submitted, Wallet};
 
 /// Celestia: `x/teeism` submit-attestation, with fresh Intel collateral carried in the
 /// transaction, then `hyperlane mailbox process` per message.
@@ -101,14 +101,14 @@ impl Celestia {
         Ok(delivered["delivered"].as_bool() == Some(true))
     }
 
-    async fn process(&self, message: &[u8]) -> Result<Outcome> {
+    async fn process(&self, message: &[u8], metadata: &[u8]) -> Result<Outcome> {
         let sent = self
             .send_checked(&[
                 "hyperlane",
                 "mailbox",
                 "process",
                 &self.mailbox,
-                "0x",
+                &format!("0x{}", hex::encode(metadata)),
                 &format!("0x{}", hex::encode(message)),
             ])
             .await?;
@@ -178,16 +178,17 @@ impl Destination for Celestia {
             );
         }
         let mut out = Vec::new();
-        for (id, message) in batch.for_domain(self.domain) {
+        for (id, message, metadata) in batch.for_domain(self.domain) {
             let outcome = if self.is_delivered(&id).await? {
                 Outcome::AlreadyDelivered
             } else {
                 debug!(id, "delivering");
-                self.process(message).await?
+                self.process(message, metadata).await?
             };
             out.push(Delivery {
                 id,
                 message: message.clone(),
+                metadata: metadata.clone(),
                 outcome,
             });
         }
@@ -197,13 +198,13 @@ impl Destination for Celestia {
         })
     }
 
-    async fn deliver(&self, message: &[u8]) -> Result<Outcome> {
+    async fn deliver(&self, message: &[u8], metadata: &[u8]) -> Result<Outcome> {
         let id = hex::encode(alloy_primitives::keccak256(message));
         if self.is_delivered(&id).await? {
             return Ok(Outcome::AlreadyDelivered);
         }
         debug!(id, "redelivering");
-        self.process(message).await
+        self.process(message, metadata).await
     }
 
     async fn delivered(&self, id: &str) -> Result<bool> {

@@ -23,8 +23,10 @@ struct AttestResponse {
     payload: String,
     /// The state this update moves the ISM to, hex.
     new_state: String,
-    /// Message ids this update authorises.
-    message_ids: Vec<String>,
+    /// The origin tree's root and leaf count at that state, which messages prove themselves
+    /// against at delivery.
+    tree_root: String,
+    tree_count: u32,
 }
 
 #[derive(Serialize)]
@@ -87,7 +89,7 @@ async fn attest(
 
     info!(
         height = update.new_state.height,
-        messages = update.message_ids.len(),
+        leaves = update.tree_count,
         "attested"
     );
     Ok(Json(AttestResponse {
@@ -95,7 +97,8 @@ async fn attest(
         event_log: quote.event_log,
         payload: hex::encode(&payload),
         new_state: hex::encode(update.new_state.encode()),
-        message_ids: update.message_ids.iter().map(hex::encode).collect(),
+        tree_root: hex::encode(update.tree_root),
+        tree_count: update.tree_count,
     }))
 }
 
