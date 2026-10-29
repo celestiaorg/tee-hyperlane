@@ -48,7 +48,7 @@ teeism ui --public-url http://178.199.12.26:3000      # UI changes only
 
 ## Rotate the enclave (re-pin)
 
-For anything that changes what the ISMs pin: enclave code (`crates/tee-node`, `hyperlane-types`, `helios-consensus-core`, `tee-hyperlane/Cargo.lock`), a new dstack OS image, another instance type, or Phala host maintenance that moved the measurements. Every ISM keeps its address and state; tokens, routers, the PCCS and the Celestia chain are untouched. Done this way on 2026-10-26 (dstack 0.5.12 -> 0.6.1).
+For anything that changes what the ISMs pin: enclave code (`crates/tee-node`, `hyperlane-types`, `tee-hyperlane/Cargo.lock`, which pins helios), a new dstack OS image, another instance type, or Phala host maintenance that moved the measurements. Every ISM keeps its address and state; tokens, routers, the PCCS and the Celestia chain are untouched. Done this way on 2026-10-26 (dstack 0.5.12 -> 0.6.1).
 
 ```sh
 git pull && git -C ../celestia-app-local pull && cargo install --locked --path cli && teeism build

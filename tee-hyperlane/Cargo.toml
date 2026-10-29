@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hyperlane-types", "crates/helios-consensus-core", "crates/tee-node", "crates/tee-coprocessor", "crates/gas-oracle"]
+members = ["crates/hyperlane-types", "crates/tee-node", "crates/tee-coprocessor", "crates/gas-oracle"]
 
 [workspace.package]
 version = "0.1.0"
@@ -42,9 +42,9 @@ prost = "0.13"
 base64 = "0.22"
 
 # Ethereum consensus light client: pure verify_update/apply_update over a LightClientStore,
-# no networking, which is exactly what a stateless enclave needs. Pinned by commit because
-# a16z/helios's light client, vendored to add Gloas: see crates/helios-consensus-core/README.md.
-helios-consensus-core = { path = "crates/helios-consensus-core" }
+# no networking, which is exactly what a stateless enclave needs. 0.12.0 (Gloas, and #819) plus
+# nothing else; pinned by commit because it is a git dependency.
+helios-consensus-core = { git = "https://github.com/a16z/helios", rev = "2af9b41887e069144ee56cd710f3ddca195473f8" }
 
 # Celestia consensus light client.
 tendermint = { version = "0.40", default-features = false }

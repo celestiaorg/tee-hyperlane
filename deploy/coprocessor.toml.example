@@ -79,8 +79,8 @@ da_rpc = "http://localhost:26658"
 rpc = "https://ev-reth-eden-testnet.binarybuilders.services:8545/"
 logs_rpc = "https://rpc.testnet.eden.gateway.fm/"
 send_rpc = "https://rpc.testnet.eden.gateway.fm/"
-mailbox = "0x4D37EeeAE9fA656a85D15366f60dc55aa73a1907"
-merkle_tree_hook = "0xDF59A3c135B159a7Ac81b0140425C3B4Ba0407a9"
+mailbox = "0xbFbc80F66CD2E3534779d4952CC669c86F298479"
+merkle_tree_hook = "0x7fE7582d7BE76f4053c291C30d38284cb4935A1a"
 
 # ---------------------------------------------------------------- routes
 #
@@ -96,32 +96,32 @@ name = "celestia-to-sepolia"
 from = "celestia"
 to = "sepolia"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8080.dstack-pha-prod5.phala.network"
-ism = "0x8DDAB7d98b7C7FC40eb4D54Ae10Da60734f2c5AF"
-routers = ["0x7F751c18467C6D00f423BBc8183C38B01898D07c", "0xB2fab15FdC9185b6F15eB383fe57E12cc7Ea5e99"]
+ism = "0x888774E53e4ce96fD0F22f3B362C92a68e7bef33"
+routers = ["0x2022b3702c5ab233ce9Da34197ee9b5942AD11fD", "0xc381f89241D03C7DD62eFe7E9c1e456Cf9f0904f"]
 
 [[routes]]
 name = "celestia-to-arbitrum"
 from = "celestia"
 to = "arbitrum"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8080.dstack-pha-prod5.phala.network"
-ism = "0xE7eAeb624AB993f2b058E041dd2b762a9F0c038B"
-routers = ["0xDED207d4d9fad5aC89E755D77029453fFa834F2f", "0xE7d728A1884C840b4153A0BcAb766e8ebb5352dF"]
+ism = "0x2E20360F67Da2936303a42c785358bFBBA09abcc"
+routers = ["0x7a09FC80cAFaff73335811B431a41dE3d06d0CC2", "0x316006Ed5A096E1F1Ab32b436696B576A7645F0c"]
 
 [[routes]]
 name = "celestia-to-base"
 from = "celestia"
 to = "base"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8080.dstack-pha-prod5.phala.network"
-ism = "0x96D3A82398545651117e0B754b55a2cF00A0aA1c"
-routers = ["0x5F37c2B101527997436de2BB7C8636B356621d7b", "0xdA22F5ebE5e8dF2cbA5a4487622B9EF80BA413e7"]
+ism = "0xB5A922E47b6Ad2d05E4BdaCb29282F85Cd547603"
+routers = ["0x0068917588ceE1afCe257422A6Ee10eAef445f10", "0xB151c781c0DfB74807Aa67b7198eB0a0A55e142A"]
 
 [[routes]]
 name = "celestia-to-eden"
 from = "celestia"
 to = "eden"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8080.dstack-pha-prod5.phala.network"
-ism = "0xB06dE0F56E05f5af1431708af6B92888d18A9abd"
-routers = ["0xad4471aC85d64E6ea99426EedCB15097EF3EC850", "0x254Fd6b521ac0f6911Ef10846D6fc932D9ed3191"]
+ism = "0x875F6210F4238C084526bD3847135536776d71b1"
+routers = ["0x62AD8dEbAE1895aEdB0f4Fc2AcaB1B3FAE67Fe02", "0x4592f8D742E8b3881B3B94C00260C95aFcc298c0"]
 
 # Attested by the ethereum, arbitrum and base enclaves, ports 8081, 8083 and 8082.
 [[routes]]
@@ -138,7 +138,7 @@ name = "arbitrum-to-celestia"
 from = "arbitrum"
 to = "celestia"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8083.dstack-pha-prod5.phala.network"
-ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000005"
+ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000002"
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
 
 [[routes]]
@@ -146,7 +146,7 @@ name = "base-to-celestia"
 from = "base"
 to = "celestia"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8082.dstack-pha-prod5.phala.network"
-ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000002"
+ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000003"
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
 
 # Attested by the eden enclave, port 8084.
@@ -155,5 +155,5 @@ name = "eden-to-celestia"
 from = "eden"
 to = "celestia"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8084.dstack-pha-prod5.phala.network"
-ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000003"
+ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000004"
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]

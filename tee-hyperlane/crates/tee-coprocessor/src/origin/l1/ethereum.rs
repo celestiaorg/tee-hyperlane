@@ -149,7 +149,7 @@ impl Ethereum {
         self.keep_store(&next, &trusted.lc_store_commit);
 
         let (block, state_root, execution_header) =
-            self.execution_of(finality.finalized_header()).await?;
+            self.execution_of(&finality.finalized_header()).await?;
         Ok(Some(L1Step {
             block,
             state_root,
