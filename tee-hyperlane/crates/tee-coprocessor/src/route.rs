@@ -247,7 +247,7 @@ impl Route {
         // about to attest. Built here, from the tree at the trusted height and the leaves just
         // indexed, and checked against the head's tree before the enclave is asked: an index
         // that disagrees with the chain is caught where it can be named.
-        let metadata = proofs(&step, &trusted, &messages)?;
+        let metadata = proofs(&step, &trusted, &messages, self.destination_domain)?;
         let request = json!({
             "protocol": tee_node::attest::PROTOCOL_VERSION,
             "trusted_state": hex::encode(trusted.encode()),
@@ -607,8 +607,10 @@ fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<(
     Ok(())
 }
 
-/// The delivery metadata for every message of a step: `root(32) index(4) proof(32 * 32)`, the
-/// root being the head tree's, which the enclave is about to attest.
+/// The delivery metadata for the messages of a step, `root(32) index(4) proof(32 * 32)` with
+/// the head tree's root, which the enclave is about to attest. One entry per message, in order;
+/// empty for a message bound elsewhere, which this route never delivers. An origin's tree is
+/// shared by every bridge on it, so a step can carry thousands of leaves that are not ours.
 ///
 /// The frontier at the trusted height and the tree at the head are both read through the
 /// enclave's own `merkle_tree`, under the roots the ISM holds and moves to, so the proofs are
@@ -619,8 +621,9 @@ fn proofs(
     step: &crate::origin::Step,
     trusted: &tee_node::state::IsmState,
     messages: &[Message],
+    destination: u32,
 ) -> Result<Vec<Vec<u8>>> {
-    use hyperlane_types::{branch_proof, get_tree_root, insert_leaf};
+    use hyperlane_types::{get_tree_root, insert_leaf};
     let chain = tee_node::origin::find(step.chain)
         .with_context(|| format!("the enclave registry has no chain `{}`", step.chain))?;
     let frontier = chain
@@ -646,14 +649,18 @@ fn proofs(
         step.head,
         head.count
     );
-    (0..ids.len())
-        .map(|i| {
+    let mut builder = crate::proofs::ProofBuilder::new(&frontier, &ids)?;
+    messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let ours = hyperlane_types::decode_hyperlane_message(&m.bytes)
+                .is_ok_and(|d| d.destination == destination);
+            if !ours {
+                return Ok(Vec::new());
+            }
             let index = frontier.count + i as u32;
-            Ok(metadata(
-                root,
-                index,
-                &branch_proof(&frontier, &ids, index)?,
-            ))
+            Ok(metadata(root, index, &builder.proof(index)?))
         })
         .collect()
 }
