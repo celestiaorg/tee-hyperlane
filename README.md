@@ -8,6 +8,7 @@ Hyperlane bridging between Celestia and EVM chains. Messages are authorised by a
 | [deploy/MAINTAIN.md](deploy/MAINTAIN.md) | monthly job, rollouts, diagnosing a route |
 | [deploy/ADMIN.md](deploy/ADMIN.md) | owner controls and commands, Intel breakage |
 | [deploy/INTERACT.md](deploy/INTERACT.md) | wallets, sending, arrival, latency, cost |
+| [deploy/VOYAGER.md](deploy/VOYAGER.md) | two local voyager chains: the bridge lane, its enclave, its routes |
 
 ## Layout
 
@@ -21,7 +22,7 @@ devnet/                                 the chain's and the gateway's compose fi
 deploy/                                 the guides, the measured compose files, systemd units
 ```
 
-- `l1/`: light-client chains (Celestia, Ethereum). `l2/`: sequencer-signed rollups (Base, Arbitrum, Eden).
+- `l1/`: light-client chains (Celestia, Ethereum). `l2/`: sequencer-signed rollups (Base, Arbitrum, Eden, Voyager).
 - Per chain: `tee-node/src/chains/l2/base.rs` (verification), `tee-coprocessor/src/origin/l2/base.rs` (fetching).
 
 ## Deployments

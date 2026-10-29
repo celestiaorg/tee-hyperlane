@@ -150,6 +150,8 @@ mod tests {
 
 mod celestia;
 mod evm;
+mod voyager;
 
 pub use celestia::Celestia;
 pub use evm::Evm;
+pub use voyager::Voyager;

@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::destination::{self, Destination};
 use crate::origin::l1::{celestia, ethereum};
-use crate::origin::l2::{arbitrum, base, eden};
+use crate::origin::l2::{arbitrum, base, eden, voyager};
 use crate::origin::{Cache, Indexer};
 
 #[derive(Deserialize)]
@@ -142,12 +142,25 @@ impl Config {
                 let parent = self.chain(&config.celestia)?;
                 Box::new(eden::Eden::new(config, parent, cache)?)
             }
+            "voyager" => Box::new(voyager::Voyager::new(self.chain(name)?)?),
             other => anyhow::bail!("chain `{name}` has unknown kind `{other}`"),
         })
     }
 
     /// The destination for `name`, delivering through `ism`.
     pub fn destination(&self, name: &str, ism: &str) -> Result<Box<dyn Destination>> {
+        // A voyager chain keeps one ISM per origin, named by the origin's domain; it has no
+        // mailbox contract.
+        if self.kind(name)? == "voyager" {
+            let config: voyager::Config = self.chain(name)?;
+            return Ok(Box::new(destination::Voyager {
+                node: voyager::Node::new(&config.rpc),
+                domain: config.domain,
+                origin: ism.parse().with_context(|| {
+                    format!("a voyager ISM is named by its origin's domain, not `{ism}`")
+                })?,
+            }));
+        }
         #[derive(Deserialize)]
         struct Endpoint {
             domain: u32,

@@ -32,6 +32,8 @@ pub fn defaults(kind: &str) -> (&'static str, u32, f64) {
         // Eden's gas token is TIA, with EVM decimals.
         "eden" => ("TIA", 18, 1.0),
         "ethereum" => ("ETH", 18, 0.05),
+        // Delivery is free; nothing to run low on.
+        "voyager" => ("NONE", 0, 0.0),
         _ => ("ETH", 18, 0.01),
     }
 }

@@ -71,6 +71,8 @@ pub fn expected_latency(kind: &str) -> u64 {
         "ethereum" => 60 * 60,
         // Every block is signed by the sequencer as it is made, so one attestation.
         "arbitrum" | "base" => 15 * 60,
+        // Headers are signed every second at most, and the relayer attests on its next tick.
+        "voyager" => 5 * 60,
         _ => 60 * 60,
     }
 }
@@ -83,6 +85,7 @@ pub fn waiting_on(kind: &str) -> &'static str {
         "ethereum" => "Sepolia finality, about 13 minutes",
         "arbitrum" => "the next block Arbitrum's sequencer signs on its feed",
         "base" => "the next block Base's sequencer signs on p2p",
+        "voyager" => "the next header voyager's sequencer signs",
         _ => "the origin to finalize",
     }
 }
@@ -186,6 +189,7 @@ pub struct State {
 enum Scanner {
     Evm { rpc: evm::Rpc, mailbox: Address },
     Celestia { rpc: celestia::Rpc },
+    Voyager { node: crate::origin::l2::voyager::Node },
 }
 
 struct Watcher {
@@ -215,6 +219,9 @@ impl Watcher {
             "celestia" => Scanner::Celestia {
                 rpc: celestia::Rpc::new(&text("rpc").context("rpc")?)?,
             },
+            "voyager" => Scanner::Voyager {
+                node: crate::origin::l2::voyager::Node::new(&text("rpc").context("rpc")?),
+            },
             _ => {
                 let rpc = text("rpc").context("rpc")?;
                 Scanner::Evm {
@@ -236,6 +243,7 @@ impl Watcher {
                 evm::quantity(&rpc.read("eth_blockNumber", json!([])).await?)?
             }
             Scanner::Celestia { rpc } => rpc.latest_height().await?,
+            Scanner::Voyager { node } => node.head().await?,
         };
         Ok(tip.saturating_sub(self.confirmations))
     }
@@ -243,7 +251,7 @@ impl Watcher {
     fn span(&self) -> u64 {
         match self.scanner {
             Scanner::Evm { .. } => MAX_SPAN_EVM,
-            Scanner::Celestia { .. } => MAX_SPAN_CELESTIA,
+            Scanner::Celestia { .. } | Scanner::Voyager { .. } => MAX_SPAN_CELESTIA,
         }
     }
 
@@ -336,6 +344,28 @@ impl Watcher {
                             time,
                         ));
                     }
+                }
+            }
+            Scanner::Voyager { node } => {
+                // Voyager keeps no per-slot clock the API serves; the scan runs every few
+                // seconds, so now is close enough for a dashboard.
+                let time = crate::route::now();
+                for (height, message) in node.messages(from.saturating_sub(1), to).await? {
+                    let recipient = hyperlane_types::decode_hyperlane_message(&message.bytes)
+                        .map(|d| d.recipient)
+                        .ok();
+                    if !recipient.is_some_and(|r| recipients.contains(&r)) {
+                        continue;
+                    }
+                    out.push((
+                        Seen {
+                            tx: format!("0x{}", hex::encode(message.id)),
+                            block: height,
+                            from: None,
+                            message: message.bytes,
+                        },
+                        time,
+                    ));
                 }
             }
         }

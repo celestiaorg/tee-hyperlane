@@ -1,0 +1,19 @@
+# The measured configuration for the voyager enclave, which always runs alone in its own CVM
+# (`teeism enclaves up --chain voyager`); it is not part of docker-compose.all.yml.
+#
+# Serves both local voyager chains (`voyager-a`, `voyager-b`): headers their sequencers signed,
+# each against its own pinned key. Voyager-side ISMs pin it.
+#
+# This file's hash becomes `compose-hash` in RTMR3, and the ISM pins that value, so this file,
+# including the image digest below, is what an ISM ultimately commits to. Pinned by digest.
+services:
+  voyager:
+    image: ghcr.io/jonas089/tee-node@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    ports:
+      - "8085:8080"
+    volumes:
+      # The only thing the enclave talks to, and it is local. No data volume: the enclave is
+      # stateless, so there is nothing to persist and nothing to seal.
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      - RUST_LOG=info

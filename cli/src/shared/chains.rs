@@ -140,12 +140,22 @@ pub const ENCLAVES: [(&str, u16); 5] = [
     ("eden", 8084),
 ];
 
+/// Images that only ever run in a CVM of their own (`teeism enclaves up --chain <name>`), so
+/// adding one never touches the shared CVM's compose file, and with it the identity every
+/// shared-CVM ISM pins. Voyager's one image attests both local voyager chains.
+pub const ALONE_ENCLAVES: [(&str, u16); 1] = [("voyager", 8085)];
+
 pub fn enclave_port(chain: &str) -> Result<u16> {
-    match ENCLAVES.iter().find(|(c, _)| *c == chain) {
+    match ENCLAVES.iter().chain(&ALONE_ENCLAVES).find(|(c, _)| *c == chain) {
         Some((_, p)) => Ok(*p),
         None => bail!(
             "no enclave image for '{chain}'; the images are: {}",
-            ENCLAVES.iter().map(|(c, _)| *c).collect::<Vec<_>>().join(", ")
+            ENCLAVES
+                .iter()
+                .chain(&ALONE_ENCLAVES)
+                .map(|(c, _)| *c)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
@@ -154,6 +164,7 @@ pub fn enclave_port(chain: &str) -> Result<u16> {
 pub fn enclave_for(origin: &str) -> &str {
     match origin {
         "celestia" => "celestia",
+        "voyager-a" | "voyager-b" => "voyager",
         other => EVM_CHAINS
             .iter()
             .find(|c| c.name == other)

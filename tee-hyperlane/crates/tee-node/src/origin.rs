@@ -3,8 +3,8 @@
 //! Two things, and everything else is shared:
 //!
 //! * `verify` - authenticate a head and return its state root. A chain may run a light client
-//!   (Ethereum, Celestia) or check its sequencer's signature (Base, Arbitrum, and Eden, whose
-//!   headers come through Celestia's light client). The enclave only needs the root.
+//!   (Ethereum, Celestia) or check its sequencer's signature (Base, Arbitrum, Voyager, and Eden,
+//!   whose headers come through Celestia's light client). The enclave only needs the root.
 //! * `merkle_tree` - prove the Hyperlane merkle tree under a root `verify` returned.
 //!
 //! Inputs are `serde_json::Value` and each chain parses its own, so nothing outside a chain's
@@ -80,6 +80,10 @@ pub fn chains() -> Vec<&'static Chain> {
     all.push(&crate::chains::l2::base::BASE);
     #[cfg(feature = "eden")]
     all.push(&crate::chains::l2::eden::EDEN);
+    #[cfg(feature = "voyager")]
+    all.push(&crate::chains::l2::voyager::VOYAGER_A);
+    #[cfg(feature = "voyager")]
+    all.push(&crate::chains::l2::voyager::VOYAGER_B);
     all
 }
 

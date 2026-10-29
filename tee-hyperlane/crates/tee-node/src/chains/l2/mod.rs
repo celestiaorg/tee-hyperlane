@@ -8,3 +8,5 @@ pub mod base;
 pub mod eden;
 #[cfg(any(feature = "base", feature = "arbitrum"))]
 pub mod sequencer;
+#[cfg(feature = "voyager")]
+pub mod voyager;

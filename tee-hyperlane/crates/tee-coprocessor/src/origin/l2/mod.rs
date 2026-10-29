@@ -5,3 +5,4 @@ pub mod base;
 pub mod eden;
 /// What Base and Arbitrum share.
 pub mod sequenced;
+pub mod voyager;

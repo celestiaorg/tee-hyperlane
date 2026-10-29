@@ -9,13 +9,15 @@ license.workspace = true
 # `default` builds all of them, which is what the tests and the devnet use. Each image enables
 # one.
 [features]
-default = ["celestia", "ethereum", "base", "arbitrum", "eden"]
+default = ["celestia", "ethereum", "base", "arbitrum", "eden", "voyager"]
 celestia = ["dep:tendermint", "dep:tendermint-light-client-verifier", "dep:celestia-types", "dep:ed25519-dalek", "dep:ics23", "dep:prost"]
 ethereum = ["dep:helios-consensus-core", "dep:ssz_types", "dep:ethereum_ssz", "dep:tree_hash"]
 base = ["alloy-primitives/k256"]
 arbitrum = ["alloy-primitives/k256"]
 # Eden's headers are read out of Celestia blocks, so its light client comes too.
 eden = ["celestia"]
+# Both local voyager chains: each pins its own sequencer key, so one image serves the pair.
+voyager = ["dep:ed25519-dalek"]
 
 [dependencies]
 hyperlane-types.workspace = true

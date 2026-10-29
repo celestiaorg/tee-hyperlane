@@ -66,7 +66,7 @@
         # Celestia's light client.
         chainFiles = [
           "l1/celestia.rs" "l1/ethereum.rs"
-          "l2/base.rs" "l2/arbitrum.rs" "l2/eden.rs" "l2/sequencer.rs"
+          "l2/base.rs" "l2/arbitrum.rs" "l2/eden.rs" "l2/sequencer.rs" "l2/voyager.rs"
         ];
         keeps = {
           celestia = [ "l1/celestia.rs" ];
@@ -74,6 +74,7 @@
           base = [ "l2/base.rs" "l2/sequencer.rs" ];
           arbitrum = [ "l2/arbitrum.rs" "l2/sequencer.rs" ];
           eden = [ "l1/celestia.rs" "l2/eden.rs" ];
+          voyager = [ "l2/voyager.rs" ];
         };
 
         srcFor = feature:
@@ -142,9 +143,10 @@
       {
         packages =
           # One image per origin chain. Adding one is this list, `chainFiles` and `keeps` above,
-          # a cargo feature, a compose file and a port in cli/src/shared/chains.rs (ENCLAVES).
+          # a cargo feature, a compose file and a port in cli/src/shared/chains.rs (ENCLAVES, or
+          # ALONE_ENCLAVES for an image that never joins the shared CVM).
           let
-            chains = [ "celestia" "ethereum" "base" "arbitrum" "eden" ];
+            chains = [ "celestia" "ethereum" "base" "arbitrum" "eden" "voyager" ];
             outputs = pkgs.lib.listToAttrs (pkgs.lib.concatMap (f: [
               { name = "tee-node-${f}"; value = teeNodeFor f; }
               { name = "image-${f}"; value = imageFor f; }

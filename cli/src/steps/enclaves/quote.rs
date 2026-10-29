@@ -26,6 +26,7 @@ pub fn chains_in(target: &str) -> Vec<&'static str> {
     } else {
         ENCLAVES
             .iter()
+            .chain(&crate::shared::chains::ALONE_ENCLAVES)
             .map(|(c, _)| *c)
             .filter(|c| *c == target)
             .collect()
