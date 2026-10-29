@@ -206,10 +206,10 @@ mod tests {
     use helios_consensus_core::apply_bootstrap;
     use helios_consensus_core::types::{Bootstrap, Fork};
 
-    /// Real Sepolia data across Glamsterdam, shared with the vendored helios tests.
+    /// Real Sepolia data across Glamsterdam, shared with `tests/helios_gloas.rs`.
     fn fixture(name: &str) -> Value {
         let path = format!(
-            "{}/../helios-consensus-core/tests/fixtures/{name}",
+            "{}/tests/fixtures/helios/{name}",
             env!("CARGO_MANIFEST_DIR")
         );
         let text = std::fs::read_to_string(&path).unwrap();

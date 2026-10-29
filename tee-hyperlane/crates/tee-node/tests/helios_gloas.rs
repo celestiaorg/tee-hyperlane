@@ -1,7 +1,7 @@
 //! Gloas against real Sepolia data, from Lodestar v1.49.0 on 2026-10-06: the fork landed at slot
 //! 11296768 (epoch 353024), the first slot of sync-committee period 1379.
 
-use alloy::primitives::B256;
+use alloy_primitives::B256;
 use helios_consensus_core::consensus_spec::MainnetConsensusSpec as Spec;
 use helios_consensus_core::types::{
     Bootstrap, FinalityUpdate, Fork, Forks, LightClientHeader, LightClientStore, Update,
@@ -13,12 +13,12 @@ use helios_consensus_core::{
 use serde_json::Value;
 
 fn fixture(name: &str) -> Value {
-    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/tests/fixtures/helios/{name}", env!("CARGO_MANIFEST_DIR"));
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
 }
 
 fn root(name: &str) -> B256 {
-    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/tests/fixtures/helios/{name}", env!("CARGO_MANIFEST_DIR"));
     std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
 }
 

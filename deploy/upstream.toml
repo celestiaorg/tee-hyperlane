@@ -98,7 +98,7 @@ check running in an Intel TDX enclave on Phala Cloud (dstack), and the destinati
 enclave's TDX quote. No ZK.
 
 Ethereum Sepolia (origin):
-- Our own beacon light client (vendored helios consensus-core, with Gloas changes). It follows
+- Our own beacon light client (helios consensus-core, pinned by rev). It follows
   sync-committee updates from a Lodestar beacon node's light-client API and needs every
   consensus fork version and its light-client data format. Any new consensus fork breaks it
   until the code knows the fork.
