@@ -71,13 +71,14 @@ teeism enclaves delete --retired                           # only once smoke pas
 
 ## Update: celestia-app
 
-A new commit on `jonas/tee-ism`:
+The chain runs the head of `jonas/tee-ism`. Its image is always `celestia-app-teeism:jonas-tee-ism`, rebuilt by every `celestia up` (seconds when nothing changed) and labelled with the commit it was built from; `teeism status` shows that commit next to the checkout's, and `celestia up` refuses to restart a live chain on a different build unless told to.
 
 ```sh
 git -C ../celestia-app-local pull
-teeism build
-teeism celestia up --new-image     # restarts the running chain on the new binary
+teeism build                       # prints: celestia-app  jonas/tee-ism @ <commit> <date> <subject>
+teeism celestia up --new-image     # rebuilds the image, restarts the chain on it
 teeism services restart
+teeism status                      # celestia: image commit == checkout commit
 ```
 
 Only for changes that keep the state machine compatible with the existing chain. Anything else needs a coordinated upgrade or a fresh chain ([DEPLOY](DEPLOY.md)).
