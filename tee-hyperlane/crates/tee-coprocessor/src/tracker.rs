@@ -832,6 +832,10 @@ fn watched_wallets(
             continue;
         }
         let kind = chains.get(&r.to).map_or("", |c| c.kind.as_str());
+        // Delivery to voyager needs no signer and no gas, so there is no wallet to watch.
+        if kind == "voyager" {
+            continue;
+        }
         let (symbol, decimals, low) = crate::wallets::defaults(kind);
         let table = config.chains.get(&r.to);
         let field = |k: &str| table.and_then(|t| t.get(k));
