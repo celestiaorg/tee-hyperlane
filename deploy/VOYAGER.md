@@ -10,12 +10,16 @@ voyager-turbo's `jonas/bridge` branch (`crates/bridge`).
   second): `keccak("voyager-bridge header v1" domain height timestamp keccak(count branch))`, ed25519.
 - That root is the ISM's state root. The tree proof is the tree itself (count and branch),
   rehashed under it. No EVM state, no contract: the tree's address is the constant
-  `voyager/hyperlane/merkle-tree`, left-padded.
+  `voyager/hyperlane/merkle-tree`, left-padded. The enclave attests the tree's Hyperlane root and
+  count, as for every origin.
+- Each message is delivered with `root(32) index(4) proof(32*32)`, built by the relayer from the
+  tree at the ISM's height and the messages it indexes (`GET /bridge/messages`).
 - Trusted: each chain's sequencer key, pinned in `tee-node/src/chains/l2/voyager.rs` like Base's
   `unsafeBlockSigner`. A key rotation needs a new image.
 - As a destination, voyager checks the quote at admission (dcap-qvl, fresh collateral carried in
   the request, as for `x/teeism`) against the enclave pinned in the node's `[bridge.enclave]`, and
-  the lane checks the transition exactly as `TeeDcapIsm` does.
+  the lane checks the transition exactly as `TeeDcapIsm` (VERSION 5) does. A delivery's branch is
+  folded at admission too, and the lane accepts it against any root the origin's ISM attested.
 
 ## Pieces
 

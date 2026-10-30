@@ -1,5 +1,6 @@
-//! Against a running voyager node: gather a step the way the route does, and put it through the
-//! enclave's own attest code in-process. Proves the node's `/bridge` API and the enclave agree
+//! Against a running voyager node: gather a step the way the route does, put it through the
+//! enclave's own attest code in-process, and build each message's delivery branch against the
+//! root it attests. Proves the node's `/bridge` API, the enclave and the relayer's proofs agree
 //! on headers, trees and message ids, without a TEE.
 //!
 //! ```sh
@@ -9,9 +10,11 @@
 //!
 //! `VOYAGER_FROM` is the height to bootstrap the ISM at: one before the messages to attest.
 
+use hyperlane_types::get_branch_root;
 use serde_json::json;
 use tee_coprocessor::origin::l2::voyager::{Config, Voyager};
 use tee_coprocessor::origin::Indexer;
+use tee_coprocessor::proofs::ProofBuilder;
 
 #[tokio::test]
 #[ignore = "needs a running voyager node"]
@@ -57,35 +60,34 @@ async fn a_live_voyager_step_attests() {
         "chain": step.chain,
         "input": step.input,
         "tree": step.tree,
-        "tree_snapshot": step.tree_snapshot,
-        "message_ids": messages.iter().map(|m| m.id).collect::<Vec<_>>(),
         "merkle_tree_address": step.tree_address,
     });
     let (update, payload) =
         tee_node::attest::build_attested_update(serde_json::from_value(request).unwrap()).unwrap();
     assert_eq!(update.new_state.height, step.head);
-    assert_eq!(update.message_ids.len(), messages.len());
+    assert_eq!(update.tree_count, step.leaves.end);
     println!(
-        "attested payload: {} bytes, new root 0x{}",
+        "attested payload: {} bytes, tree root 0x{} at {} leaves",
         payload.len(),
-        hex::encode(update.new_state.state_root)
+        hex::encode(update.tree_root),
+        update.tree_count
     );
 
-    // A forged id list is refused: the enclave replays the ids against the tree.
-    if !messages.is_empty() {
-        let forged = json!({
-            "protocol": tee_node::attest::PROTOCOL_VERSION,
-            "trusted_state": hex::encode(trusted.encode()),
-            "chain": step.chain,
-            "input": step.input,
-            "tree": step.tree,
-            "tree_snapshot": step.tree_snapshot,
-            "message_ids": vec![[0u8; 32]; messages.len()],
-            "merkle_tree_address": step.tree_address,
-        });
-        assert!(
-            tee_node::attest::build_attested_update(serde_json::from_value(forged).unwrap())
-                .is_err()
-        );
+    // Each message's branch, built as the route builds it: from the tree at the trusted height
+    // and the indexed leaves, folding to the root the enclave attested.
+    let chain_def = tee_node::origin::find(&chain).unwrap();
+    let frontier = chain_def
+        .origin
+        .merkle_tree(step.tree_snapshot.clone(), trusted.state_root.into())
+        .unwrap()
+        .tree;
+    let ids: Vec<[u8; 32]> = messages.iter().map(|m| m.id).collect();
+    let mut builder = ProofBuilder::new(&frontier, &ids).unwrap();
+    for (i, id) in ids.iter().enumerate() {
+        let index = frontier.count + i as u32;
+        let proof = builder.proof(index).unwrap();
+        assert_eq!(get_branch_root(*id, &proof, index), update.tree_root);
+        // A forged message does not fold to the attested root.
+        assert_ne!(get_branch_root([0; 32], &proof, index), update.tree_root);
     }
 }

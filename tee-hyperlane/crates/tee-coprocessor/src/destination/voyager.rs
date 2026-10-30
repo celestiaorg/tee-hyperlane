@@ -1,5 +1,6 @@
 //! Delivers to a voyager chain: hands its bridge lane the attestation with fresh Intel
-//! collateral, as for Celestia, then each message.
+//! collateral, as for Celestia, then each message with the merkle branch that proves it against
+//! the attested root, as `TeeDcapIsm.verify` takes it.
 //!
 //! The node checks the quote at admission and the lane checks the transition, in a later slot.
 //! Neither answers with the result, so this waits on the ISM's state and the delivered set.
@@ -29,12 +30,15 @@ pub struct Voyager {
 }
 
 impl Voyager {
-    async fn process(&self, id: &str, message: &[u8]) -> Result<Outcome> {
+    async fn process(&self, id: &str, message: &[u8], metadata: &[u8]) -> Result<Outcome> {
         let submitted = self
             .node
             .post(
                 "/bridge/process",
-                &json!({ "message": hex::encode(message) }),
+                &json!({
+                    "message": hex::encode(message),
+                    "metadata": hex::encode(metadata),
+                }),
             )
             .await?;
         let tx = submitted["tx_hashes"][0]
@@ -112,16 +116,17 @@ impl Destination for Voyager {
             attestation_tx = Some(tx);
         }
         let mut deliveries = Vec::new();
-        for (id, message) in batch.for_domain(self.domain) {
+        for (id, message, metadata) in batch.for_domain(self.domain) {
             let outcome = if self.node.delivered(&id).await? {
                 Outcome::AlreadyDelivered
             } else {
                 debug!(id, "delivering");
-                self.process(&id, message).await?
+                self.process(&id, message, metadata).await?
             };
             deliveries.push(Delivery {
                 id,
                 message: message.clone(),
+                metadata: metadata.clone(),
                 outcome,
             });
         }
@@ -131,12 +136,12 @@ impl Destination for Voyager {
         })
     }
 
-    async fn deliver(&self, message: &[u8]) -> Result<Outcome> {
+    async fn deliver(&self, message: &[u8], metadata: &[u8]) -> Result<Outcome> {
         let id = hex::encode(alloy_primitives::keccak256(message));
         if self.node.delivered(&id).await? {
             return Ok(Outcome::AlreadyDelivered);
         }
-        self.process(&id, message).await
+        self.process(&id, message, metadata).await
     }
 
     async fn delivered(&self, id: &str) -> Result<bool> {
