@@ -13,8 +13,9 @@ pub trait Destination: Send + Sync {
     /// Land the batch's attestation if the ISM is not already past it, then deliver every
     /// message for this destination.
     async fn submit(&self, batch: &Batch) -> Result<Submitted>;
-    /// Deliver one message the ISM already covers.
-    async fn deliver(&self, message: &[u8]) -> Result<Outcome>;
+    /// Deliver one message an attested root covers, with the metadata that proves it: the root,
+    /// the message's index in the origin tree and its merkle branch.
+    async fn deliver(&self, message: &[u8], metadata: &[u8]) -> Result<Outcome>;
     /// Whether the mailbox has processed message `id` (hex, no prefix), by anyone.
     async fn delivered(&self, id: &str) -> Result<bool>;
     /// The relayer's own account on this chain and its balance of the gas token, in base units.
@@ -43,6 +44,9 @@ pub struct Delivery {
     /// The message id, hex without a prefix.
     pub id: String,
     pub message: Vec<u8>,
+    /// What proves the message against an attested root; kept with it so a retry needs nothing
+    /// recomputed.
+    pub metadata: Vec<u8>,
     pub outcome: Outcome,
 }
 
@@ -56,14 +60,17 @@ pub enum Outcome {
     Refused { tx: Option<String>, reason: String },
 }
 
-/// An attested batch, as the route stages it.
+/// An attested step, as the route stages it: the attestation, and the messages it lets through
+/// with the metadata each proves itself with.
 pub struct Batch {
     pub quote: String,
     pub event_log: String,
-    /// The attested payload: `prev_state(116) new_state(116) tree(32) attested_at(8) count(8) ids`.
+    /// The attested payload: `prev_state(116) new_state(116) tree(32) attested_at(8) tree_root(32) tree_count(4)`.
     pub payload: Vec<u8>,
     /// The message bytes, in tree order.
     pub messages: Vec<Vec<u8>>,
+    /// Per message, same order: `root(32) index(4) proof(32 * 32)` against the attested root.
+    pub metadata: Vec<Vec<u8>>,
 }
 
 /// The ISM has moved past the state this batch starts from, so no retry can land it. The route
@@ -81,13 +88,19 @@ impl Batch {
         &self.payload[116..232]
     }
 
-    /// The messages addressed to `domain`, with their ids.
-    pub(crate) fn for_domain(&self, domain: u32) -> impl Iterator<Item = (String, &Vec<u8>)> {
-        self.messages.iter().filter_map(move |m| {
-            let decoded = hyperlane_types::decode_hyperlane_message(m).ok()?;
-            (decoded.destination == domain)
-                .then(|| (hex::encode(alloy_primitives::keccak256(m)), m))
-        })
+    /// The messages addressed to `domain`, with their ids and metadata.
+    pub(crate) fn for_domain(
+        &self,
+        domain: u32,
+    ) -> impl Iterator<Item = (String, &Vec<u8>, &Vec<u8>)> {
+        self.messages
+            .iter()
+            .zip(self.metadata.iter())
+            .filter_map(move |(m, meta)| {
+                let decoded = hyperlane_types::decode_hyperlane_message(m).ok()?;
+                (decoded.destination == domain)
+                    .then(|| (hex::encode(alloy_primitives::keccak256(m)), m, meta))
+            })
     }
 
     /// Refuse a batch the ISM has moved past. `true` when the ISM is already at its new state,

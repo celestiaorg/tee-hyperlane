@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {MerkleLib} from "@hyperlane-xyz/core/contracts/libs/Merkle.sol";
 
 /// Automata's deployed DCAP quote verifier.
 ///
@@ -23,8 +24,10 @@ interface IInterchainSecurityModule {
 /// A Hyperlane ISM that admits messages attested by a TDX enclave.
 ///
 /// The counterpart of Celestia's `x/teeism`, and deliberately the same shape: one submission
-/// advances the trusted state and authorises its message batch together, because there is
-/// only ever one quote and it covers both.
+/// advances the trusted state and records the origin merkle tree's root at that state, because
+/// there is only ever one quote and it covers both. A message then proves itself at delivery,
+/// with a merkle branch against any root this ISM has attested, so the attestation is the same
+/// size whether the origin block carried no messages or thousands.
 ///
 /// This contract verifies no cryptography. `verifyAndAttestOnChain` above does that, exactly
 /// as `google/go-tdx-guest` does on the Celestia side. What is left here is the part that is
@@ -76,15 +79,17 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
 
     // ---------------------------------------------------------------- ism state
     uint256 private constant STATE_BYTES = 116;
-    uint256 private constant ATTESTED_HEAD = 2 * STATE_BYTES + 48;
-    uint256 public constant MAX_MESSAGE_ID_COUNT = 1_000_000;
+    /// `prev_state(116) new_state(116) merkle_tree(32) attested_at(8) tree_root(32) tree_count(4)`
+    uint256 private constant ATTESTED_UPDATE_BYTES = 2 * STATE_BYTES + 32 + 8 + 32 + 4;
+    /// `root(32) index(4) proof(32 * 32)`
+    uint256 private constant METADATA_BYTES = 32 + 4 + 32 * 32;
 
-    /// How far an attestation with no messages must move the origin's clock. An empty batch
-    /// keeps a quiet route's trusted state close to its origin's head; it cannot skip a
-    /// message, because the enclave replays the batch from the tree under this ISM's own root
-    /// and zero ids reproduce the head's tree only if nothing was dispatched. The interval
-    /// bounds how often anyone, through the public enclave, can advance this ISM with nothing
-    /// in it. The same bound holds in the enclave and in the Celestia module.
+    /// How far an attestation that brings no new leaves must move the origin's clock. Such an
+    /// attestation keeps a quiet route's trusted state close to its origin's head; it cannot
+    /// hide a message, because a message proves itself against the tree root, and a root that
+    /// has not changed holds exactly the leaves it held. The interval bounds how often anyone,
+    /// through the public enclave, can advance this ISM with nothing in it. The Celestia module
+    /// holds the same bound.
     uint64 public constant EMPTY_BATCH_MIN_INTERVAL = 30 minutes;
 
     /// Hyperlane's module type for this bridge's ISMs, matching the Celestia module id.
@@ -93,8 +98,9 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     /// Which revision of this contract is deployed. `teeism isms evm` replaces an ISM whose
     /// `VERSION` differs even when it pins the right enclave. 2 accepts v5 quotes; the first
     /// deployments have no `VERSION` at all. 3 lets the owner re-pin the enclave. 4 bounds how
-    /// often a batch with no messages may advance the state.
-    uint8 public constant VERSION = 4;
+    /// often a batch with no messages may advance the state. 5 attests the origin tree's root
+    /// and has each message prove itself at delivery, instead of carrying every message id.
+    uint8 public constant VERSION = 5;
 
     IDcapAttestation public immutable dcap;
 
@@ -130,10 +136,18 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     uint256 public immutable maxQuoteSkew;
 
     bytes public state;
-    mapping(bytes32 => bool) public authorizedMessages;
 
-    event StateAdvanced(bytes32 indexed stateRoot, uint64 height, uint64 timestamp, uint256 messageCount);
-    event MessageConsumed(bytes32 indexed messageId);
+    /// The origin tree's root and leaf count at `state`, as the last attestation proved them.
+    bytes32 public treeRoot;
+    uint32 public treeCount;
+    /// Every root an attestation has ever carried. A message proves itself against any of
+    /// them, so a proof built against one root stays good after the ISM moves on, and an
+    /// attestation landing ahead of the relayer's costs nobody a delivery.
+    mapping(bytes32 => bool) public attestedRoots;
+
+    event StateAdvanced(
+        bytes32 indexed stateRoot, uint64 height, uint64 timestamp, bytes32 treeRoot, uint32 treeCount
+    );
     event EnclaveChanged(
         bytes32 previousMeasurements, bytes32 measurements, bytes32 previousIdentity, bytes32 identity
     );
@@ -159,7 +173,6 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     error ClockBehindAttestation(uint64 blockTime, uint64 attestedAt);
     error AttestationTooOld(uint64 blockTime, uint64 attestedAt, uint256 maxSkew);
     error AttestedBeforeState(uint64 attestedAt, uint64 stateTimestamp);
-    error TooManyMessages();
     error EmptyBatchTooSoon(uint64 previous, uint64 next, uint64 minInterval);
     error NotMailbox();
 
@@ -204,10 +217,10 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
         return MODULE_TYPE;
     }
 
-    /// Advance the trusted state and authorise the batch the quote covers.
+    /// Advance the trusted state and record the origin tree's root the quote covers.
     ///
     /// `payload` is the canonical attested update the enclave hashed into `report_data`:
-    ///   prev_state(116) new_state(116) merkle_tree(32) attested_at(8) count(8) ids(32*count)
+    ///   prev_state(116) new_state(116) merkle_tree(32) attested_at(8) tree_root(32) tree_count(4)
     function submitAttestation(bytes calldata quote, bytes calldata payload) external payable {
         bytes memory out = _verifiedReport(quote);
         _requireOurEnclave(out);
@@ -215,15 +228,22 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
         _apply(payload);
     }
 
-    /// Hyperlane calls this as it processes a message. Authorisation is consume-once, so an
-    /// attested message cannot be delivered twice.
-    function verify(bytes calldata, bytes calldata message) external returns (bool) {
+    /// Hyperlane calls this as it processes a message. `metadata` names an attested root and
+    /// carries the message's merkle branch to it:
+    ///   root(32) index(4) proof(32*32)
+    /// Anything that does not fold the message's id to a root this ISM attested is refused.
+    /// Nothing is consumed here: the mailbox itself refuses to process a message id twice.
+    function verify(bytes calldata metadata, bytes calldata message) external view returns (bool) {
         if (msg.sender != mailbox) revert NotMailbox();
-        bytes32 id = keccak256(message);
-        if (!authorizedMessages[id]) return false;
-        delete authorizedMessages[id];
-        emit MessageConsumed(id);
-        return true;
+        if (metadata.length != METADATA_BYTES) return false;
+        bytes32 root = bytes32(metadata[0:32]);
+        if (!attestedRoots[root]) return false;
+        uint32 index = uint32(bytes4(metadata[32:36]));
+        bytes32[32] memory proof;
+        for (uint256 i = 0; i < 32; i++) {
+            proof[i] = bytes32(metadata[36 + i * 32:68 + i * 32]);
+        }
+        return MerkleLib.branchRoot(keccak256(message), proof, index) == root;
     }
 
     // ---------------------------------------------------------------- steps
@@ -272,7 +292,8 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
 
     /// Decode the attested update, check it against this ISM, and store it.
     function _apply(bytes calldata payload) private {
-        if (payload.length < ATTESTED_HEAD) revert MalformedPayload();
+        // Fixed size, so one encoding maps to one update.
+        if (payload.length != ATTESTED_UPDATE_BYTES) revert MalformedPayload();
 
         bytes calldata prev = payload[0:STATE_BYTES];
         bytes calldata next = payload[STATE_BYTES:2 * STATE_BYTES];
@@ -286,16 +307,15 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
         o += 32;
         uint64 attestedAt = uint64(bytes8(payload[o:o + 8]));
         o += 8;
-        uint64 count = uint64(bytes8(payload[o:o + 8]));
-        o += 8;
-
-        if (count > MAX_MESSAGE_ID_COUNT) revert TooManyMessages();
-        // Exactly the ids and nothing after them, so one encoding maps to one update.
-        if (payload.length - o != count * 32) revert MalformedPayload();
+        bytes32 root = bytes32(payload[o:o + 32]);
+        o += 32;
+        uint32 count = uint32(bytes4(payload[o:o + 4]));
 
         _requireLegalTransition(prev, next);
         _requireFresh(attestedAt, uint64(bytes8(next[44:52])));
-        if (count == 0) {
+        // A root that has not moved brought no leaves; that is the heartbeat, and it is
+        // bounded. A root that has moved is never held back.
+        if (root == treeRoot) {
             uint64 previousTime = uint64(bytes8(prev[44:52]));
             uint64 nextTime = uint64(bytes8(next[44:52]));
             if (nextTime < previousTime + EMPTY_BATCH_MIN_INTERVAL) {
@@ -304,12 +324,11 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
         }
 
         state = next;
+        treeRoot = root;
+        treeCount = count;
+        attestedRoots[root] = true;
 
-        for (uint256 i = 0; i < count; i++) {
-            authorizedMessages[bytes32(payload[o + i * 32:o + (i + 1) * 32])] = true;
-        }
-
-        emit StateAdvanced(bytes32(next[0:32]), uint64(bytes8(next[36:44])), uint64(bytes8(next[44:52])), count);
+        emit StateAdvanced(bytes32(next[0:32]), uint64(bytes8(next[36:44])), uint64(bytes8(next[44:52])), root, count);
     }
 
     /// The rules every attested transition must satisfy, identical to the Celestia module's.

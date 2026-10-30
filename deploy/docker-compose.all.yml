@@ -6,7 +6,7 @@
 # deployed alone (`teeism enclaves up --chain <chain>`) measures only its own file instead.
 services:
   celestia:
-    image: ghcr.io/jonas089/tee-node@sha256:eea9ed5f1e7ccd4d6d00011c3010867886607fbde0da9adc18e251e3baf3c71b
+    image: ghcr.io/jonas089/tee-node@sha256:95b42f87cabf9ae5298933f48fd975477bad9add9e8c79d26fd1b4079a470f5c
     ports:
       - "8080:8080"
     volumes:
@@ -16,7 +16,7 @@ services:
     environment:
       - RUST_LOG=info
   ethereum:
-    image: ghcr.io/jonas089/tee-node@sha256:a229ab852eb41bf6bf79bfa3df6b1b031bc4fef5194eb16aa421e259b0366802
+    image: ghcr.io/jonas089/tee-node@sha256:cb3fa8e82dbcc4d3257fe4365172f894af5eb7d3ae14f51bbd13015c60c3b045
     ports:
       - "8081:8080"
     volumes:
@@ -26,7 +26,7 @@ services:
     environment:
       - RUST_LOG=info
   base:
-    image: ghcr.io/jonas089/tee-node@sha256:fcfab06eebe10ed12f682ffbf97fdfbd750c876644f49d61c34cce9340ca6307
+    image: ghcr.io/jonas089/tee-node@sha256:2a55706867aa06881c2aa78469862c8622b47be8019552f44074423853bd23b5
     ports:
       - "8082:8080"
     volumes:
@@ -36,7 +36,7 @@ services:
     environment:
       - RUST_LOG=info
   arbitrum:
-    image: ghcr.io/jonas089/tee-node@sha256:50dac593d886154ff2fa28d11781954a418dffe06293ef5ba7e52c6d434dd9d5
+    image: ghcr.io/jonas089/tee-node@sha256:86ff6c107d31597f1213e93e4f0177947c43fcee6981cfaa648240568926d732
     ports:
       - "8083:8080"
     volumes:
@@ -46,7 +46,7 @@ services:
     environment:
       - RUST_LOG=info
   eden:
-    image: ghcr.io/jonas089/tee-node@sha256:01bc63d636f0a8c4d09ec23db65ef78edbab7b71ed75a9348d024aed86034ab4
+    image: ghcr.io/jonas089/tee-node@sha256:116c0a5bde7d6aa7610b7187d04e8c82173458c42fe90be44e2dd1497c95ba97
     ports:
       - "8084:8080"
     volumes:

@@ -578,7 +578,7 @@ mod tests {
         ) -> anyhow::Result<crate::destination::Submitted> {
             anyhow::bail!("unused")
         }
-        async fn deliver(&self, _: &[u8]) -> anyhow::Result<crate::destination::Outcome> {
+        async fn deliver(&self, _: &[u8], _: &[u8]) -> anyhow::Result<crate::destination::Outcome> {
             anyhow::bail!("unused")
         }
         async fn delivered(&self, _: &str) -> anyhow::Result<bool> {
@@ -678,6 +678,7 @@ mod tests {
         let p = Parked {
             id: "01".into(),
             message: String::new(),
+            metadata: String::new(),
             attempts: 2,
             first_failed_at: 5,
             last_attempt_at: 6,

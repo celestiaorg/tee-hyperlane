@@ -57,6 +57,7 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
   - Transfers land within a few minutes; longer means stuck.
 - EVM chains use canonical Hyperlane deployments, so hooks carry others' traffic. Relayer log `leaves=N` is batch size, not tree size.
 - `routers` list is a trigger filter: affects latency, not delivery.
+- **Messages prove themselves at delivery.** The enclave attests the origin tree's root and count (payload is a fixed 308 bytes); delivery metadata is `root(32) index(4 BE) proof(32*32)`, checked with Hyperlane's `branchRoot` against any root the ISM has attested (`TeeDcapIsm` `VERSION` 5, `x/teeism`). The relayer builds the branch from the tree at the trusted height plus the leaves it indexes (`branch_proof`, `hyperlane-types`). No message ids are ever on chain.
 - Quotes: Phala emits v4. `TeeDcapIsm` (`VERSION` 2+), the v5 verifier `teeism pccs deploy` registers, and `x/teeism` (go-tdx-guest `b0a2dd8`) accept v4 and v5. Later versions need a celestia-app upgrade.
 - **dstack 0.6 only.** The enclave identity (`x/teeism` identity v3) pins mr_td, RTMR0-2 (the boot chain), and from RTMR3 `os-image-hash`, `compose-hash`, `key-provider`; no `mr-kms`, which only 0.5 recorded. `teeism enclaves up` asks for `dstack-0.6.1`. A Phala host VMM upgrade can move RTMR0 and needs a re-pin.
 - **Sepolia is past Gloas; light client is ours.** From slot 11296768 the relayer sends the header RLP, enclave checks its keccak. helios is upstream `consensus-core` 0.12.0 (Gloas), a git dependency pinned by rev in `tee-hyperlane/Cargo.toml`. ark's Sepolia beacon is Lodestar (only one serving Gloas light-client data), not lighthouse.
@@ -66,6 +67,6 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
   - Owner re-pins in place: `setEnclave` (EVM, revision 3+), `tx teeism update-identity` (Celestia). `teeism isms evm`, `teeism isms celestia` do this.
   - Only ISMs we don't own, or an EVM contract revision change, get a replacement: starts from the old ISM's last state, stops rather than fall back to the head.
   - Only a first deploy anchors at the head.
-- **Heartbeat:** a quiet route attests daily with no messages (`HEARTBEAT`, `route.rs`). Enclave, `TeeDcapIsm` (`VERSION` 4) and `x/teeism` refuse an empty batch that moves the origin clock < 30 min; the replay from the ISM's own root means it can never skip a message.
+- **Heartbeat:** a quiet route attests daily with no new leaves (`HEARTBEAT`, `route.rs`). `TeeDcapIsm` and `x/teeism` refuse an attestation that leaves the tree root unchanged and moves the origin clock < 30 min; the enclave does not check this (it does not know the previous root).
 - **Intel root CA:** only the owner can update it on Celestia (`tx teeism set-verifier-overrides --trusted-root-cert`). Nothing skips or relaxes Intel verification.
 - **Ownership:** `tx teeism update-owner`. `teeism isms` re-pins only ISMs owned by the relayer (Celestia) or `EVM_SIGNER` (Ledger, or `EVM_PRIVATE_KEY`) and replace the rest, so after an ownership transfer the new owner re-pins first ([ADMIN.md](deploy/ADMIN.md)).

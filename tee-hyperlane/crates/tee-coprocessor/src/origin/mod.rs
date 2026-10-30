@@ -31,10 +31,12 @@ pub struct Step {
     pub state_root: B256,
     /// The tree's size at the trusted height, up to its size at `head`. Empty means idle.
     pub leaves: Range<u32>,
-    /// The enclave's chain name, then that chain's input and its two tree proofs.
+    /// The enclave's chain name, then that chain's input and the tree proof at `head`.
     pub chain: &'static str,
     pub input: Value,
     pub tree: Value,
+    /// The same tree as of the trusted height. The enclave no longer reads it: the relayer does,
+    /// to build each message's merkle branch from the frontier it proves and the leaves it indexes.
     pub tree_snapshot: Value,
     /// The merkle tree hook, as the ISM pins it.
     pub tree_address: [u8; 32],

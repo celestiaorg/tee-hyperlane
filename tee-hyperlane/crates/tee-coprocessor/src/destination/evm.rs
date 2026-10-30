@@ -6,7 +6,7 @@ use serde_json::Value;
 use tee_node::state::IsmState;
 use tracing::debug;
 
-use super::{run, Batch, Delivery, Destination, Outcome, Wallet, Submitted};
+use super::{run, Batch, Delivery, Destination, Outcome, Submitted, Wallet};
 
 /// An EVM chain: `TeeDcapIsm.submitAttestation`, then `Mailbox.process` per message.
 pub struct Evm {
@@ -74,12 +74,15 @@ impl Evm {
         .parse()?)
     }
 
-    async fn send_process(&self, message: &[u8], nonce: u64) -> Result<String> {
+    async fn send_process(&self, message: &[u8], metadata: &[u8], nonce: u64) -> Result<String> {
         let gas = std::env::var("DELIVERY_GAS").unwrap_or_else(|_| "400000".into());
         self.send(
             &self.mailbox,
             "process(bytes,bytes)",
-            &["0x", &format!("0x{}", hex::encode(message))],
+            &[
+                &format!("0x{}", hex::encode(metadata)),
+                &format!("0x{}", hex::encode(message)),
+            ],
             nonce,
             &["--gas-limit", &gas],
         )
@@ -108,14 +111,14 @@ impl Evm {
 
     /// Why `process` reverts for `message`, by replaying it as a call. The receipt of a
     /// reverted transaction carries no reason.
-    async fn revert_reason(&self, message: &[u8], sender: &str) -> String {
+    async fn revert_reason(&self, message: &[u8], metadata: &[u8], sender: &str) -> String {
         let replay = run(
             "cast",
             &[
                 "call",
                 &self.mailbox,
                 "process(bytes,bytes)",
-                "0x",
+                &format!("0x{}", hex::encode(metadata)),
                 &format!("0x{}", hex::encode(message)),
                 "--from",
                 sender,
@@ -223,36 +226,38 @@ impl Destination for Evm {
         // Sent back to back with explicit nonces, then confirmed together.
         let mut sent = Vec::new();
         let mut out = Vec::new();
-        for (id, message) in batch.for_domain(self.domain) {
+        for (id, message, metadata) in batch.for_domain(self.domain) {
             if self.is_delivered(&id).await? {
                 out.push(Delivery {
                     id,
                     message: message.clone(),
+                    metadata: metadata.clone(),
                     outcome: Outcome::AlreadyDelivered,
                 });
                 continue;
             }
-            let tx = self.send_process(message, nonce).await?;
+            let tx = self.send_process(message, metadata, nonce).await?;
             debug!(id, tx, "delivering");
-            sent.push((id, message.clone(), tx));
+            sent.push((id, message.clone(), metadata.clone(), tx));
             nonce += 1;
         }
 
         if let Some(tx) = &attestation {
             anyhow::ensure!(self.landed(tx).await?, "attestation {tx} reverted");
         }
-        for (id, message, tx) in sent {
+        for (id, message, metadata, tx) in sent {
             let outcome = if self.landed(&tx).await? {
                 Outcome::Delivered { tx }
             } else {
                 Outcome::Refused {
-                    reason: self.revert_reason(&message, &sender).await,
+                    reason: self.revert_reason(&message, &metadata, &sender).await,
                     tx: Some(tx),
                 }
             };
             out.push(Delivery {
                 id,
                 message,
+                metadata,
                 outcome,
             });
         }
@@ -262,21 +267,21 @@ impl Destination for Evm {
         })
     }
 
-    async fn deliver(&self, message: &[u8]) -> Result<Outcome> {
+    async fn deliver(&self, message: &[u8], metadata: &[u8]) -> Result<Outcome> {
         let id = hex::encode(alloy_primitives::keccak256(message));
         if self.is_delivered(&id).await? {
             return Ok(Outcome::AlreadyDelivered);
         }
         let sender = self.sender().await?;
         let tx = self
-            .send_process(message, self.next_nonce(&sender).await?)
+            .send_process(message, metadata, self.next_nonce(&sender).await?)
             .await?;
         debug!(id, tx, "redelivering");
         Ok(if self.landed(&tx).await? {
             Outcome::Delivered { tx }
         } else {
             Outcome::Refused {
-                reason: self.revert_reason(message, &sender).await,
+                reason: self.revert_reason(message, metadata, &sender).await,
                 tx: Some(tx),
             }
         })
