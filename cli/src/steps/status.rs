@@ -7,7 +7,8 @@ use anyhow::Result;
 use crate::shared::chains::EVM_CHAINS;
 use crate::shared::print;
 use crate::shared::settings::Ctx;
-use crate::steps::celestia::appd;
+use crate::steps::build;
+use crate::steps::celestia::{appd, up};
 
 fn show(name: &str, v: &Option<String>) {
     print::kv(name, v.as_deref().unwrap_or("-"));
@@ -19,6 +20,23 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
     match appd::height(ctx).await {
         Ok(h) => print::kv("height", h),
         Err(e) => print::bad(format!("down: {e:#}")),
+    }
+    // The node must run what the checkout holds: the head of celestia-app's jonas/tee-ism.
+    let checkout = build::check_celestia_app(ctx).and_then(|app| build::celestia_app_commit(&app));
+    match (up::running_commit(), checkout) {
+        (Ok(Some(running)), Ok(want)) if running == want => {
+            print::kv(
+                "celestia-app",
+                format!("{} (node and checkout agree)", up::short(&want)),
+            );
+        }
+        (Ok(Some(running)), Ok(want)) => print::bad(format!(
+            "node runs celestia-app {}, checkout is at {}: run `teeism celestia up --new-image`",
+            up::short(&running),
+            up::short(&want)
+        )),
+        (Ok(None), _) => print::bad("no node container"),
+        (Err(e), _) | (_, Err(e)) => print::bad(format!("celestia-app: {e:#}")),
     }
     let c = &d.celestia;
     show("mailbox", &c.mailbox);

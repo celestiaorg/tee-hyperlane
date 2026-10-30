@@ -120,24 +120,63 @@ fn genesis(ctx: &mut Ctx, appd: &Appd) -> Result<()> {
     Ok(())
 }
 
-/// The node's image, named after the celestia-app release it is built from
-/// (`celestia-app-teeism:teeism-v1`; `jonas-tee-ism-<commit>` off a release), so a new release
-/// is a new image rather than a stale one reused, and `docker ps` says which x/teeism runs.
+/// The node's image: `celestia-app-teeism:jonas-tee-ism`, whatever the branch checkout holds.
+/// Built on every `celestia up` (docker caches an unchanged source, so that is seconds) and
+/// labelled with the commit, so `docker ps` names the branch, `teeism status` and
+/// `docker image inspect` say the commit, and the image ID tells a running node from a newer
+/// build.
+pub const IMAGE: &str = "celestia-app-teeism:jonas-tee-ism";
+const REVISION_LABEL: &str = "org.opencontainers.image.revision";
+
 fn image(ctx: &Ctx) -> Result<String> {
     let app = build::check_celestia_app(ctx)?;
-    let tag = format!("celestia-app-teeism:{}", build::celestia_app_version(&app)?);
-    let (status, _, _) = Cmd::new("checking for the node image", "docker")
-        .args(["image", "inspect", &tag])
+    let commit = build::celestia_app_commit(&app)?;
+    print::step(format!(
+        "building {IMAGE} from {} at {} (cached when unchanged)",
+        app.display(),
+        build::celestia_app_head(&app)?
+    ));
+    Cmd::new(format!("building {IMAGE}"), "docker")
+        .args(["build", "-t", IMAGE, "--label"])
+        .arg(format!("{REVISION_LABEL}={commit}"))
+        .arg("-f")
+        .arg(app.join("docker/standalone.Dockerfile"))
+        .arg(&app)
+        .run()?;
+    Ok(IMAGE.to_string())
+}
+
+/// The image ID and the celestia-app commit label of an image or a container, if it exists.
+fn revision_of(what: &str, kind: &str, reference: &str) -> Result<Option<(String, String)>> {
+    let id_field = if kind == "container" { ".Image" } else { ".Id" };
+    let (s, out, _) = Cmd::new(what, "docker")
+        .args([kind, "inspect", "-f"])
+        .arg(format!(
+            "{{{{{id_field}}}}} {{{{index .Config.Labels \"{REVISION_LABEL}\"}}}}"
+        ))
+        .arg(reference)
         .capture()?;
-    if !status.success() {
-        print::step(format!("building {tag} from {} (a few minutes)", app.display()));
-        Cmd::new(format!("building {tag}"), "docker")
-            .args(["build", "-t", &tag, "-f"])
-            .arg(app.join("docker/standalone.Dockerfile"))
-            .arg(&app)
-            .run()?;
+    if !s.success() {
+        return Ok(None);
     }
-    Ok(tag)
+    let mut parts = out.split_whitespace();
+    let id = parts.next().unwrap_or("").to_string();
+    let commit = parts.next().unwrap_or("").to_string();
+    Ok(Some((id, commit)))
+}
+
+/// The celestia-app commit the running node was built from, if a node runs.
+pub fn running_commit() -> Result<Option<String>> {
+    Ok(revision_of("inspecting the running node", "container", CONTAINER)?.map(|(_, c)| c))
+}
+
+/// A commit, abbreviated for a message.
+pub fn short(commit: &str) -> &str {
+    if commit.is_empty() {
+        "an unlabelled image"
+    } else {
+        &commit[..commit.len().min(12)]
+    }
 }
 
 fn uid() -> Result<String> {
@@ -164,20 +203,29 @@ pub async fn run(ctx: &mut Ctx, new_image: bool) -> Result<()> {
         print::info(format!("genesis already in {}", ctx.celestia_home().display()));
     }
     let image = image(ctx)?;
-    // A running node on another image is a binary change on a live chain: a state machine
-    // change there without a coordinated upgrade can halt it. Only on request.
-    let (s, running, _) = Cmd::new("inspecting the running node", "docker")
-        .args(["inspect", "-f", "{{.Config.Image}}", CONTAINER])
-        .capture()?;
-    let running = running.trim();
-    if s.success() && running != image && !new_image {
+    // A running node on another build is a binary change on a live chain: a state machine
+    // change there without a coordinated upgrade can halt it. Only on request. The tag is the
+    // same either way, so this compares image IDs, not names.
+    let built = revision_of("inspecting the built image", "image", &image)?
+        .with_context(|| format!("{image} was built but cannot be inspected"))?;
+    let running = revision_of("inspecting the running node", "container", CONTAINER)?;
+    let changed = running.as_ref().is_some_and(|r| r.0 != built.0);
+    if changed && !new_image {
+        let was = running.as_ref().map_or("", |r| r.1.as_str());
         bail!(
-            "{CONTAINER} runs {running}, but the celestia-app checkout builds {image}. Restarting a live chain \
-             on a different binary can halt it if the state machine changed. Pass --new-image to do it anyway"
+            "{CONTAINER} runs celestia-app {}, but the checkout builds {}. Restarting a live chain \
+             on a different binary can halt it if the state machine changed. Pass --new-image to do it anyway",
+            short(was),
+            short(&built.1)
         );
     }
-    print::step(format!("starting {CONTAINER} ({image})"));
-    compose(ctx, &image)?.args(["up", "-d"]).run()?;
+    print::step(format!("starting {CONTAINER} ({image} at {})", short(&built.1)));
+    let mut up = compose(ctx, &image)?;
+    up = up.args(["up", "-d"]);
+    if changed {
+        up = up.arg("--force-recreate");
+    }
+    up.run()?;
     let h = appd::wait_for_chain(ctx).await?;
     print::info(format!("{} is at height {h}", cel::CHAIN_ID));
 

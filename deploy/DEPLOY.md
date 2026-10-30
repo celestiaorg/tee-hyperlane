@@ -28,7 +28,7 @@ phala auth login <api key>     # cloud.phala.network > Settings > API Keys
 docker login ghcr.io -u jonas089   # a GitHub token with write:packages, for step 6
 ```
 
-celestia-app: only ever `jonas/tee-ism`; `teeism build` refuses any other branch. Deploy a release tag on it, `teeism/v1` today (`git describe --tags --exact-match` in the checkout); `teeism build` prints which one it has and warns on an untagged commit.
+celestia-app: only ever `jonas/tee-ism`, at its head; `teeism build` refuses any other branch and prints the commit it has.
 
 ## 2. Preflight
 
@@ -65,7 +65,7 @@ grep -E '^pruning|^min-retain-blocks' devnet/.state/celestia/config/app.toml   #
 ```
 
 - Keys derive from `CELESTIA_MNEMONIC` (generated into `devnet/.env` if empty): `user` 0 (Keplr's account; the faucet pays from it), `relayer` 1, `validator` 2, `bridge` 3 (step 11), `smoke` 5.
-- The node image is named after the celestia-app release tag (`celestia-app-teeism:teeism-v1`; `jonas-tee-ism-<commit>` off a tag). On a running chain, `celestia up` refuses a different image unless `--new-image`.
+- The node image is `celestia-app-teeism:jonas-tee-ism`, rebuilt by every `celestia up` from the checkout and labelled with its commit. On a running chain, `celestia up` refuses a different build unless `--new-image`.
 
 ## 5. Mocha light node (for Eden)
 

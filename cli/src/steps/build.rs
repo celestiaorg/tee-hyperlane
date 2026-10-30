@@ -42,45 +42,34 @@ pub fn check_celestia_app(ctx: &Ctx) -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
-/// What the celestia-app checkout is, in words: the `teeism/vN` tag on HEAD, as the node image
-/// is named (`teeism-v1`), or `<branch>-<commit>` for a commit between releases. Releases of
-/// x/teeism are annotated tags `teeism/v1`, `teeism/v2`, ... on `jonas/tee-ism`, so a deployment
-/// is named after something a reader can look up rather than a hash.
-pub fn celestia_app_version(app: &Path) -> Result<String> {
-    let git = |what: &str, args: &[&str]| Cmd::new(what, "git").arg("-C").arg(app).args(args).capture();
-    let (s, tag, _) = git(
-        "reading celestia-app's release tag",
-        &[
-            "describe",
-            "--tags",
-            "--exact-match",
-            "--match",
-            "teeism/*",
-            "HEAD",
-        ],
-    )?;
-    if s.success() {
-        return Ok(tag.trim().replace('/', "-"));
-    }
-    let (_, commit, _) = git(
-        "reading celestia-app's commit",
-        &["rev-parse", "--short=12", "HEAD"],
-    )?;
-    print::warn(format!(
-        "celestia-app HEAD carries no teeism/* tag; naming it by its commit {}. Tag a release with \
-         `git tag -a teeism/vN && git push origin refs/tags/teeism/vN`",
-        commit.trim()
-    ));
-    Ok(format!(
-        "{}-{}",
-        CELESTIA_APP_BRANCH.replace('/', "-"),
-        commit.trim()
-    ))
+/// The commit the celestia-app checkout is at, full hash.
+pub fn celestia_app_commit(app: &Path) -> Result<String> {
+    Ok(Cmd::new("reading celestia-app's commit", "git")
+        .arg("-C")
+        .arg(app)
+        .args(["rev-parse", "HEAD"])
+        .output()?
+        .trim()
+        .to_string())
+}
+
+/// The same, for the eye: `<short commit> <date> <subject>`.
+pub fn celestia_app_head(app: &Path) -> Result<String> {
+    Ok(Cmd::new("reading celestia-app's head", "git")
+        .arg("-C")
+        .arg(app)
+        .args(["log", "-1", "--format=%h %as %s"])
+        .output()?
+        .trim()
+        .to_string())
 }
 
 pub fn build(ctx: &Ctx) -> Result<()> {
     let app = check_celestia_app(ctx)?;
-    print::kv("celestia-app", &celestia_app_version(&app)?);
+    print::kv(
+        "celestia-app",
+        &format!("{CELESTIA_APP_BRANCH} @ {}", celestia_app_head(&app)?),
+    );
     let bin = ctx.bin_dir();
     std::fs::create_dir_all(&bin)?;
     for (pkg, what) in [
