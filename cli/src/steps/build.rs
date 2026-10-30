@@ -42,8 +42,45 @@ pub fn check_celestia_app(ctx: &Ctx) -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
+/// What the celestia-app checkout is, in words: the `teeism/vN` tag on HEAD, as the node image
+/// is named (`teeism-v1`), or `<branch>-<commit>` for a commit between releases. Releases of
+/// x/teeism are annotated tags `teeism/v1`, `teeism/v2`, ... on `jonas/tee-ism`, so a deployment
+/// is named after something a reader can look up rather than a hash.
+pub fn celestia_app_version(app: &Path) -> Result<String> {
+    let git = |what: &str, args: &[&str]| Cmd::new(what, "git").arg("-C").arg(app).args(args).capture();
+    let (s, tag, _) = git(
+        "reading celestia-app's release tag",
+        &[
+            "describe",
+            "--tags",
+            "--exact-match",
+            "--match",
+            "teeism/*",
+            "HEAD",
+        ],
+    )?;
+    if s.success() {
+        return Ok(tag.trim().replace('/', "-"));
+    }
+    let (_, commit, _) = git(
+        "reading celestia-app's commit",
+        &["rev-parse", "--short=12", "HEAD"],
+    )?;
+    print::warn(format!(
+        "celestia-app HEAD carries no teeism/* tag; naming it by its commit {}. Tag a release with \
+         `git tag -a teeism/vN && git push origin refs/tags/teeism/vN`",
+        commit.trim()
+    ));
+    Ok(format!(
+        "{}-{}",
+        CELESTIA_APP_BRANCH.replace('/', "-"),
+        commit.trim()
+    ))
+}
+
 pub fn build(ctx: &Ctx) -> Result<()> {
     let app = check_celestia_app(ctx)?;
+    print::kv("celestia-app", &celestia_app_version(&app)?);
     let bin = ctx.bin_dir();
     std::fs::create_dir_all(&bin)?;
     for (pkg, what) in [

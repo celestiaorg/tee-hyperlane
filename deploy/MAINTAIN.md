@@ -71,14 +71,18 @@ teeism enclaves delete --retired                           # only once smoke pas
 
 ## Update: celestia-app
 
-A new commit on `jonas/tee-ism`:
+x/teeism releases are annotated tags on `jonas/tee-ism`: `teeism/v1` (root attestation, `TeeDcapIsm` `VERSION` 5), `teeism/v2`, ... The node image is named after the tag (`celestia-app-teeism:teeism-v1`), so `docker ps` says which release the chain runs. A commit without a tag is named `jonas-tee-ism-<commit>` and `teeism build` warns.
 
 ```sh
-git -C ../celestia-app-local pull
-teeism build
+git -C ../celestia-app-local pull --tags
+git -C ../celestia-app-local describe --tags --exact-match          # teeism/v1: the branch head is the release
+teeism build                       # prints: celestia-app  teeism-v1
 teeism celestia up --new-image     # restarts the running chain on the new binary
 teeism services restart
+docker ps --filter name=teeism-celestia --format '{{.Image}}'       # celestia-app-teeism:teeism-v1
 ```
+
+Cutting a release, from the celestia-app checkout: `git tag -a teeism/vN -m "..." && git push origin refs/tags/teeism/vN`. Tags only; never push a branch there other than `jonas/tee-ism`.
 
 Only for changes that keep the state machine compatible with the existing chain. Anything else needs a coordinated upgrade or a fresh chain ([DEPLOY](DEPLOY.md)).
 

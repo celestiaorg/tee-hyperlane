@@ -130,7 +130,7 @@ Eden (origin):
 - Reads Celestia mocha through a celestia-node light node (DA API: blobs, namespace data,
   header sync).
 
-Celestia (our own chain, celestia-app jonas/tee-ism branch, module x/teeism):
+Celestia (our own chain, celestia-app jonas/tee-ism branch, module x/teeism, release tag teeism/v1):
 - Origin for the EVM routes: Tendermint light client headers, ICS-23 store proofs of the
   Hyperlane hook. Destination: x/teeism verifies TDX quotes with go-tdx-guest, quote v4 and v5,
   Intel collateral shipped with each attestation.

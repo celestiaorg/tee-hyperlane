@@ -4,7 +4,7 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 
 ## Hard constraints
 
-- **celestia-app**: only ever the `jonas/tee-ism` branch. `main` is critical company infrastructure and must never be touched.
+- **celestia-app**: only ever the `jonas/tee-ism` branch. `main` is critical company infrastructure and must never be touched. x/teeism releases are annotated tags `teeism/vN` on that branch (`teeism/v1` = root attestation); the devnet image is named after the tag, never a bare hash.
 - **No co-author or "generated with" trailers** in commits or PR descriptions. Commits are in the user's name.
 - **No em-dashes in UI copy.**
 - Ask before adding components or changing the stack.

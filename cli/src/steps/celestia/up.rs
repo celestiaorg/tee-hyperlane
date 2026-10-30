@@ -120,16 +120,12 @@ fn genesis(ctx: &mut Ctx, appd: &Appd) -> Result<()> {
     Ok(())
 }
 
-/// The node's image, tagged by the celestia-app commit it is built from, so a new commit is a
-/// new image rather than a stale one reused.
+/// The node's image, named after the celestia-app release it is built from
+/// (`celestia-app-teeism:teeism-v1`; `jonas-tee-ism-<commit>` off a release), so a new release
+/// is a new image rather than a stale one reused, and `docker ps` says which x/teeism runs.
 fn image(ctx: &Ctx) -> Result<String> {
     let app = build::check_celestia_app(ctx)?;
-    let commit = Cmd::new("reading celestia-app's commit", "git")
-        .arg("-C")
-        .arg(&app)
-        .args(["rev-parse", "--short=12", "HEAD"])
-        .output()?;
-    let tag = format!("celestia-app-teeism:{}", commit.trim());
+    let tag = format!("celestia-app-teeism:{}", build::celestia_app_version(&app)?);
     let (status, _, _) = Cmd::new("checking for the node image", "docker")
         .args(["image", "inspect", &tag])
         .capture()?;
