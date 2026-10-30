@@ -28,7 +28,7 @@ toml = "0.8"
 tendermint.workspace = true
 tendermint-rpc.workspace = true
 reqwest.workspace = true
-dcap-qvl = { version = "=0.5.3", default-features = false, features = ["std", "rustcrypto", "default-x509", "report"] }
+dcap-qvl = { version = "=0.7.0", default-features = false, features = ["std", "rustcrypto", "default-x509", "report"] }
 tendermint-light-client-verifier.workspace = true
 helios-consensus-core.workspace = true
 axum.workspace = true
