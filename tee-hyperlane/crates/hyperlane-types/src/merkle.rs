@@ -338,3 +338,107 @@ mod proof_tests {
         }
     }
 }
+
+// ============================================================================
+// What a delivery hands the ISM
+// ============================================================================
+
+/// `root(32) index(4 BE) proof(32 * 32)`, 1060 bytes, as `TeeDcapIsm.verify`, `x/teeism`'s
+/// `Verify` and voyager's bridge lane all read it.
+pub const METADATA_BYTES: usize = 32 + 4 + 32 * TREE_DEPTH;
+
+/// A message's merkle branch to a root the ISM attested, as the relayer sends it with the
+/// message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryMetadata {
+    pub root: [u8; 32],
+    pub index: u32,
+    pub proof: [[u8; 32]; TREE_DEPTH],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("delivery metadata must be {METADATA_BYTES} bytes, got {0}")]
+pub struct MalformedMetadata(pub usize);
+
+impl DeliveryMetadata {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(METADATA_BYTES);
+        out.extend_from_slice(&self.root);
+        out.extend_from_slice(&self.index.to_be_bytes());
+        for node in &self.proof {
+            out.extend_from_slice(node);
+        }
+        out
+    }
+
+    pub fn decode(b: &[u8]) -> Result<Self, MalformedMetadata> {
+        if b.len() != METADATA_BYTES {
+            return Err(MalformedMetadata(b.len()));
+        }
+        let mut proof = [[0u8; 32]; TREE_DEPTH];
+        for (node, chunk) in proof.iter_mut().zip(b[36..].chunks(32)) {
+            node.copy_from_slice(chunk);
+        }
+        Ok(Self {
+            root: b[..32].try_into().unwrap(),
+            index: u32::from_be_bytes(b[32..36].try_into().unwrap()),
+            proof,
+        })
+    }
+
+    /// Whether `leaf` folds to the root this names.
+    pub fn proves(&self, leaf: [u8; 32]) -> bool {
+        get_branch_root(leaf, &self.proof, self.index) == self.root
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    /// The layout both ISMs parse, byte for byte.
+    #[test]
+    fn delivery_metadata_is_root_index_proof() {
+        let mut proof = [[0u8; 32]; TREE_DEPTH];
+        proof[0] = [0xaa; 32];
+        proof[31] = [0xbb; 32];
+        let metadata = DeliveryMetadata {
+            root: [0x11; 32],
+            index: 0x0102_0304,
+            proof,
+        };
+        let m = metadata.encode();
+        assert_eq!(m.len(), 1060);
+        assert_eq!(&m[..32], &[0x11; 32]);
+        assert_eq!(&m[32..36], &[1, 2, 3, 4]);
+        assert_eq!(&m[36..68], &[0xaa; 32]);
+        assert_eq!(&m[1028..], &[0xbb; 32]);
+        assert_eq!(DeliveryMetadata::decode(&m).unwrap(), metadata);
+        assert_eq!(
+            DeliveryMetadata::decode(&m[..1059]),
+            Err(MalformedMetadata(1059))
+        );
+    }
+
+    /// Every leaf of a small tree proves against its root through the metadata, and nothing
+    /// else does.
+    #[test]
+    fn metadata_proves_its_leaf() {
+        let leaves: Vec<[u8; 32]> = (0u32..5).map(|i| keccak256(&i.to_be_bytes())).collect();
+        let mut tree = MerkleTree::default();
+        for leaf in &leaves {
+            insert_leaf(&mut tree, *leaf).unwrap();
+        }
+        let root = get_tree_root(&tree);
+        for (index, leaf) in leaves.iter().enumerate() {
+            let proof = branch_proof(&MerkleTree::default(), &leaves, index as u32).unwrap();
+            let metadata = DeliveryMetadata {
+                root,
+                index: index as u32,
+                proof,
+            };
+            assert!(metadata.proves(*leaf));
+            assert!(!metadata.proves(keccak256(b"other")));
+        }
+    }
+}

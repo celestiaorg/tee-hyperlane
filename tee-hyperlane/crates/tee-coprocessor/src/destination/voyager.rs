@@ -212,7 +212,10 @@ impl Destination for Voyager {
     }
 
     async fn tree(&self) -> Result<([u8; 32], u32)> {
-        let reply = self.node.get(&format!("/bridge/ism/{}", self.origin)).await?;
+        let reply = self
+            .node
+            .get(&format!("/bridge/ism/{}", self.origin))
+            .await?;
         let root: [u8; 32] = hex::decode(reply["tree_root"].as_str().context("tree_root")?)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("tree_root is not 32 bytes"))?;

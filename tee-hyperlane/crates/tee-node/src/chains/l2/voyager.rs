@@ -6,13 +6,12 @@
 //! root, so the tree proof is the tree itself: its count and branch, rehashed under the root.
 //! Like Base, the sequencer is trusted and its key pinned here; nothing is re-executed.
 //!
-//! The byte layout is voyager-turbo's `crates/bridge/src/header.rs`, held to it by
-//! `the_root_matches_voyager`.
+//! The byte layout is `hyperlane_types::voyager`, which voyager's bridge lane signs with.
 
 use crate::state::IsmState;
 use alloy_primitives::{hex, B256};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use hyperlane_types::{keccak256, MerkleTree, TREE_DEPTH};
+use hyperlane_types::MerkleTree;
 use serde_json::Value;
 
 use crate::origin::{self, Chain, Head, Origin, Tree};
@@ -35,13 +34,7 @@ pub static VOYAGER_B: Chain = Chain {
     },
 };
 
-/// Domain separation for the signed root, as voyager has it.
-const HEADER_CONTEXT: &[u8] = b"voyager-bridge header v1";
-
-/// Voyager's one tree, named as the ISM pins it: ASCII `voyager/hyperlane/merkle-tree`,
-/// left-padded. Voyager has no contract address to name it by.
-pub const MERKLE_TREE_ADDRESS: [u8; 32] =
-    hex!("000000766f79616765722f68797065726c616e652f6d65726b6c652d74726565");
+pub use hyperlane_types::voyager::{header_root, tree_commitment, MERKLE_TREE_ADDRESS};
 
 /// One voyager chain: its domain, and the sequencer key that speaks for it.
 pub struct Voyager {
@@ -71,30 +64,6 @@ pub struct TreeProof {
     pub height: u64,
     pub timestamp: u64,
     pub tree: MerkleTree,
-}
-
-pub fn tree_commitment(tree: &MerkleTree) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(4 + 32 * TREE_DEPTH);
-    buf.extend_from_slice(&tree.count.to_be_bytes());
-    for node in &tree.branch {
-        buf.extend_from_slice(node);
-    }
-    keccak256(&buf)
-}
-
-pub fn header_root(
-    domain: u32,
-    height: u64,
-    timestamp: u64,
-    tree_commitment: &[u8; 32],
-) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(HEADER_CONTEXT.len() + 52);
-    buf.extend_from_slice(HEADER_CONTEXT);
-    buf.extend_from_slice(&domain.to_be_bytes());
-    buf.extend_from_slice(&height.to_be_bytes());
-    buf.extend_from_slice(&timestamp.to_be_bytes());
-    buf.extend_from_slice(tree_commitment);
-    keccak256(&buf)
 }
 
 impl Origin for Voyager {

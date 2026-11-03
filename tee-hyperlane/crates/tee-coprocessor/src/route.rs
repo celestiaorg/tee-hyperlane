@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hyperlane_types::MerkleTree;
+use hyperlane_types::{DeliveryMetadata, MerkleTree, METADATA_BYTES};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
@@ -799,7 +799,12 @@ fn proofs(
                 return Ok(Vec::new());
             }
             let index = frontier.count + i as u32;
-            Ok(metadata(root, index, &builder.proof(index)?))
+            Ok(DeliveryMetadata {
+                root,
+                index,
+                proof: builder.proof(index)?,
+            }
+            .encode())
         })
         .collect::<Result<Vec<_>>>()?;
     Ok((frontier, metadata))
@@ -833,7 +838,12 @@ fn reprove(
         hex::encode(root)
     );
     let mut builder = crate::proofs::ProofBuilder::new(frontier, leaves)?;
-    Ok(metadata(root, index, &builder.proof(index)?))
+    Ok(DeliveryMetadata {
+        root,
+        index,
+        proof: builder.proof(index)?,
+    }
+    .encode())
 }
 
 /// Would both ISMs refuse this transition? They require an attestation that leaves the tree
@@ -844,24 +854,6 @@ fn too_soon(
     root_changed: bool,
 ) -> bool {
     !root_changed && next.timestamp < prev.timestamp + EMPTY_BATCH_MIN_INTERVAL_SECS
-}
-
-/// What a delivery hands the ISM: `root(32) index(4 BE) proof(32 * 32)`, 1060 bytes, as both
-/// `TeeDcapIsm.verify` and `x/teeism`'s `Verify` read it.
-const METADATA_BYTES: usize = 32 + 4 + 32 * hyperlane_types::TREE_DEPTH;
-
-fn metadata(
-    root: [u8; 32],
-    index: u32,
-    proof: &[[u8; 32]; hyperlane_types::TREE_DEPTH],
-) -> Vec<u8> {
-    let mut out = Vec::with_capacity(32 + 4 + 32 * proof.len());
-    out.extend_from_slice(&root);
-    out.extend_from_slice(&index.to_be_bytes());
-    for node in proof {
-        out.extend_from_slice(node);
-    }
-    out
 }
 
 /// The tree says how many leaves the range must hold, so a scan that disagrees is caught here,
@@ -1060,28 +1052,6 @@ mod tests {
         );
     }
 
-    /// The layout both ISMs parse, byte for byte.
-    #[test]
-    fn delivery_metadata_is_root_index_proof() {
-        let mut proof = [[0u8; 32]; hyperlane_types::TREE_DEPTH];
-        proof[0] = [0xaa; 32];
-        proof[31] = [0xbb; 32];
-        let m = metadata([0x11; 32], 0x0102_0304, &proof);
-        assert_eq!(m.len(), 1060);
-        assert_eq!(&m[..32], &[0x11; 32]);
-        assert_eq!(&m[32..36], &[1, 2, 3, 4]);
-        assert_eq!(&m[36..68], &[0xaa; 32]);
-        assert_eq!(&m[1028..], &[0xbb; 32]);
-    }
-
-    fn proof_in(metadata: &[u8]) -> [[u8; 32]; hyperlane_types::TREE_DEPTH] {
-        let mut p = [[0u8; 32]; hyperlane_types::TREE_DEPTH];
-        for (node, chunk) in p.iter_mut().zip(metadata[36..].chunks(32)) {
-            node.copy_from_slice(chunk);
-        }
-        p
-    }
-
     /// Someone else attested past us: our proof names a root the ISM never recorded. Built
     /// again from the frontier we proved from plus the leaves indexed since, the same message
     /// proves against the root the ISM holds.
@@ -1102,11 +1072,20 @@ mod tests {
         let index = 5u32;
         let stale = {
             let mut b = crate::proofs::ProofBuilder::new(&frontier, &leaves[3..7]).unwrap();
-            metadata(get_tree_root(&ours), index, &b.proof(index).unwrap())
+            DeliveryMetadata {
+                root: get_tree_root(&ours),
+                index,
+                proof: b.proof(index).unwrap(),
+            }
+            .encode()
         };
         let their_root = get_tree_root(&theirs);
         assert_ne!(
-            get_branch_root(leaves[5], &proof_in(&stale), index),
+            get_branch_root(
+                leaves[5],
+                &DeliveryMetadata::decode(&stale).unwrap().proof,
+                index
+            ),
             their_root,
             "the stale proof cannot land under the ISM's root"
         );
@@ -1116,7 +1095,11 @@ mod tests {
         assert_eq!(&fresh[..32], &their_root);
         assert_eq!(&fresh[32..36], &index.to_be_bytes());
         assert_eq!(
-            get_branch_root(leaves[5], &proof_in(&fresh), index),
+            get_branch_root(
+                leaves[5],
+                &DeliveryMetadata::decode(&fresh).unwrap().proof,
+                index
+            ),
             their_root
         );
 
