@@ -12,6 +12,7 @@ teeism pccs seed            # republish all of it; --dry-run checks and fetches 
 - Skipped: Celestia -> EVM routes stop 30 days after the last seed, with `TCBR` or `PCKCRLH`. `pccs status` prints the date per chain; seed a week before it.
 - Collateral is per CPU platform (FMSPC); only `20a06f000000`, the platform our CVMs ran on so far, is seeded. A CVM on a Phala node with a different CPU passes Celestia but fails every EVM route with `TCBR`: seed its platform, `teeism pccs seed --fmspc <hex>`.
 - Celestia-destination routes need nothing: the relayer fetches fresh collateral with each attestation.
+- The public endpoints rate limit (Base Sepolia: 25 requests a second). The CLI retries a 429 with a backoff and keeps polling for a receipt through failed polls, so a limited run is slow, not failed. A chain that does fail is reported and the others are still seeded; rerun `teeism pccs seed --chain <chain>` for it. An upload that landed reports as `already current`, so a rerun never double-publishes.
 - Where it comes from and what it is checked against: [DEPLOY B](DEPLOY.md#b-intel-root-ca-and-collateral).
 
 ## Before each TCB recovery: the next evaluation number

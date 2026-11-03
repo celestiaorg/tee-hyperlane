@@ -5,6 +5,11 @@
 //! go out one at a time with the nonce tracked here, because public endpoints behind load
 //! balancers hand out stale nonces and a "replacement transaction underpriced" reads like a
 //! rejection rather than the collision it is.
+//!
+//! The endpoints are public and rate limited (Base Sepolia's allows 25 requests a second, and
+//! a monthly `pccs seed` makes hundreds). Every connection here retries a 429 or a 5xx with a
+//! backoff, so a limit slows a run down instead of failing it, and the receipt wait keeps
+//! polling through a failed poll instead of giving up on a transaction that was already sent.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,7 +19,9 @@ use std::time::Duration;
 use alloy::network::TransactionBuilder;
 use alloy::primitives::{address, keccak256, Address, Bytes, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
+use alloy::rpc::client::RpcClient;
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
+use alloy::transports::layers::RetryBackoffLayer;
 use anyhow::{bail, Context, Result};
 
 use crate::shared::chains::EvmChain;
@@ -25,10 +32,25 @@ use crate::shared::signer::Signer;
 /// The deterministic deployment proxy every chain here has: CREATE2 with a caller-chosen salt.
 pub const CREATE2_DEPLOYER: Address = address!("4e59b44847b379578588920cA78FbF26c0B4956C");
 
+/// How long a transaction is waited on before the run reports it as sent but not landed.
+const RECEIPT_TIMEOUT: Duration = Duration::from_secs(600);
+/// How often the receipt is asked for. Slow enough to stay well under a public endpoint's
+/// rate limit while other requests are in flight.
+const RECEIPT_POLL: Duration = Duration::from_secs(4);
+
+/// A JSON-RPC client that retries rate limits (429) and temporary failures (5xx) with an
+/// exponential backoff, honouring a `Retry-After` when the endpoint sends one. Twelve retries
+/// from a second cover well over a minute of refusals before a request is given up on.
+fn client(rpc: &str) -> Result<RpcClient> {
+    let url = rpc.parse().with_context(|| format!("`{rpc}` is not a URL"))?;
+    Ok(RpcClient::builder()
+        .layer(RetryBackoffLayer::new(12, 1_000, 100))
+        .http(url))
+}
+
 /// A read-only connection.
 pub fn reader(rpc: &str) -> Result<DynProvider> {
-    let url = rpc.parse().with_context(|| format!("`{rpc}` is not a URL"))?;
-    Ok(ProviderBuilder::new().connect_http(url).erased())
+    Ok(ProviderBuilder::new().connect_client(client(rpc)?).erased())
 }
 
 /// A signing connection to one chain.
@@ -48,10 +70,9 @@ impl Chain {
 
     pub async fn with_signer(chain: &'static EvmChain, rpc: String, signer: Signer) -> Result<Self> {
         let from = signer.address();
-        let url = rpc.parse().with_context(|| format!("`{rpc}` is not a URL"))?;
         let p = ProviderBuilder::new()
             .wallet(signer.into_wallet())
-            .connect_http(url)
+            .connect_client(client(&rpc)?)
             .erased();
         let id = p
             .get_chain_id()
@@ -165,13 +186,7 @@ impl Chain {
         })?;
         let hash = *sent.tx_hash();
         *self.nonce.lock().expect("nonce lock") = Some(nonce + 1);
-        let receipt = sent
-            .with_timeout(Some(Duration::from_secs(600)))
-            .get_receipt()
-            .await
-            .with_context(|| {
-                format!("{what} on {label}: tx {hash} sent, but no receipt within 10 minutes")
-            })?;
+        let receipt = self.wait_for_receipt(what, hash).await?;
         if !receipt.status() {
             bail!(
                 "{what} on {label}: tx {hash} reverted in block {:?}",
@@ -179,6 +194,32 @@ impl Chain {
             );
         }
         Ok(receipt)
+    }
+
+    /// Poll for `hash`'s receipt until it lands or `RECEIPT_TIMEOUT` passes. A poll that fails
+    /// (a rate limit the retry layer ran out of patience with, a replica that is behind) is
+    /// not the transaction failing: it is remembered and polling goes on, and only a timeout
+    /// reports it, with the hash, so the operator can check the transaction by hand.
+    async fn wait_for_receipt(&self, what: &str, hash: B256) -> Result<TransactionReceipt> {
+        let label = self.chain.label;
+        let started = std::time::Instant::now();
+        let mut last_error = None;
+        loop {
+            match self.p.get_transaction_receipt(hash).await {
+                Ok(Some(receipt)) => return Ok(receipt),
+                Ok(None) => {}
+                Err(e) => last_error = Some(e.to_string()),
+            }
+            if started.elapsed() >= RECEIPT_TIMEOUT {
+                let why = last_error.map_or(String::new(), |e| format!(" (last error: {e})"));
+                bail!(
+                    "{what} on {label}: tx {hash} sent, but no receipt within {} minutes{why}; \
+                     check the transaction before sending it again",
+                    RECEIPT_TIMEOUT.as_secs() / 60
+                );
+            }
+            tokio::time::sleep(RECEIPT_POLL).await;
+        }
     }
 
     pub async fn has_code(&self, addr: Address) -> Result<bool> {

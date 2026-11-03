@@ -266,12 +266,29 @@ pub async fn publish(c: &Chain, p: &Pccs, fmspc: &str, dry_run: bool) -> Result<
 }
 
 /// `teeism pccs seed`
+/// Every chain is seeded, whatever happened on the previous one: a chain that fails is
+/// reported and the run goes on, so one endpoint's bad day never leaves another chain's
+/// collateral to expire. The run fails at the end if any chain did.
 pub async fn run(ctx: &Ctx, chains: &[String], fmspc: &str, dry_run: bool) -> Result<()> {
     let d = ctx.deployment()?;
+    let mut failed = Vec::new();
     for chain in chains::evm_selection(chains)? {
-        let p = super::pccs_for(&d, chain)?;
         print::step(format!("seeding {}", chain.label));
-        publish(&seeder(ctx, chain).await?, p, fmspc, dry_run).await?;
+        let seeded = async {
+            let p = super::pccs_for(&d, chain)?;
+            publish(&seeder(ctx, chain).await?, p, fmspc, dry_run).await
+        };
+        if let Err(e) = seeded.await {
+            print::bad(format!("{}: {e:#}", chain.label));
+            failed.push(chain.label);
+        }
+    }
+    if !failed.is_empty() {
+        bail!(
+            "seeding failed on {}; run `teeism pccs seed --chain <chain>` again for those (an \
+             upload that did land is reported as already current)",
+            failed.join(", ")
+        );
     }
     Ok(())
 }
