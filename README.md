@@ -39,8 +39,8 @@ First deployed with `teeism` on 2026-10-15; redeployed from a fresh devnet on 20
 | `eden` | 8084 | Eden |
 
 ```
-app id         4de9f0be7b151f67fd717d8f06ac45da5ff70d84
-urls           https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-<port>.dstack-pha-prod5.phala.network
+app id         3c591bb6948e53379ca3be4270dd20f292921791
+urls           https://3c591bb6948e53379ca3be4270dd20f292921791-<port>.dstack-pha-prod5.phala.network
 mr_td          0x2a674327c50218dba880066b349b8d559d749ed68dce33fd651c184a877d084b07a9e583767a7ad5da13ed91deec2b70
 compose_hash   0x362d94314eaeafc7ade7a4ffe2a78ec53637c9251264a5b9b4e2fe5bd4abb079
 os_image_hash  0xec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6
