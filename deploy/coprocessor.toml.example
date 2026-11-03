@@ -96,7 +96,7 @@ name = "celestia-to-sepolia"
 from = "celestia"
 to = "sepolia"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8080.dstack-pha-prod5.phala.network"
-ism = "0x888774E53e4ce96fD0F22f3B362C92a68e7bef33"
+ism = "0x2780675BB83A455F7f3731869933b39339B37D3E"
 routers = ["0x2022b3702c5ab233ce9Da34197ee9b5942AD11fD", "0xc381f89241D03C7DD62eFe7E9c1e456Cf9f0904f"]
 
 [[routes]]
@@ -104,7 +104,7 @@ name = "celestia-to-arbitrum"
 from = "celestia"
 to = "arbitrum"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8080.dstack-pha-prod5.phala.network"
-ism = "0x2E20360F67Da2936303a42c785358bFBBA09abcc"
+ism = "0xF77063b029d5F4D962D7f2a8F6623FBaF79190ED"
 routers = ["0x7a09FC80cAFaff73335811B431a41dE3d06d0CC2", "0x316006Ed5A096E1F1Ab32b436696B576A7645F0c"]
 
 [[routes]]
@@ -112,7 +112,7 @@ name = "celestia-to-base"
 from = "celestia"
 to = "base"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8080.dstack-pha-prod5.phala.network"
-ism = "0xB5A922E47b6Ad2d05E4BdaCb29282F85Cd547603"
+ism = "0x5fdbaD4f8e209601f5F811Ff81BF1162c7Aa066e"
 routers = ["0x0068917588ceE1afCe257422A6Ee10eAef445f10", "0xB151c781c0DfB74807Aa67b7198eB0a0A55e142A"]
 
 [[routes]]
@@ -120,7 +120,7 @@ name = "celestia-to-eden"
 from = "celestia"
 to = "eden"
 enclave = "https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-8080.dstack-pha-prod5.phala.network"
-ism = "0x875F6210F4238C084526bD3847135536776d71b1"
+ism = "0x3616c0b280076Ec2bCb2EAE624D1C99D51c88D76"
 routers = ["0x62AD8dEbAE1895aEdB0f4Fc2AcaB1B3FAE67Fe02", "0x4592f8D742E8b3881B3B94C00260C95aFcc298c0"]
 
 # Attested by the ethereum, arbitrum and base enclaves, ports 8081, 8083 and 8082.
