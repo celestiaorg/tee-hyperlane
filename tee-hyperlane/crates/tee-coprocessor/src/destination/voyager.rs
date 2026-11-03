@@ -211,6 +211,27 @@ impl Destination for Voyager {
         self.node.delivered(id).await
     }
 
+    async fn tree(&self) -> Result<([u8; 32], u32)> {
+        let reply = self.node.get(&format!("/bridge/ism/{}", self.origin)).await?;
+        let root: [u8; 32] = hex::decode(reply["tree_root"].as_str().context("tree_root")?)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("tree_root is not 32 bytes"))?;
+        let count = reply["tree_count"].as_u64().context("tree_count")?;
+        Ok((root, u32::try_from(count)?))
+    }
+
+    async fn root_attested(&self, root: [u8; 32]) -> Result<bool> {
+        let reply = self
+            .node
+            .get(&format!(
+                "/bridge/ism/{}/attested/{}",
+                self.origin,
+                hex::encode(root)
+            ))
+            .await?;
+        Ok(reply["attested"].as_bool() == Some(true))
+    }
+
     /// Delivery on voyager costs nothing: attestations and messages need no signer.
     async fn wallet(&self) -> Result<Wallet> {
         Ok(Wallet {
