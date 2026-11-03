@@ -1,9 +1,13 @@
-//! Hyperlane wire formats and the incremental merkle tree, written once and shared by the
-//! enclave, the coprocessor and the CLI.
+//! Hyperlane wire formats, the incremental merkle tree, the ISM state the enclave attests to
+//! and dstack's event log: written once and shared by the enclave, the coprocessor, the CLI and
+//! voyager's bridge lane.
 
+pub mod dstack;
+pub mod ism;
 pub mod merkle;
 pub mod message;
 
+pub use ism::{AttestedUpdate, DecodeError, IsmState, ATTESTED_UPDATE_BYTES, ISM_STATE_BYTES};
 pub use merkle::{
     branch_proof, build_tree_from_slots, get_branch_root, get_tree_root, insert_leaf, keccak_pair,
     zero_hashes, LayoutError, MerkleError, MerkleTree, MerkleTreeSlots, ProofError,
