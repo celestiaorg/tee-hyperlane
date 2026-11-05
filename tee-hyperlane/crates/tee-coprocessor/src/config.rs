@@ -8,8 +8,18 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::destination::{self, Destination};
-use crate::origin::l1::{celestia, ethereum};
-use crate::origin::l2::{arbitrum, base, eden, voyager};
+#[cfg(feature = "celestia")]
+use crate::origin::l1::celestia;
+#[cfg(feature = "ethereum")]
+use crate::origin::l1::ethereum;
+#[cfg(feature = "arbitrum")]
+use crate::origin::l2::arbitrum;
+#[cfg(feature = "base")]
+use crate::origin::l2::base;
+#[cfg(feature = "eden")]
+use crate::origin::l2::eden;
+#[cfg(feature = "voyager")]
+use crate::origin::l2::voyager;
 use crate::origin::{Cache, Indexer};
 
 #[derive(Deserialize)]
@@ -129,42 +139,86 @@ impl Config {
         Ok(domain as u32)
     }
 
+    /// Where chain `name` keeps what it fetched.
+    pub fn cache(&self, name: &str) -> Cache {
+        Cache::new(self.proof_dir().join("chains").join(name))
+    }
+
     /// The indexer for `name` as an origin.
     pub fn indexer(&self, name: &str) -> Result<Box<dyn Indexer>> {
-        let cache = Cache::new(self.proof_dir().join("chains").join(name));
         Ok(match self.kind(name)? {
-            "ethereum" => Box::new(ethereum::Ethereum::new(self.chain(name)?, cache)?),
+            #[cfg(feature = "ethereum")]
+            "ethereum" => Box::new(ethereum::Ethereum::new(
+                self.chain(name)?,
+                self.cache(name),
+            )?),
+            #[cfg(feature = "arbitrum")]
             "arbitrum" => Box::new(arbitrum::Arbitrum::new(self.chain(name)?)?),
+            #[cfg(feature = "base")]
             "base" => Box::new(base::Base::new(self.chain(name)?)?),
+            #[cfg(feature = "celestia")]
             "celestia" => Box::new(celestia::Celestia::new(self.chain(name)?)?),
+            #[cfg(feature = "eden")]
             "eden" => {
                 let config: eden::Config = self.chain(name)?;
                 let parent = self.chain(&config.celestia)?;
-                Box::new(eden::Eden::new(config, parent, cache)?)
+                Box::new(eden::Eden::new(config, parent, self.cache(name))?)
             }
+            #[cfg(feature = "voyager")]
             "voyager" => Box::new(voyager::Voyager::new(self.chain(name)?)?),
-            other => anyhow::bail!("chain `{name}` has unknown kind `{other}`"),
+            other => return Err(unsupported(name, other)),
         })
     }
 
     /// The destination for `name`, delivering through `ism`.
     pub fn destination(&self, name: &str, ism: &str) -> Result<Box<dyn Destination>> {
-        // A voyager chain keeps one ISM per origin, named by the origin's domain; it has no
-        // mailbox contract.
-        if self.kind(name)? == "voyager" {
-            let config: voyager::Config = self.chain(name)?;
-            return Ok(Box::new(destination::Voyager {
-                node: voyager::Node::new(&config.rpc),
-                domain: config.domain,
-                origin: ism.parse().with_context(|| {
-                    format!("a voyager ISM is named by its origin's domain, not `{ism}`")
-                })?,
-            }));
+        match self.kind(name)? {
+            // A voyager chain keeps one ISM per origin, named by the origin's domain; it has
+            // no mailbox contract.
+            #[cfg(feature = "voyager")]
+            "voyager" => {
+                let config: voyager::Config = self.chain(name)?;
+                Ok(Box::new(destination::Voyager {
+                    node: voyager::Node::new(&config.rpc),
+                    domain: config.domain,
+                    origin: ism.parse().with_context(|| {
+                        format!("a voyager ISM is named by its origin's domain, not `{ism}`")
+                    })?,
+                }))
+            }
+            #[cfg(any(
+                feature = "celestia",
+                feature = "ethereum",
+                feature = "base",
+                feature = "arbitrum",
+                feature = "eden"
+            ))]
+            "celestia" | "ethereum" | "base" | "arbitrum" | "eden" => {
+                self.mailbox_destination(name, ism)
+            }
+            other => Err(unsupported(name, other)),
         }
+    }
+
+    /// A destination with a mailbox contract, delivering through `ism`.
+    #[cfg(any(
+        feature = "celestia",
+        feature = "ethereum",
+        feature = "base",
+        feature = "arbitrum",
+        feature = "eden"
+    ))]
+    fn mailbox_destination(&self, name: &str, ism: &str) -> Result<Box<dyn Destination>> {
         #[derive(Deserialize)]
         struct Endpoint {
             domain: u32,
             rpc: String,
+            #[cfg(any(
+                feature = "ethereum",
+                feature = "base",
+                feature = "arbitrum",
+                feature = "eden"
+            ))]
             send_rpc: Option<String>,
             mailbox: Option<String>,
         }
@@ -183,6 +237,7 @@ impl Config {
             .mailbox
             .with_context(|| format!("chain `{name}` needs `mailbox` as a destination"))?;
         Ok(match self.kind(name)? {
+            #[cfg(feature = "celestia")]
             "celestia" => {
                 let c: celestia::Config = self.chain(name)?;
                 Box::new(destination::Celestia {
@@ -198,12 +253,36 @@ impl Config {
                         .context("a Celestia destination needs `home` or CELHOME")?,
                 })
             }
-            _ => Box::new(destination::Evm {
+            #[cfg(any(
+                feature = "ethereum",
+                feature = "base",
+                feature = "arbitrum",
+                feature = "eden"
+            ))]
+            "ethereum" | "base" | "arbitrum" | "eden" => Box::new(destination::Evm {
                 rpc: endpoint.send_rpc.unwrap_or(endpoint.rpc),
                 mailbox,
                 domain: endpoint.domain,
                 ism: ism.to_string(),
             }),
+            other => return Err(unsupported(name, other)),
         })
+    }
+}
+
+/// Every chain kind the relayer knows, whether or not this build includes it.
+pub const KINDS: &[&str] = &[
+    "celestia", "ethereum", "base", "arbitrum", "eden", "voyager",
+];
+
+/// Why chain `name` of kind `kind` cannot be served: the kind is not one the relayer knows, or
+/// this build was made without it.
+pub fn unsupported(name: &str, kind: &str) -> anyhow::Error {
+    if KINDS.contains(&kind) {
+        anyhow::anyhow!(
+            "chain `{name}` has kind `{kind}`, which this build does not include; build tee-coprocessor with the `{kind}` feature"
+        )
+    } else {
+        anyhow::anyhow!("chain `{name}` has unknown kind `{kind}`")
     }
 }

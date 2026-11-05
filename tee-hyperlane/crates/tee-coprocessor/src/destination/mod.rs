@@ -1,8 +1,23 @@
 //! The `Destination` trait: read an ISM's state, submit an attestation, and deliver messages.
 
-use anyhow::{Context, Result};
+#[cfg(any(
+    feature = "celestia",
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
+use anyhow::Context;
+use anyhow::Result;
 use async_trait::async_trait;
 use tee_node::state::IsmState;
+#[cfg(any(
+    feature = "celestia",
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
 use tokio::process::Command;
 
 #[async_trait]
@@ -120,16 +135,39 @@ impl Batch {
     }
 }
 
+/// The tools the mailbox destinations sign with: `cast` for EVM, `celestia-appd` for Celestia.
+///
 /// The longest any one tool call may take. `cast receipt` waits for inclusion, which on the
 /// slowest destination is well under a minute; a call past this has hung, and a hung call would
 /// otherwise stall its route with nothing in the log.
+#[cfg(any(
+    feature = "celestia",
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
 const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Run one of the signing tools and return its trimmed stdout, or its stderr as the error.
+#[cfg(any(
+    feature = "celestia",
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
 async fn run(program: &str, args: &[&str]) -> Result<String> {
     run_for(program, args, TOOL_TIMEOUT).await
 }
 
+#[cfg(any(
+    feature = "celestia",
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
 async fn run_for(program: &str, args: &[&str], limit: std::time::Duration) -> Result<String> {
     let child = Command::new(program).args(args).kill_on_drop(true).output();
     let out = tokio::time::timeout(limit, child)
@@ -152,7 +190,16 @@ async fn run_for(program: &str, args: &[&str], limit: std::time::Duration) -> Re
     Ok(String::from_utf8(out.stdout)?.trim().to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        feature = "celestia",
+        feature = "ethereum",
+        feature = "base",
+        feature = "arbitrum",
+        feature = "eden"
+    )
+))]
 mod tests {
     use super::*;
 
@@ -167,10 +214,26 @@ mod tests {
     }
 }
 
+#[cfg(feature = "celestia")]
 mod celestia;
+#[cfg(any(
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
 mod evm;
+#[cfg(feature = "voyager")]
 mod voyager;
 
+#[cfg(feature = "celestia")]
 pub use celestia::Celestia;
+#[cfg(any(
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
 pub use evm::Evm;
+#[cfg(feature = "voyager")]
 pub use voyager::Voyager;

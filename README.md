@@ -24,6 +24,7 @@ deploy/                                 the guides, the measured compose files, 
 
 - `l1/`: light-client chains (Celestia, Ethereum). `l2/`: sequencer-signed rollups (Base, Arbitrum, Eden, Voyager).
 - Per chain: `tee-node/src/chains/l2/base.rs` (verification), `tee-coprocessor/src/origin/l2/base.rs` (fetching).
+- Features mean one thing: which chains are compiled in. `celestia`, `ethereum`, `base`, `arbitrum`, `eden`, `voyager`, named alike in `tee-node` and `tee-coprocessor`, each coprocessor feature forwarding to the enclave's. `default` builds every chain, for development, tests and the devnet. An enclave image is built with one (`flake.nix`); a relayer with the chains it serves. The CLI's `ledger` is the one feature that is not a chain. Check every combination: `cargo hack check -p tee-coprocessor --each-feature --exclude-no-default-features`.
 
 ## Deployments
 
