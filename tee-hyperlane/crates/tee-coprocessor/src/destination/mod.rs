@@ -148,8 +148,22 @@ mod tests {
     }
 }
 
+#[cfg(feature = "celestia")]
 mod celestia;
+#[cfg(any(
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
 mod evm;
 
+#[cfg(feature = "celestia")]
 pub use celestia::Celestia;
+#[cfg(any(
+    feature = "ethereum",
+    feature = "base",
+    feature = "arbitrum",
+    feature = "eden"
+))]
 pub use evm::Evm;

@@ -266,9 +266,9 @@ Ethereum app open, blind signing on. The Ledger then owns every contract `teeism
 secp256k1 sequencer: reuse `tee-node/src/chains/l2/sequencer.rs` and `tee-coprocessor/src/origin/l2/sequenced.rs`.
 
 Register it:
-1. cargo feature in `tee-node/Cargo.toml`; chain in `origin::chains()`
+1. cargo feature in `tee-node/Cargo.toml`, named after the chain; chain in `origin::chains()`
 2. image: chain in `flake.nix` (`chains`, `chainFiles`, `keeps`), a `deploy/docker-compose.<chain>.yml`, its port in `ENCLAVES` (`cli/src/shared/chains.rs`)
-3. `kind` arm in `tee-coprocessor/src/config.rs`
+3. the same feature in `tee-coprocessor/Cargo.toml`, forwarding to tee-node's and enabling the chain's own dependencies; both `default` lists; the module behind `#[cfg(feature = ...)]` in `origin/l1` or `origin/l2`; `kind` arms in `config.rs` (`indexer`, `destination`) and `tracker.rs` (`Watcher::new`); the kind in `config::KINDS`
 4. its entry in `EVM_CHAINS` (`cli/src/shared/chains.rs`) and its table in `cli/src/steps/services.rs` (`coprocessor_toml`)
 
 Rules:

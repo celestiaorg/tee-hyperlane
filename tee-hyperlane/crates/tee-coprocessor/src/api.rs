@@ -294,7 +294,16 @@ impl Faucet {
         let Some(faucet) = &config.faucet else {
             return Ok(None);
         };
+        #[cfg(not(feature = "celestia"))]
+        {
+            let _ = faucet;
+            anyhow::bail!(
+                "the faucet pays out on a Celestia chain, which this build does not include; build tee-coprocessor with the `celestia` feature"
+            );
+        }
+        #[cfg(feature = "celestia")]
         let chain: crate::origin::l1::celestia::Config = config.chain(&faucet.chain)?;
+        #[cfg(feature = "celestia")]
         Ok(Some(Self {
             claims: config.proof_dir().join(".faucet"),
             rpc: chain.rpc,
