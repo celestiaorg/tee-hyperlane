@@ -10,6 +10,14 @@ import { walletFor } from "../wallets";
 import { ALL_CHAINS, ChainBadge, describeDuration, describeWhen } from "./shared";
 import { Picker } from "./Picker";
 
+/// What the page knows about one balance. Not connected, still reading, and a failed read are
+/// different things and are shown differently.
+export type Balance =
+  | { state: "disconnected" }
+  | { state: "loading" }
+  | { state: "error" }
+  | { state: "ready"; amount: bigint };
+
 export interface BridgeProps {
   from: ChainId;
   to: ChainId;
@@ -18,8 +26,9 @@ export interface BridgeProps {
   amount: string;
   recipient: string;
   defaultRecipient: string;
-  sourceBalance: bigint | undefined;
-  destinationBalance: bigint | undefined;
+  sourceBalance: Balance;
+  destinationBalance: Balance;
+  onRetryBalance: () => void;
   fee: BridgeFee | null;
   ism: WiredIsm | null;
   ismError: string | null;
@@ -51,7 +60,9 @@ export function BridgeView(p: BridgeProps) {
   // The button says what is missing, and connects the wallet when that is what is missing.
   const wanted = Number(p.amount);
   const over =
-    p.sourceBalance !== undefined && p.amount !== "" && wanted > Number(formatAmount(p.sourceBalance, p.token));
+    p.sourceBalance.state === "ready" &&
+    p.amount !== "" &&
+    wanted > Number(formatAmount(p.sourceBalance.amount, p.token));
   const action: { label: string; run?: () => void } = p.sending
     ? { label: `Confirm in ${walletFor(source)}…` }
     : !p.live
@@ -89,13 +100,14 @@ export function BridgeView(p: BridgeProps) {
             <TokenPicker value={p.token} tokens={p.tokens} onChange={p.onToken} />
           </div>
           <div className="field-bottom">
-            <span>
-              {p.sourceBalance === undefined
-                ? `Connect ${walletFor(source)} to see your balance`
-                : `Balance ${formatAmount(p.sourceBalance, p.token)} ${p.token}`}
-            </span>
-            {p.sourceBalance !== undefined && p.sourceBalance > 0n && (
-              <button className="max" onClick={() => p.onAmount(formatAmount(p.sourceBalance!, p.token))}>
+            <BalanceLine balance={p.sourceBalance} wallet={walletFor(source)} token={p.token} onRetry={p.onRetryBalance} />
+            {p.sourceBalance.state === "ready" && p.sourceBalance.amount > 0n && (
+              <button
+                className="max"
+                onClick={() =>
+                  p.sourceBalance.state === "ready" && p.onAmount(formatAmount(p.sourceBalance.amount, p.token))
+                }
+              >
                 Max
               </button>
             )}
@@ -120,11 +132,12 @@ export function BridgeView(p: BridgeProps) {
             <span className="token-static">{p.token}</span>
           </div>
           <div className="field-bottom">
-            <span>
-              {p.destinationBalance === undefined
-                ? `Connect ${walletFor(destination)} to see your balance`
-                : `Balance ${formatAmount(p.destinationBalance, p.token)} ${p.token}`}
-            </span>
+            <BalanceLine
+              balance={p.destinationBalance}
+              wallet={walletFor(destination)}
+              token={p.token}
+              onRetry={p.onRetryBalance}
+            />
           </div>
         </div>
 
@@ -187,6 +200,40 @@ export function BridgeView(p: BridgeProps) {
 
     </div>
   );
+}
+
+function BalanceLine({
+  balance,
+  wallet,
+  token,
+  onRetry,
+}: {
+  balance: Balance;
+  wallet: string;
+  token: TokenId;
+  onRetry: () => void;
+}) {
+  switch (balance.state) {
+    case "disconnected":
+      return <span>Connect {wallet} to see your balance</span>;
+    case "loading":
+      return <span>Balance …</span>;
+    case "error":
+      return (
+        <span>
+          Balance unavailable.{" "}
+          <button className="max" onClick={onRetry}>
+            Retry
+          </button>
+        </span>
+      );
+    case "ready":
+      return (
+        <span>
+          Balance {formatAmount(balance.amount, token)} {token}
+        </span>
+      );
+  }
 }
 
 function ChainPicker({ value, onChange }: { value: ChainId; onChange: (c: ChainId) => void }) {
