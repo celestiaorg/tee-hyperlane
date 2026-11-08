@@ -12,6 +12,7 @@ teeism pccs seed            # republish all of it; --dry-run checks and fetches 
 - Skipped: Celestia -> EVM routes stop 30 days after the last seed, with `TCBR` or `PCKCRLH`. `pccs status` prints the date per chain; seed a week before it.
 - Collateral is per CPU platform (FMSPC); only `20a06f000000`, the platform our CVMs ran on so far, is seeded. A CVM on a Phala node with a different CPU passes Celestia but fails every EVM route with `TCBR`: seed its platform, `teeism pccs seed --fmspc <hex>`.
 - Celestia-destination routes need nothing: the relayer fetches fresh collateral with each attestation.
+- The public endpoints rate limit (Base Sepolia: 25 requests a second). The CLI retries a 429 with a backoff and keeps polling for a receipt through failed polls, so a limited run is slow, not failed. A chain that does fail is reported and the others are still seeded; rerun `teeism pccs seed --chain <chain>` for it. An upload that landed reports as `already current`, so a rerun never double-publishes.
 - Where it comes from and what it is checked against: [DEPLOY B](DEPLOY.md#b-intel-root-ca-and-collateral).
 
 ## Before each TCB recovery: the next evaluation number
@@ -30,8 +31,8 @@ teeism pccs tcb-eval 23      # its QE identity and TCB info contracts on every c
 Every route attests at least daily, with no messages if nothing was dispatched, so its ISM stays near its origin's head and the next proof starts from recent state.
 
 - The relayer sends one once an ISM's trusted state is a day old (`HEARTBEAT`, `tee-coprocessor/src/route.rs`).
-- The enclave, `TeeDcapIsm` and `x/teeism` all refuse an empty batch that moves the origin clock less than 30 minutes, so nobody can use the public enclave to advance an ISM more often.
-- An empty batch cannot skip a message: the enclave replays the batch from the tree under the ISM's own root, and zero ids reproduce the head's tree only if nothing was dispatched.
+- `TeeDcapIsm` and `x/teeism` refuse an attestation that leaves the tree root unchanged and moves the origin clock less than 30 minutes, so nobody can use the public enclave to advance an ISM more often with nothing in it.
+- An attestation cannot skip a message: it carries the tree's root, and every message in the tree proves itself against that root at delivery (`root(32) index(4) proof(32 * 32)` in the Hyperlane metadata). Every root an ISM has attested stays accepted, so a message delivered late proves against the root it was attested under.
 - Cost: one attestation (~3.87M gas on an EVM destination) per quiet route per day. On Sepolia at 1.1 gwei that is ~0.004 ETH a day.
 - Check: `teeism status` lists every route's state age; over 26 hours is reported.
 
@@ -71,13 +72,14 @@ teeism enclaves delete --retired                           # only once smoke pas
 
 ## Update: celestia-app
 
-A new commit on `jonas/tee-ism`:
+The chain runs the head of `jonas/tee-ism`. Its image is always `celestia-app-teeism:jonas-tee-ism`, rebuilt by every `celestia up` (seconds when nothing changed) and labelled with the commit it was built from; `teeism status` shows that commit next to the checkout's, and `celestia up` refuses to restart a live chain on a different build unless told to.
 
 ```sh
 git -C ../celestia-app-local pull
-teeism build
-teeism celestia up --new-image     # restarts the running chain on the new binary
+teeism build                       # prints: celestia-app  jonas/tee-ism @ <commit> <date> <subject>
+teeism celestia up --new-image     # rebuilds the image, restarts the chain on it
 teeism services restart
+teeism status                      # celestia: image commit == checkout commit
 ```
 
 Only for changes that keep the state machine compatible with the existing chain. Anything else needs a coordinated upgrade or a fresh chain ([DEPLOY](DEPLOY.md)).
@@ -104,7 +106,9 @@ Contracts on the EVM chains stay where they are, unused. A CVM named `teeism-*` 
 ## No message is lost
 
 - A re-pin keeps each ISM's state; a replaced ISM resumes from the old one's last state, and stops rather than fall back to the head if it cannot read it.
-- Celestia -> EVM resumes only if its last state is under 14 days old.
+- Every root an ISM attests stays accepted, so a message's proof never expires. A proof lands only against the root it was built for, though: if the ISM never attested that root (another relayer's attestation landed first and ours was discarded as stale; or the ISM was replaced and its root set started over), the message is parked with the tree it was proven from, and redelivery builds a new proof against the root the ISM holds now (`undelivered/<id>.json` carries `provenance`). Nothing to do by hand; the log says `re-proved against the root the ISM holds`.
+- A message parked before the ISM covers it (its batch was discarded while the ISM sat between its start and end) is reported as `cannot re-prove yet` until the next attestation; then it lands, or the regular step delivers it first and the parked copy is found delivered.
+- Celestia -> EVM resumes only if its last state is under 14 days old. Past that, a replacement ISM anchored at the head attests a root that contains every earlier leaf, so the messages are not lost, but the relayer only indexes forward from the ISM's height: recovering leaves dispatched during the outage needs a frontier at an earlier height, which is not tooled yet.
 
 ## Waiting or stuck?
 
@@ -127,7 +131,8 @@ Base or Arbitrum waiting more than a few minutes: stuck, see below. `leaves=N` c
 | `WrongEnclave`, `IdentityChanged` | `teeism services restart` (rewrites the enclave URLs); `teeism enclaves verify --ism-chain <chain>` |
 | `WrongEnclave` / `identity mismatch` on every route after Phala maintenance, with no change of ours | the host moved the measurements (e.g. a dstack 0.6 VMM changes RTMR0 at the CVM's next start): [rotate the enclave](#rotate-the-enclave-re-pin) |
 | `TCBR` on every EVM route right after a new CVM | its Phala node has another CPU platform (FMSPC): `teeism pccs seed --fmspc <hex>` |
-| `EmptyBatchTooSoon`, `an empty batch must advance the origin clock` | nothing, unless it repeats: someone else advanced the ISM |
+| `EmptyBatchTooSoon`, `an attestation with no new leaves must advance the origin clock` | nothing, unless it repeats: someone else advanced the ISM |
+| `process` reverts or `verification failed` with the ISM's state ahead of the message | the delivery's metadata names a root the ISM never attested; redelivery re-proves it against the ISM's current root by itself (`re-proved against the root the ISM holds`). `cannot re-prove yet` names the cause: the ISM has not attested since (wait for the next attestation), or the record predates `provenance` (nothing can rebuild it: the regular step never indexes backwards). Never delete a parked message to "retry" it; the next pass starts from the ISM's height and would not see it again |
 | `unknown command "teeism"` from the relayer | the unit's PATH must start with `.state/bin` |
 | `eth_getProof` fails at an old height | use an archive endpoint ([DEPLOY G](DEPLOY.md#g-endpoints)) |
 | Sepolia: `eth_getProof` ... `operation timed out` against `127.0.0.1:8545` | point `SEPOLIA_RPC` at an archive for one pass |

@@ -7,8 +7,6 @@ use sha2::{Digest, Sha256};
 
 /// A trusted state: 116 bytes, the first 32 of them the origin's state root.
 pub const ISM_STATE_BYTES: usize = 116;
-/// The most message ids one attestation may authorise; both ISMs refuse more.
-pub const MAX_MESSAGE_ID_COUNT: u64 = 1_000_000;
 
 const OFF_ORIGIN_DOMAIN: usize = 32;
 const OFF_HEIGHT: usize = 36;
@@ -32,10 +30,14 @@ pub struct IsmState {
     pub identity_digest: [u8; 32],
 }
 
-/// What the enclave hashes into `report_data`: the transition and the batch it authorises.
+/// What the enclave hashes into `report_data`: the transition and the origin tree it vouches for.
 ///
-/// `prev_state(116) new_state(116) merkle_tree(32) attested_at(8) count(8) ids(32 * count)`
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `prev_state(116) new_state(116) merkle_tree(32) attested_at(8) tree_root(32) tree_count(4)`
+///
+/// Fixed size. The tree root is what a message proves itself against at delivery, with a merkle
+/// branch in its metadata, so the attestation carries no message ids and an origin block of any
+/// size is one attestation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttestedUpdate {
     pub prev_state: IsmState,
     pub new_state: IsmState,
@@ -43,19 +45,20 @@ pub struct AttestedUpdate {
     pub merkle_tree_address: [u8; 32],
     /// The newest chain time the enclave verified.
     pub attested_at: u64,
-    /// The new leaves of the origin tree, in order.
-    pub message_ids: Vec<[u8; 32]>,
+    /// The hook's incremental merkle root at `new_state`, proven out of its storage.
+    pub tree_root: [u8; 32],
+    /// The hook's leaf count at that root.
+    pub tree_count: u32,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DecodeError {
     #[error("expected {expected} bytes, got {got}")]
     WrongLength { expected: usize, got: usize },
-    #[error("message id count {0} exceeds the maximum")]
-    TooManyMessages(u64),
 }
 
-const ATTESTED_UPDATE_HEAD: usize = 2 * ISM_STATE_BYTES + 48;
+/// The whole attested update, which has no variable part.
+pub const ATTESTED_UPDATE_BYTES: usize = 2 * ISM_STATE_BYTES + 32 + 8 + 32 + 4;
 
 impl IsmState {
     pub fn encode(&self) -> [u8; ISM_STATE_BYTES] {
@@ -91,23 +94,21 @@ impl IsmState {
 
 impl AttestedUpdate {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(ATTESTED_UPDATE_HEAD + 32 * self.message_ids.len());
+        let mut out = Vec::with_capacity(ATTESTED_UPDATE_BYTES);
         out.extend_from_slice(&self.prev_state.encode());
         out.extend_from_slice(&self.new_state.encode());
         out.extend_from_slice(&self.merkle_tree_address);
         out.extend_from_slice(&self.attested_at.to_be_bytes());
-        out.extend_from_slice(&(self.message_ids.len() as u64).to_be_bytes());
-        for id in &self.message_ids {
-            out.extend_from_slice(id);
-        }
+        out.extend_from_slice(&self.tree_root);
+        out.extend_from_slice(&self.tree_count.to_be_bytes());
         out
     }
 
-    /// Exactly `count` ids and nothing after them, so one encoding maps to one update.
+    /// Exactly the fixed layout and nothing after it, so one encoding maps to one update.
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
-        if b.len() < ATTESTED_UPDATE_HEAD {
+        if b.len() != ATTESTED_UPDATE_BYTES {
             return Err(DecodeError::WrongLength {
-                expected: ATTESTED_UPDATE_HEAD,
+                expected: ATTESTED_UPDATE_BYTES,
                 got: b.len(),
             });
         }
@@ -116,27 +117,16 @@ impl AttestedUpdate {
         o += 32;
         let attested_at = u64::from_be_bytes(b[o..o + 8].try_into().unwrap());
         o += 8;
-        let count = u64::from_be_bytes(b[o..o + 8].try_into().unwrap());
-        o += 8;
-        if count > MAX_MESSAGE_ID_COUNT {
-            return Err(DecodeError::TooManyMessages(count));
-        }
-        let expected = o + 32 * count as usize;
-        if b.len() != expected {
-            return Err(DecodeError::WrongLength {
-                expected,
-                got: b.len(),
-            });
-        }
+        let tree_root: [u8; 32] = b[o..o + 32].try_into().unwrap();
+        o += 32;
+        let tree_count = u32::from_be_bytes(b[o..o + 4].try_into().unwrap());
         Ok(AttestedUpdate {
             prev_state: IsmState::decode(&b[..ISM_STATE_BYTES])?,
             new_state: IsmState::decode(&b[ISM_STATE_BYTES..2 * ISM_STATE_BYTES])?,
             merkle_tree_address,
             attested_at,
-            message_ids: b[o..]
-                .chunks_exact(32)
-                .map(|c| c.try_into().unwrap())
-                .collect(),
+            tree_root,
+            tree_count,
         })
     }
 
@@ -181,10 +171,16 @@ mod tests {
             new_state: state(4),
             merkle_tree_address: [0xab; 32],
             attested_at: 42,
-            message_ids: vec![[1; 32], [2; 32]],
+            tree_root: [0xcd; 32],
+            tree_count: 0x0a0b_0c0d,
         };
         let b = u.encode();
-        assert_eq!(b.len(), ATTESTED_UPDATE_HEAD + 64);
+        assert_eq!(b.len(), ATTESTED_UPDATE_BYTES);
+        assert_eq!(ATTESTED_UPDATE_BYTES, 308);
+        assert_eq!(&b[232..264], &[0xab; 32]);
+        assert_eq!(&b[264..272], &42u64.to_be_bytes());
+        assert_eq!(&b[272..304], &[0xcd; 32]);
+        assert_eq!(&b[304..308], &[0x0a, 0x0b, 0x0c, 0x0d]);
         assert_eq!(AttestedUpdate::decode(&b).unwrap(), u);
         assert!(
             AttestedUpdate::decode(&b[..b.len() - 1]).is_err(),
@@ -195,5 +191,14 @@ mod tests {
             "trailing"
         );
         assert!(IsmState::decode(&[0u8; 115]).is_err());
+    }
+
+    /// The previous layout ended in `count(8) ids(32 * count)`, so it was 280 + 32k bytes. None
+    /// of those is 308, so an old payload can never be read as a new one or the reverse.
+    #[test]
+    fn the_old_layout_never_decodes() {
+        for k in 0..4 {
+            assert!(AttestedUpdate::decode(&vec![0u8; 280 + 32 * k]).is_err());
+        }
     }
 }

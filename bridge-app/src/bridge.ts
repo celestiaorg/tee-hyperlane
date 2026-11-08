@@ -442,7 +442,8 @@ export async function fetchBalance(
   const response = await fetch(
     `${chain.rest}/cosmos/bank/v1beta1/balances/${address}/by_denom?denom=${encodeURIComponent(denom)}`,
   );
-  if (!response.ok) return 0n;
+  // A failed read is an error, not a zero: the page says "unavailable" rather than "0".
+  if (!response.ok) throw new Error(`balance query failed: ${response.status}`);
   const body = await response.json();
   return BigInt(body?.balance?.amount ?? "0");
 }

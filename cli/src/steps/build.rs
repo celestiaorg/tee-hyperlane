@@ -42,8 +42,34 @@ pub fn check_celestia_app(ctx: &Ctx) -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
+/// The commit the celestia-app checkout is at, full hash.
+pub fn celestia_app_commit(app: &Path) -> Result<String> {
+    Ok(Cmd::new("reading celestia-app's commit", "git")
+        .arg("-C")
+        .arg(app)
+        .args(["rev-parse", "HEAD"])
+        .output()?
+        .trim()
+        .to_string())
+}
+
+/// The same, for the eye: `<short commit> <date> <subject>`.
+pub fn celestia_app_head(app: &Path) -> Result<String> {
+    Ok(Cmd::new("reading celestia-app's head", "git")
+        .arg("-C")
+        .arg(app)
+        .args(["log", "-1", "--format=%h %as %s"])
+        .output()?
+        .trim()
+        .to_string())
+}
+
 pub fn build(ctx: &Ctx) -> Result<()> {
     let app = check_celestia_app(ctx)?;
+    print::kv(
+        "celestia-app",
+        &format!("{CELESTIA_APP_BRANCH} @ {}", celestia_app_head(&app)?),
+    );
     let bin = ctx.bin_dir();
     std::fs::create_dir_all(&bin)?;
     for (pkg, what) in [

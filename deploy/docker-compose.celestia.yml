@@ -10,7 +10,7 @@
 # measurement. Written by `teeism images`.
 services:
   celestia:
-    image: ghcr.io/jonas089/tee-node@sha256:eea9ed5f1e7ccd4d6d00011c3010867886607fbde0da9adc18e251e3baf3c71b
+    image: ghcr.io/jonas089/tee-node@sha256:95b42f87cabf9ae5298933f48fd975477bad9add9e8c79d26fd1b4079a470f5c
     ports:
       - "8080:8080"
     volumes:

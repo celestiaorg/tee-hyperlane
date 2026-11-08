@@ -8,6 +8,7 @@ declare global {
     ethereum?: {
       request(args: { method: string; params?: unknown[] }): Promise<any>;
       on?(event: string, handler: (...args: any[]) => void): void;
+      removeListener?(event: string, handler: (...args: any[]) => void): void;
     };
     keplr?: any;
     getOfflineSigner?: (chainId: string) => any;
@@ -23,7 +24,6 @@ export async function connectMetaMask(chain: EvmChain): Promise<Account> {
   if (!window.ethereum) throw new Error("MetaMask is not installed");
   const [address] = await window.ethereum.request({ method: "eth_requestAccounts" });
   await switchEvmChain(chain);
-  remember(EVM_CONNECTED);
   return { address, chain };
 }
 
@@ -32,8 +32,11 @@ export async function connectMetaMask(chain: EvmChain): Promise<Account> {
 /// `eth_requestAccounts` opens the wallet; `eth_accounts` does not, and returns empty unless
 /// this origin is already approved. So a reload restores the session silently, and someone
 /// who never connected is left alone.
+///
+/// No remembered flag is needed: `eth_accounts` only answers for an origin the wallet has
+/// already approved, so asking is always silent.
 export async function restoreMetaMask(chain: EvmChain): Promise<Account | null> {
-  if (!window.ethereum || !recalled(EVM_CONNECTED)) return null;
+  if (!window.ethereum) return null;
   try {
     const accounts: string[] = await window.ethereum.request({ method: "eth_accounts" });
     if (!accounts?.length) return null;
@@ -56,7 +59,50 @@ export async function restoreKeplr(chain: CosmosChain): Promise<Account | null> 
   }
 }
 
-const EVM_CONNECTED = "tee-bridge-evm-connected";
+/// The account MetaMask has selected right now, or null if this origin is not approved.
+///
+/// Read before signing, so a send never goes out under an address the page cached before the
+/// user switched accounts.
+export async function currentMetaMaskAddress(): Promise<string | null> {
+  if (!window.ethereum) return null;
+  try {
+    const accounts: string[] = await window.ethereum.request({ method: "eth_accounts" });
+    return accounts?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/// Follow MetaMask's selected account. Called with the new address on every switch, and with
+/// null when the user disconnects this site. Returns the unsubscribe.
+export function watchMetaMask(onAccount: (address: string | null) => void): () => void {
+  const ethereum = window.ethereum;
+  if (!ethereum?.on) return () => {};
+  const handler = (accounts: string[]) => onAccount(accounts?.[0] ?? null);
+  ethereum.on("accountsChanged", handler);
+  return () => ethereum.removeListener?.("accountsChanged", handler);
+}
+
+/// Follow Keplr's selected key. Keplr announces a switch with a window event and no payload,
+/// so the account is read again. Only fires once the user has connected Keplr here.
+export function watchKeplr(
+  chain: CosmosChain,
+  onAccount: (address: string | null) => void,
+): () => void {
+  const handler = async () => {
+    if (!window.keplr || !recalled(COSMOS_CONNECTED)) return;
+    try {
+      const signer = window.getOfflineSigner!(chain.chainId);
+      const [account] = await signer.getAccounts();
+      onAccount(account?.address ?? null);
+    } catch {
+      onAccount(null);
+    }
+  };
+  window.addEventListener("keplr_keystorechange", handler);
+  return () => window.removeEventListener("keplr_keystorechange", handler);
+}
+
 const COSMOS_CONNECTED = "tee-bridge-cosmos-connected";
 
 function remember(key: string): void {

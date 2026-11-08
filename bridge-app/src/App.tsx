@@ -31,10 +31,14 @@ import { sendFromCelestia } from "./celestia";
 import {
   connectKeplr,
   connectMetaMask,
+  currentMetaMaskAddress,
   restoreKeplr,
   restoreMetaMask,
+  watchKeplr,
+  watchMetaMask,
 } from "./wallets";
 import type { Account } from "./wallets";
+import type { Balance } from "./ui/BridgeView";
 import { BridgeView } from "./ui/BridgeView";
 import { FaucetView } from "./ui/FaucetView";
 import { HistoryView } from "./ui/HistoryView";
@@ -88,7 +92,9 @@ export default function App() {
   const [amount, setAmount] = useState("");
   const [recipient, setRecipient] = useState("");
   const [transfers, setTransfers] = useState<Transfer[]>(loadTransfers);
-  const [balances, setBalances] = useState<Record<string, bigint>>({});
+  // Keyed by chain, token and address, so a number read for one account is never shown for
+  // another. "error" means the read failed; absent means it has not come back yet.
+  const [balances, setBalances] = useState<Record<string, bigint | "error">>({});
   const [fee, setFee] = useState<BridgeFee | null>(null);
   const [ism, setIsm] = useState<WiredIsm | null>(null);
   const [ismError, setIsmError] = useState<string | null>(null);
@@ -160,6 +166,21 @@ export default function App() {
     };
   }, []);
 
+  // Follow the wallets rather than the address they had when connected: switching accounts
+  // in MetaMask or Keplr moves the page with it, and disconnecting the site logs it out.
+  useEffect(() => {
+    const stopEvm = watchMetaMask((address) =>
+      setEvm(address ? { address, chain: CHAINS.sepolia } : null),
+    );
+    const stopKeplr = watchKeplr(CHAINS.celestia as CosmosChain, (address) =>
+      setCosmos(address ? { address, chain: CHAINS.celestia } : null),
+    );
+    return () => {
+      stopEvm();
+      stopKeplr();
+    };
+  }, []);
+
   const from: ChainId = outbound ? "celestia" : counterparty;
   const to: ChainId = outbound ? counterparty : "celestia";
   const live = routeIsLive(token, from, to);
@@ -191,32 +212,64 @@ export default function App() {
     [evm, cosmos],
   );
 
-  const balanceKey = (chain: ChainId, t: TokenId) => `${chain}:${t}`;
-  const sourceBalance = balances[balanceKey(from, token)];
-  const destinationBalance = balances[balanceKey(to, token)];
+  const balanceKey = (chain: ChainId, t: TokenId, address: string) =>
+    `${chain}:${t}:${address.toLowerCase()}`;
+  const balanceOf = (chain: ChainId): Balance => {
+    const account = accountFor(chain);
+    if (!account) return { state: "disconnected" };
+    const found = balances[balanceKey(chain, token, account.address)];
+    if (found === undefined) return { state: "loading" };
+    if (found === "error") return { state: "error" };
+    return { state: "ready", amount: found };
+  };
+  const sourceBalance = balanceOf(from);
+  const destinationBalance = balanceOf(to);
 
+  // Every chain and token for whichever accounts are connected now. A read that fails is
+  // tried once more before it is reported, since the public RPCs drop the odd request when
+  // ten arrive at once; a failure is shown as unavailable, never as "not connected".
   const loadBalances = useCallback(async () => {
-    const wanted: [ChainId, TokenId][] = [];
+    const wanted: [ChainId, TokenId, string][] = [];
     for (const chain of ["celestia", ...COUNTERPARTIES] as ChainId[]) {
-      for (const t of TOKENS) wanted.push([chain, t]);
+      const account = CHAINS[chain].kind === "evm" ? evm : cosmos;
+      if (!account) continue;
+      for (const t of TOKENS) wanted.push([chain, t, account.address]);
     }
-    const found: Record<string, bigint> = {};
     await Promise.all(
-      wanted.map(async ([chain, t]) => {
-        const account = CHAINS[chain].kind === "evm" ? evm : cosmos;
-        if (!account) return;
-        try {
-          found[balanceKey(chain, t)] = await fetchBalance(CHAINS[chain], t, account.address);
-        } catch {
-          // A chain whose RPC is unreachable simply has no number to show.
+      wanted.map(async ([chain, t, address]) => {
+        let value: bigint | "error" = "error";
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            value = await fetchBalance(CHAINS[chain], t, address);
+            break;
+          } catch {
+            if (attempt === 0) await new Promise((r) => setTimeout(r, 1500));
+          }
         }
+        const key = balanceKey(chain, t, address);
+        // A failed refresh keeps the last good number rather than replacing it.
+        setBalances((current) =>
+          value === "error" && typeof current[key] === "bigint"
+            ? current
+            : { ...current, [key]: value },
+        );
       }),
     );
-    setBalances((current) => ({ ...current, ...found }));
   }, [evm, cosmos]);
 
+  // On connect or account switch, then every 30 seconds and whenever the tab comes back into
+  // view, so a balance that failed once or changed elsewhere does not stay that way.
   useEffect(() => {
     loadBalances();
+    const timer = setInterval(loadBalances, 30_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadBalances();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [loadBalances]);
 
   // Quoted from chain on every route change: the oracle moves it hourly, so a number baked
@@ -276,10 +329,10 @@ export default function App() {
       // buried in it - the user sees a failed transaction and no idea they simply overdrew.
       const wanted = toBaseUnits(amount, token);
       if (wanted <= 0n) throw new Error("Enter an amount greater than zero");
-      if (sourceBalance !== undefined && wanted > sourceBalance) {
+      if (sourceBalance.state === "ready" && wanted > sourceBalance.amount) {
         throw new Error(
           `Not enough ${token} on ${source.name}: ` +
-            `you have ${formatAmount(sourceBalance, token)} and asked to send ${amount}`,
+            `you have ${formatAmount(sourceBalance.amount, token)} and asked to send ${amount}`,
         );
       }
 
@@ -288,13 +341,18 @@ export default function App() {
 
       if (source.kind === "evm") {
         if (!evm) throw new Error("Connect MetaMask first");
+        // Signed by whichever account MetaMask has selected now, so name that one as sender.
+        const sender = (await currentMetaMaskAddress()) ?? evm.address;
+        if (sender.toLowerCase() !== evm.address.toLowerCase()) {
+          setEvm({ address: sender, chain: CHAINS.sepolia });
+        }
         tx = await sendFromEvm({
           chain: source as EvmChain,
           token,
           destination: destination.domain,
           recipient: target,
           amount: wanted,
-          sender: evm.address,
+          sender,
           onNonceRetry: () => setNotice(NONCE_RETRYING),
         });
         setNotice(null);
@@ -349,7 +407,7 @@ export default function App() {
     }
   }, [
     amount, cosmos, defaultRecipient, destination, evm, from, loadBalances, recipient, source,
-    to, token,
+    sourceBalance, to, token,
   ]);
 
   // Transfers that have not landed are re-checked on load and every 15 seconds, so their
@@ -450,6 +508,7 @@ export default function App() {
             notice={notice}
             relayerAccount={Boolean(evm && relayerWallets.includes(evm.address.toLowerCase()))}
             onConnect={() => connect(from)}
+            onRetryBalance={loadBalances}
             onPickFrom={pickFrom}
             onPickTo={pickTo}
             onFlip={() => setOutbound((v) => !v)}

@@ -186,3 +186,155 @@ pub fn build_tree_from_slots(
     let count = u32::from_be_bytes(raw[28..].try_into().unwrap());
     Ok(MerkleTree { branch, count })
 }
+
+// ============================================================================
+// Proving a leaf against a later root
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ProofError {
+    #[error("leaf {index} is before the frontier at {count}; its siblings are not derivable")]
+    BeforeFrontier { index: u32, count: u32 },
+    #[error("leaf {index} is past the tree's {count} leaves")]
+    PastTree { index: u32, count: u64 },
+    #[error("merkle tree is full")]
+    TreeFull,
+}
+
+/// The 32 siblings that fold `leaf` at `index` up to the root of the tree `frontier` becomes
+/// after `new_leaves` are inserted, as `get_branch_root` and Hyperlane's `branchRoot` expect.
+///
+/// A frontier (`branch`, `count`) holds the root of every maximal complete subtree of the first
+/// `count` leaves. For a leaf inserted after it, every sibling on the path to the root is one of
+/// those (a left sibling wholly before the frontier is always maximal, because its parent would
+/// otherwise reach past `count`), or is built from `new_leaves` and zero hashes. So the relayer
+/// needs the frontier it already proves at the trusted height and the leaves it already indexes,
+/// never the whole history of the tree.
+pub fn branch_proof(
+    frontier: &MerkleTree,
+    new_leaves: &[[u8; 32]],
+    index: u32,
+) -> Result<[[u8; 32]; TREE_DEPTH], ProofError> {
+    let c = frontier.count as u64;
+    let n = c + new_leaves.len() as u64;
+    if n > MAX_LEAVES as u64 {
+        return Err(ProofError::TreeFull);
+    }
+    if (index as u64) < c {
+        return Err(ProofError::BeforeFrontier {
+            index,
+            count: frontier.count,
+        });
+    }
+    if index as u64 >= n {
+        return Err(ProofError::PastTree { index, count: n });
+    }
+    let zeros = zero_hashes();
+    let mut proof = [[0u8; 32]; TREE_DEPTH];
+    for (level, sibling) in proof.iter_mut().enumerate() {
+        let pos = ((index as u64) >> level) ^ 1;
+        *sibling = node(frontier, new_leaves, &zeros, n, level, pos);
+    }
+    Ok(proof)
+}
+
+/// The root of the subtree at `level` covering leaves `pos * 2^level ..`, in a tree of `n` leaves
+/// whose first `frontier.count` are known only through the frontier.
+fn node(
+    frontier: &MerkleTree,
+    new_leaves: &[[u8; 32]],
+    zeros: &[[u8; 32]; TREE_DEPTH],
+    n: u64,
+    level: usize,
+    pos: u64,
+) -> [u8; 32] {
+    let c = frontier.count as u64;
+    let start = pos << level;
+    let end = start + (1u64 << level);
+    if start >= n {
+        return zeros[level];
+    }
+    if end <= c {
+        // Wholly before the frontier: the frontier node at this level, which exists exactly when
+        // bit `level` of the count is set and then covers the 2^level leaves ending at the
+        // count's prefix. `branch_proof` only asks for leaves past the frontier, whose left
+        // siblings are all of this shape.
+        let prefix = c >> level;
+        debug_assert!(prefix & 1 == 1 && pos == prefix - 1, "not a frontier node");
+        return frontier.branch[level];
+    }
+    if level == 0 {
+        return new_leaves[(pos - c) as usize];
+    }
+    keccak_pair(
+        &node(frontier, new_leaves, zeros, n, level - 1, 2 * pos),
+        &node(frontier, new_leaves, zeros, n, level - 1, 2 * pos + 1),
+    )
+}
+
+#[cfg(test)]
+mod proof_tests {
+    use super::*;
+
+    fn leaf(i: u32) -> [u8; 32] {
+        keccak256(&i.to_be_bytes())
+    }
+
+    fn tree_of(leaves: &[[u8; 32]]) -> MerkleTree {
+        let mut t = MerkleTree::default();
+        for l in leaves {
+            insert_leaf(&mut t, *l).unwrap();
+        }
+        t
+    }
+
+    /// Every leaf after every frontier, for trees up to 40 leaves, folds to the on-chain root.
+    #[test]
+    fn a_frontier_based_proof_folds_to_the_root() {
+        let all: Vec<[u8; 32]> = (0..40).map(leaf).collect();
+        for n in 1..=all.len() {
+            let root = get_tree_root(&tree_of(&all[..n]));
+            for c in 0..n {
+                let frontier = tree_of(&all[..c]);
+                for index in c..n {
+                    let proof = branch_proof(&frontier, &all[c..n], index as u32).unwrap();
+                    assert_eq!(
+                        get_branch_root(all[index], &proof, index as u32),
+                        root,
+                        "n={n} c={c} index={index}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_leaf_outside_the_new_range_is_refused() {
+        let all: Vec<[u8; 32]> = (0..6).map(leaf).collect();
+        let frontier = tree_of(&all[..3]);
+        assert_eq!(
+            branch_proof(&frontier, &all[3..], 2),
+            Err(ProofError::BeforeFrontier { index: 2, count: 3 })
+        );
+        assert_eq!(
+            branch_proof(&frontier, &all[3..], 6),
+            Err(ProofError::PastTree { index: 6, count: 6 })
+        );
+    }
+
+    /// hyperlane-cosmos pre-fills unused branch levels with zero hashes; the proof must not care.
+    #[test]
+    fn prefilled_unused_levels_change_nothing() {
+        let all: Vec<[u8; 32]> = (0..5).map(leaf).collect();
+        let mut frontier = tree_of(&all[..3]);
+        let zeros = zero_hashes();
+        for level in 2..TREE_DEPTH {
+            frontier.branch[level] = zeros[level];
+        }
+        let root = get_tree_root(&tree_of(&all));
+        for index in 3..5 {
+            let proof = branch_proof(&frontier, &all[3..], index).unwrap();
+            assert_eq!(get_branch_root(all[index as usize], &proof, index), root);
+        }
+    }
+}

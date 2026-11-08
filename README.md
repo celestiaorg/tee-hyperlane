@@ -27,7 +27,7 @@ deploy/                                 the guides, the measured compose files, 
 
 ## Deployments
 
-First deployed with `teeism` on 2026-10-15; redeployed from a fresh devnet on 2026-10-26 (dstack 0.6.1 enclave, identity v3 pinning RTMR0-2), which is where every id below comes from. `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
+First deployed with `teeism` on 2026-10-15; redeployed from a fresh devnet on 2026-10-26 (dstack 0.6.1 enclave, identity v3 pinning RTMR0-2). On 2026-10-30 the enclave moved to root attestation: new CVM, the four EVM ISMs replaced (`TeeDcapIsm` `VERSION` 5) from their predecessors' last state and the routers re-pointed, the four Celestia ISMs re-pinned in place, the chain restarted on celestia-app `1c3d993`. Every id below is from those two days. `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
 
 **Enclaves.** Phala Cloud (node picked by Phala), `tdx.small`, dstack `0.6.1`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
 
@@ -40,16 +40,16 @@ First deployed with `teeism` on 2026-10-15; redeployed from a fresh devnet on 20
 | `eden` | 8084 | Eden |
 
 ```
-app id         4de9f0be7b151f67fd717d8f06ac45da5ff70d84
-urls           https://4de9f0be7b151f67fd717d8f06ac45da5ff70d84-<port>.dstack-pha-prod5.phala.network
+app id         3c591bb6948e53379ca3be4270dd20f292921791
+urls           https://3c591bb6948e53379ca3be4270dd20f292921791-<port>.dstack-pha-prod5.phala.network
 mr_td          0x2a674327c50218dba880066b349b8d559d749ed68dce33fd651c184a877d084b07a9e583767a7ad5da13ed91deec2b70
-compose_hash   0xee935eba5e1771db4a3ce71900bed00f77213335a0abbc24d622f64a419bc543
+compose_hash   0x362d94314eaeafc7ade7a4ffe2a78ec53637c9251264a5b9b4e2fe5bd4abb079
 os_image_hash  0xec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6
 rtmr0          0x68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96
 rtmr1          0x89ef86c5125b986c325f0a94acfa87718a4ef3a4d4f237dbb72dda3cf777fd2c054555fb4407eb53338d7d67329a7333
 rtmr2          0xe9000e338f33233e8f51b7fd031e1c158bdcf8572eab041c0bc8eb7fef48b23259a6a556e6c8e2af99999fc39c793179
-identity       0xe0fe89739455581025dd13797398625d314f5a132f3a0658f193a60d51404a00
-measurements   0x7e27cf6fc65eafe0cfbcdcc2c0142b4da0d97d1d0e1f2eb71c96c307eb352fc9
+identity       0xe21706c3de5bfee4a04f2e000d3ca48439e680004f8fb522ed5ab2eeea2cece9
+measurements   0x61420e690f48afa6ad93a1fa608ea901fe9cfcdaaf3c16c85106defae339bb0c
 ```
 
 Image digests per chain: `deploy/images.lock`.
@@ -70,10 +70,12 @@ igp        0x726f757465725f706f73745f6469737061746368000000040000000000000002
 
 | Celestia-origin, `TeeDcapIsm` on | address |
 |---|---|
-| Ethereum Sepolia | `0x888774E53e4ce96fD0F22f3B362C92a68e7bef33` |
-| Arbitrum Sepolia | `0x2E20360F67Da2936303a42c785358bFBBA09abcc` |
-| Base Sepolia | `0xB5A922E47b6Ad2d05E4BdaCb29282F85Cd547603` |
-| Eden | `0x875F6210F4238C084526bD3847135536776d71b1` |
+| Ethereum Sepolia | `0x2780675BB83A455F7f3731869933b39339B37D3E` |
+| Arbitrum Sepolia | `0xF77063b029d5F4D962D7f2a8F6623FBaF79190ED` |
+| Base Sepolia | `0x5fdbaD4f8e209601f5F811Ff81BF1162c7Aa066e` |
+| Eden | `0x3616c0b280076Ec2bCb2EAE624D1C99D51c88D76` |
+
+Revision 5 (root attestation). Their revision-4 predecessors (`0x888774…`, `0x2E2036…`, `0xB5A922…`, `0x875F62…`) keep their last state and nothing points at them.
 
 | EVM-origin, `x/teeism` on `teeism-local` | id |
 |---|---|
@@ -137,11 +139,12 @@ teeism-gas-oracle  systemd  paymaster upkeep
 
 - Enclave is stateless; its state lives in the ISM.
 - Shared CVM = one identity: any image change re-pins all 8 ISMs. A chain in its own CVM re-pins only its ISMs.
-- Re-pin in place: `TeeDcapIsm.setEnclave` (EVM, revision 3), `tx teeism update-identity` (Celestia). Address, root, height kept; no router moves.
+- Re-pin in place: `TeeDcapIsm.setEnclave` (EVM, revision 3+), `tx teeism update-identity` (Celestia). Address, root, height kept; no router moves. Only a `TeeDcapIsm` `VERSION` change replaces an EVM ISM, from its predecessor's last state, and re-points the routers.
 - `tx teeism set-verifier-overrides`: trust a rotated Intel root CA. Nothing relaxes Intel's verification.
 - `tx teeism update-owner`: hand an ISM to a multisig. EVM controls sit with the Automata owner. See [ADMIN.md](deploy/ADMIN.md).
 - Rollups: enclave checks the sequencer signature, takes the signed state root, proves the tree. No re-execution, no L1 wait.
-- Heartbeat: a quiet route attests daily with no messages, so its ISM stays near its origin's head. An empty batch cannot skip a message, and the enclave and both ISMs refuse one that moves the origin clock less than 30 minutes.
+- The enclave attests the origin tree's root, not a list of messages. Each message proves itself at delivery with a merkle branch in its metadata against any root the ISM has attested, so an origin block of any size is one attestation and a message dispatched during an outage stays deliverable.
+- Heartbeat: a quiet route attests daily with no new leaves, so its ISM stays near its origin's head. Both ISMs refuse an attestation that leaves the tree root unchanged and moves the origin clock less than 30 minutes.
 
 ## Trust
 

@@ -8,32 +8,27 @@
 use std::sync::Mutex;
 
 use alloy_primitives::B256;
-use hyperlane_types::{insert_leaf, MerkleTree};
+use hyperlane_types::{get_tree_root, insert_leaf, MerkleTree};
 use serde_json::{json, Value};
 use tee_node::attest::{attest_with, AttestRequest, PROTOCOL_VERSION};
 use tee_node::origin::{Chain, Head, Origin, Tree};
-use tee_node::state::IsmState;
+use tee_node::state::{AttestedUpdate, IsmState, ATTESTED_UPDATE_BYTES};
 
 const HOOK: [u8; 32] = [7u8; 32];
 const TRUSTED_ROOT: [u8; 32] = [1u8; 32];
 const NEW_ROOT: [u8; 32] = [2u8; 32];
 const DOMAIN: u32 = 4242;
 
-/// A chain whose head is always `NEW_ROOT` and whose tree has one leaf more there than under
-/// `TRUSTED_ROOT`. Records every root it was asked to read a tree under.
+/// A chain whose head is always `NEW_ROOT` and whose tree there has two leaves. Records every
+/// root it was asked to read a tree under.
 struct StandIn {
     tree_at: [u8; 32],
     asked: Mutex<Vec<B256>>,
 }
 
-fn snapshot_tree() -> MerkleTree {
+fn head_tree() -> MerkleTree {
     let mut t = MerkleTree::default();
     insert_leaf(&mut t, [10u8; 32]).unwrap();
-    t
-}
-
-fn head_tree() -> MerkleTree {
-    let mut t = snapshot_tree();
     insert_leaf(&mut t, [11u8; 32]).unwrap();
     t
 }
@@ -51,16 +46,10 @@ impl Origin for StandIn {
 
     fn merkle_tree(&self, _proof: Value, root: B256) -> anyhow::Result<Tree> {
         self.asked.lock().unwrap().push(root);
-        let tree = if root.0 == TRUSTED_ROOT {
-            snapshot_tree()
-        } else if root.0 == NEW_ROOT {
-            head_tree()
-        } else {
-            anyhow::bail!("no tree under {root}")
-        };
+        anyhow::ensure!(root.0 == NEW_ROOT, "no tree under {root}");
         Ok(Tree {
             address: self.tree_at,
-            tree,
+            tree: head_tree(),
         })
     }
 }
@@ -91,15 +80,13 @@ fn trusted() -> IsmState {
     }
 }
 
-fn request(trusted: IsmState, ids: Vec<[u8; 32]>) -> AttestRequest {
+fn request(trusted: IsmState) -> AttestRequest {
     serde_json::from_value(json!({
         "protocol": PROTOCOL_VERSION,
         "trusted_state": hex::encode(trusted.encode()),
         "chain": "stand-in",
         "input": {},
         "tree": {},
-        "tree_snapshot": {},
-        "message_ids": ids,
         "merkle_tree_address": HOOK,
     }))
     .unwrap()
@@ -107,7 +94,7 @@ fn request(trusted: IsmState, ids: Vec<[u8; 32]>) -> AttestRequest {
 
 #[test]
 fn a_valid_step_moves_the_state_to_the_verified_head() {
-    let (update, _) = attest_with(&chain(HOOK), request(trusted(), vec![[11u8; 32]])).unwrap();
+    let (update, payload) = attest_with(&chain(HOOK), request(trusted())).unwrap();
     let next = update.new_state;
     assert_eq!(next.state_root, NEW_ROOT);
     assert_eq!((next.height, next.timestamp), (20, 2000));
@@ -119,13 +106,25 @@ fn a_valid_step_moves_the_state_to_the_verified_head() {
     );
     assert_eq!(update.attested_at, 2100);
     assert_eq!(update.prev_state, trusted());
+    assert_eq!(update.merkle_tree_address, HOOK);
+    assert_eq!(payload.len(), ATTESTED_UPDATE_BYTES);
+    assert_eq!(AttestedUpdate::decode(&payload).unwrap(), update);
+}
+
+/// What the attestation vouches for: the tree's root and size at the verified head, exactly as
+/// the hook's storage proves them.
+#[test]
+fn the_update_carries_the_trees_root_and_count() {
+    let (update, _) = attest_with(&chain(HOOK), request(trusted())).unwrap();
+    assert_eq!(update.tree_root, get_tree_root(&head_tree()));
+    assert_eq!(update.tree_count, 2);
 }
 
 /// The merkle-address hole: read one hook, attest another. The destination cannot catch it -
 /// it only knows the address it pinned, which is exactly what an attacker would claim.
 #[test]
 fn a_tree_proven_at_another_hook_is_refused() {
-    let err = attest_with(&chain([0xde; 32]), request(trusted(), vec![[11u8; 32]])).unwrap_err();
+    let err = attest_with(&chain([0xde; 32]), request(trusted())).unwrap_err();
     assert!(err.to_string().contains("was attested"), "{err}");
 }
 
@@ -134,46 +133,55 @@ fn a_tree_proven_at_another_hook_is_refused() {
 fn an_ism_for_another_domain_is_refused() {
     let mut other = trusted();
     other.origin_domain = DOMAIN + 1;
-    let err = attest_with(&chain(HOOK), request(other, vec![[11u8; 32]])).unwrap_err();
+    let err = attest_with(&chain(HOOK), request(other)).unwrap_err();
     assert!(err.to_string().contains("domain"), "{err}");
 }
 
-/// Both ends of the replay come from state the ISM trusts. If the snapshot were read under
-/// anything else, a caller could hand in any earlier tree and skip the messages in between.
+/// The tree is read under the root the origin verified, and under nothing else: whatever the
+/// caller proves has to sit in state the chain itself commits to.
 #[test]
-fn the_snapshot_is_read_under_the_trusted_root() {
+fn the_tree_is_read_under_the_verified_root() {
     static RECORDING: StandIn = StandIn {
         tree_at: HOOK,
         asked: Mutex::new(Vec::new()),
     };
-    attest_with(&on(&RECORDING), request(trusted(), vec![[11u8; 32]])).unwrap();
+    attest_with(&on(&RECORDING), request(trusted())).unwrap();
     let asked = RECORDING.asked.lock().unwrap().clone();
-    assert_eq!(asked, vec![B256::from(TRUSTED_ROOT), B256::from(NEW_ROOT)]);
-}
-
-#[test]
-fn a_batch_that_does_not_close_the_gap_is_refused() {
-    assert!(attest_with(&chain(HOOK), request(trusted(), vec![])).is_err());
-    assert!(attest_with(&chain(HOOK), request(trusted(), vec![[12u8; 32]])).is_err());
+    assert_eq!(asked, vec![B256::from(NEW_ROOT)]);
 }
 
 /// What stops a stale caller: a request that does not speak this protocol is refused rather
-/// than having fields silently dropped.
+/// than having fields silently dropped. A request in the old shape, which carried the message
+/// ids and a tree snapshot, is refused on its unknown fields as well as its version.
 #[test]
 fn a_request_for_another_protocol_is_refused() {
-    let mut req = request(trusted(), vec![[11u8; 32]]);
+    let mut req = request(trusted());
     req.protocol = PROTOCOL_VERSION + 1;
     assert!(attest_with(&chain(HOOK), req).is_err());
     assert!(serde_json::from_value::<AttestRequest>(json!({ "trusted_state": "00" })).is_err());
+    assert!(
+        serde_json::from_value::<AttestRequest>(json!({
+            "protocol": 1,
+            "trusted_state": hex::encode(trusted().encode()),
+            "chain": "stand-in",
+            "input": {},
+            "tree": {},
+            "tree_snapshot": {},
+            "message_ids": [],
+            "merkle_tree_address": HOOK,
+        }))
+        .is_err(),
+        "the old shape"
+    );
     assert_eq!(
-        PROTOCOL_VERSION, 1,
+        PROTOCOL_VERSION, 2,
         "bump this when the request shape changes"
     );
 }
 
 #[test]
 fn an_unknown_chain_is_refused() {
-    let mut req = request(trusted(), vec![[11u8; 32]]);
+    let mut req = request(trusted());
     req.chain = "nowhere".into();
     assert!(tee_node::attest::build_attested_update(req).is_err());
 }
@@ -194,136 +202,108 @@ fn every_chain_has_a_unique_name_and_domain() {
     assert_eq!(names, ["arbitrum", "base", "celestia", "eden", "ethereum"]);
 }
 
-/// An origin where nothing was dispatched: the same tree under both roots, with the head's
-/// clock at `head_timestamp`.
-struct Quiet {
-    head_timestamp: u64,
-}
-
-impl Origin for Quiet {
-    fn verify(&self, _input: Value, _trusted: &IsmState) -> anyhow::Result<Head> {
-        Ok(Head {
-            root: NEW_ROOT.into(),
-            height: 20,
-            timestamp: self.head_timestamp,
-            store_commit: [9u8; 32],
-            attested_at: self.head_timestamp,
-        })
-    }
-
-    fn merkle_tree(&self, _proof: Value, _root: B256) -> anyhow::Result<Tree> {
-        Ok(Tree {
-            address: HOOK,
-            tree: snapshot_tree(),
-        })
-    }
-}
-
-fn quiet(head_timestamp: u64) -> Chain {
-    Chain {
-        name: "stand-in",
-        domain: DOMAIN,
-        origin: Box::leak(Box::new(Quiet { head_timestamp })),
-    }
-}
-
-/// The heartbeat: with nothing dispatched, an empty batch moves the state to the new head so
-/// a quiet route never falls far behind its origin.
+/// An origin where nothing was dispatched still attests: the root is the same, the state moves
+/// to the new head. Whether that is too soon is the ISMs' call, which know the root they hold.
 #[test]
-fn an_empty_batch_advances_a_quiet_origin() {
-    use tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS;
-    let at = trusted().timestamp + EMPTY_BATCH_MIN_INTERVAL_SECS;
-    let (update, _) = attest_with(&quiet(at), request(trusted(), vec![])).unwrap();
+fn a_quiet_origin_attests_the_unchanged_root() {
+    let (update, _) = attest_with(&chain(HOOK), request(trusted())).unwrap();
+    let (again, _) = attest_with(&chain(HOOK), request(trusted())).unwrap();
+    assert_eq!(update.tree_root, again.tree_root);
     assert_eq!(update.new_state.state_root, NEW_ROOT);
-    assert!(update.message_ids.is_empty());
 }
 
-/// Anyone can ask the public enclave for one, so an empty batch has to move the origin's clock
-/// by the interval the ISMs also enforce.
+/// Writes the vectors `x/teeism` and `TeeDcapIsm.sol` pin their decoders to. Run by hand:
+/// `TEEISM_VECTORS_OUT=/path/vectors.json cargo test -p tee-node --test attest_request -- --ignored`.
 #[test]
-fn an_empty_batch_too_soon_is_refused() {
-    use tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS;
-    let at = trusted().timestamp + EMPTY_BATCH_MIN_INTERVAL_SECS - 1;
-    let err = attest_with(&quiet(at), request(trusted(), vec![])).unwrap_err();
-    assert!(err.to_string().contains("empty batch"), "got {err}");
-}
+#[ignore = "writes the cross-implementation test vectors; set TEEISM_VECTORS_OUT"]
+fn write_test_vectors() {
+    use hyperlane_types::{branch_proof, get_branch_root};
+    use sha2::{Digest, Sha256};
 
-/// An empty batch replays to the on-chain tree only if nothing was dispatched.
-#[test]
-fn an_empty_batch_with_nothing_dispatched_replays() {
-    use tee_node::attest::verify_message_batch;
-    let tree = snapshot_tree();
-    assert_eq!(verify_message_batch(tree, &[], &tree), Ok(()));
-}
-
-/// A batch has to be exactly the leaves added since the snapshot it was given.
-#[test]
-fn a_batch_must_reproduce_the_onchain_tree() {
-    use hyperlane_types::{insert_leaf, MerkleTree};
-    use tee_node::attest::{verify_message_batch, BatchError};
-
-    let snapshot = MerkleTree {
-        branch: [[0u8; 32]; 32],
-        count: 0,
+    let out = std::env::var("TEEISM_VECTORS_OUT").expect("TEEISM_VECTORS_OUT");
+    let state = |n: u8, height: u64, timestamp: u64| IsmState {
+        state_root: [n; 32],
+        origin_domain: 0x0102_0304,
+        height,
+        timestamp,
+        lc_store_commit: [n + 1; 32],
+        identity_digest: [n + 2; 32],
     };
-    let mut onchain = snapshot;
-    insert_leaf(&mut onchain, [1u8; 32]).unwrap();
-    insert_leaf(&mut onchain, [2u8; 32]).unwrap();
+    let updates = [
+        AttestedUpdate {
+            prev_state: state(1, 10, 1000),
+            new_state: state(4, 20, 2000),
+            merkle_tree_address: [0xab; 32],
+            attested_at: 2100,
+            tree_root: [0xcd; 32],
+            tree_count: 0x0a0b_0c0d,
+        },
+        AttestedUpdate {
+            prev_state: state(0x10, 5, 1700000000),
+            new_state: state(0x20, 6, 1700000012),
+            merkle_tree_address: [0; 32],
+            attested_at: 1700000012,
+            tree_root: [0; 32],
+            tree_count: 0,
+        },
+    ];
+    let hex32 = |b: &[u8]| format!("0x{}", hex::encode(b));
+    let payloads: Vec<Value> = updates
+        .iter()
+        .map(|u| {
+            let encoded = u.encode();
+            json!({
+                "prev_state": hex32(&u.prev_state.encode()),
+                "new_state": hex32(&u.new_state.encode()),
+                "merkle_tree_address": hex32(&u.merkle_tree_address),
+                "attested_at": u.attested_at,
+                "tree_root": hex32(&u.tree_root),
+                "tree_count": u.tree_count,
+                "encoded_hex": hex32(&encoded),
+                "sha256_hex": hex32(&Sha256::digest(&encoded)),
+            })
+        })
+        .collect();
 
-    assert!(verify_message_batch(snapshot, &[[1u8; 32], [2u8; 32]], &onchain).is_ok());
-
-    let partial = verify_message_batch(snapshot, &[[1u8; 32]], &onchain).unwrap_err();
-    assert!(
-        matches!(partial, BatchError::CountMismatch { .. }),
-        "got {partial}"
-    );
-}
-
-/// The span check does not pin where a batch starts, and reading it as though it did was the
-/// hole that outlived the fix for caller-chosen snapshots.
-///
-/// A Hyperlane tree is incremental and every leaf that ever entered it is public, so anyone
-/// can rebuild the exact tree the origin held at any past count. Hand this function the head
-/// minus one leaf plus the single id that closes the gap and it passes - correctly, because
-/// that really is the distance between the two trees it was handed. What it cannot see is
-/// that the ISM stands at count 5, not 8, and that three transfers in between were dropped.
-/// It is aimed: drop one victim, let the rest through,
-/// and the bridge looks healthy while that root's one batch slot is spent and those ids are
-/// never attested by any later batch either.
-///
-/// Nothing here can catch it, and the fix is not to try. `attest_with` reads the snapshot
-/// under `trusted_state.state_root` rather than accepting one, so by the time the span is
-/// checked its start is the ISM's own position. `the_snapshot_is_read_under_the_trusted_root`
-/// pins that.
-#[test]
-fn the_span_check_alone_does_not_pin_where_a_batch_starts() {
-    use hyperlane_types::{insert_leaf, MerkleTree};
-    use tee_node::attest::verify_message_batch;
-
-    let mut ism_stands_at = MerkleTree::default();
-    for i in 0..5u8 {
-        insert_leaf(&mut ism_stands_at, [i; 32]).unwrap();
+    // A seven-leaf tree, every leaf proven against its root, plus the frontier after three
+    // leaves so a frontier-based proof generator can be checked too.
+    let leaves: Vec<[u8; 32]> = (0u32..7)
+        .map(|i| hyperlane_types::keccak256(&i.to_be_bytes()))
+        .collect();
+    let mut tree = MerkleTree::default();
+    let mut frontier = None;
+    for (i, l) in leaves.iter().enumerate() {
+        if i == 3 {
+            frontier = Some(tree);
+        }
+        insert_leaf(&mut tree, *l).unwrap();
     }
-    let mut head = ism_stands_at;
-    let mut skipped = Vec::new();
-    for i in 5..8u8 {
-        insert_leaf(&mut head, [i; 32]).unwrap();
-        skipped.push([i; 32]);
-    }
-    let attacker_picks = head;
-    insert_leaf(&mut head, [8u8; 32]).unwrap();
+    let frontier = frontier.unwrap();
+    let root = get_tree_root(&tree);
+    let empty = MerkleTree::default();
+    let proofs: Vec<Value> = (0..leaves.len() as u32)
+        .map(|i| {
+            let proof = branch_proof(&empty, &leaves, i).unwrap();
+            assert_eq!(get_branch_root(leaves[i as usize], &proof, i), root);
+            if i >= 3 {
+                assert_eq!(branch_proof(&frontier, &leaves[3..], i).unwrap(), proof);
+            }
+            json!({ "index": i, "proof": proof.iter().map(|p| hex32(p)).collect::<Vec<_>>() })
+        })
+        .collect();
 
-    assert!(
-        verify_message_batch(attacker_picks, &[[8u8; 32]], &head).is_ok(),
-        "the span check is satisfied by any real intermediate tree"
-    );
-    assert_eq!(
-        skipped.len(),
-        3,
-        "and those three ids are the ones nobody ever attests"
-    );
-
-    // The honest span from where the ISM actually stands carries all four.
-    let honest = [[5u8; 32], [6u8; 32], [7u8; 32], [8u8; 32]];
-    assert!(verify_message_batch(ism_stands_at, &honest, &head).is_ok());
+    let vectors = json!({
+        "payloads": payloads,
+        "tree": {
+            "leaves": leaves.iter().map(|l| hex32(l)).collect::<Vec<_>>(),
+            "root_hex": hex32(&root),
+            "count": tree.count,
+            "proofs": proofs,
+        },
+        "frontier": {
+            "count": frontier.count,
+            "branch": frontier.branch.iter().map(|b| hex32(b)).collect::<Vec<_>>(),
+        },
+    });
+    std::fs::write(out, serde_json::to_string_pretty(&vectors).unwrap()).unwrap();
 }

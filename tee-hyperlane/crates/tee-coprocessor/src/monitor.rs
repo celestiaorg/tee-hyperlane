@@ -578,10 +578,16 @@ mod tests {
         ) -> anyhow::Result<crate::destination::Submitted> {
             anyhow::bail!("unused")
         }
-        async fn deliver(&self, _: &[u8]) -> anyhow::Result<crate::destination::Outcome> {
+        async fn deliver(&self, _: &[u8], _: &[u8]) -> anyhow::Result<crate::destination::Outcome> {
             anyhow::bail!("unused")
         }
         async fn delivered(&self, _: &str) -> anyhow::Result<bool> {
+            anyhow::bail!("unused")
+        }
+        async fn tree(&self) -> anyhow::Result<([u8; 32], u32)> {
+            anyhow::bail!("unused")
+        }
+        async fn root_attested(&self, _: [u8; 32]) -> anyhow::Result<bool> {
             anyhow::bail!("unused")
         }
         async fn wallet(&self) -> anyhow::Result<crate::destination::Wallet> {
@@ -678,6 +684,8 @@ mod tests {
         let p = Parked {
             id: "01".into(),
             message: String::new(),
+            metadata: String::new(),
+            provenance: None,
             attempts: 2,
             first_failed_at: 5,
             last_attempt_at: 6,

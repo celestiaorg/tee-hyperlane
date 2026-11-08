@@ -7,7 +7,7 @@ use serde_json::Value;
 use tee_node::state::IsmState;
 use tracing::debug;
 
-use super::{run, Batch, Delivery, Destination, Outcome, Wallet, Submitted};
+use super::{run, Batch, Delivery, Destination, Outcome, Submitted, Wallet};
 
 /// Celestia: `x/teeism` submit-attestation, with fresh Intel collateral carried in the
 /// transaction, then `hyperlane mailbox process` per message.
@@ -101,14 +101,14 @@ impl Celestia {
         Ok(delivered["delivered"].as_bool() == Some(true))
     }
 
-    async fn process(&self, message: &[u8]) -> Result<Outcome> {
+    async fn process(&self, message: &[u8], metadata: &[u8]) -> Result<Outcome> {
         let sent = self
             .send_checked(&[
                 "hyperlane",
                 "mailbox",
                 "process",
                 &self.mailbox,
-                "0x",
+                &format!("0x{}", hex::encode(metadata)),
                 &format!("0x{}", hex::encode(message)),
             ])
             .await?;
@@ -178,16 +178,17 @@ impl Destination for Celestia {
             );
         }
         let mut out = Vec::new();
-        for (id, message) in batch.for_domain(self.domain) {
+        for (id, message, metadata) in batch.for_domain(self.domain) {
             let outcome = if self.is_delivered(&id).await? {
                 Outcome::AlreadyDelivered
             } else {
                 debug!(id, "delivering");
-                self.process(message).await?
+                self.process(message, metadata).await?
             };
             out.push(Delivery {
                 id,
                 message: message.clone(),
+                metadata: metadata.clone(),
                 outcome,
             });
         }
@@ -197,17 +198,50 @@ impl Destination for Celestia {
         })
     }
 
-    async fn deliver(&self, message: &[u8]) -> Result<Outcome> {
+    async fn deliver(&self, message: &[u8], metadata: &[u8]) -> Result<Outcome> {
         let id = hex::encode(alloy_primitives::keccak256(message));
         if self.is_delivered(&id).await? {
             return Ok(Outcome::AlreadyDelivered);
         }
         debug!(id, "redelivering");
-        self.process(message).await
+        self.process(message, metadata).await
     }
 
     async fn delivered(&self, id: &str) -> Result<bool> {
         self.is_delivered(id).await
+    }
+
+    async fn tree(&self) -> Result<([u8; 32], u32)> {
+        let ism = self.query(&["teeism", "ism", &self.ism]).await?;
+        // Proto bytes are base64 in JSON, and absent while empty: before the first attestation.
+        let root = match ism["ism"]["tree_root"].as_str() {
+            Some(b64) if !b64.is_empty() => base64::engine::general_purpose::STANDARD
+                .decode(b64)?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("ism.tree_root is not 32 bytes"))?,
+            _ => [0u8; 32],
+        };
+        let count = &ism["ism"]["tree_count"];
+        let count = match count.as_u64() {
+            Some(n) => n,
+            None => count
+                .as_str()
+                .unwrap_or("0")
+                .parse()
+                .context("ism.tree_count")?,
+        };
+        Ok((root, u32::try_from(count).context("ism.tree_count")?))
+    }
+
+    async fn root_attested(&self, root: [u8; 32]) -> Result<bool> {
+        let roots = self.query(&["teeism", "roots", &self.ism]).await?;
+        let want = hex::encode(root);
+        Ok(roots["roots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|r| r.trim_start_matches("0x").eq_ignore_ascii_case(&want)))
     }
 
     async fn wallet(&self) -> Result<Wallet> {

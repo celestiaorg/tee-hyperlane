@@ -2,8 +2,10 @@
 //! proofs -> Hyperlane merkle root, all verified rather than trusted.
 
 use alloy_primitives::{Address, Bytes, B256, U256};
-use hyperlane_types::{get_message_id, get_tree_root, insert_leaf, HyperlaneMessage, MerkleTree};
-use tee_node::attest::*;
+use hyperlane_types::{
+    branch_proof, get_branch_root, get_message_id, get_tree_root, insert_leaf, HyperlaneMessage,
+    MerkleTree,
+};
 use tee_node::evm::*;
 
 #[derive(serde::Deserialize)]
@@ -153,7 +155,7 @@ fn msg(nonce: u32) -> HyperlaneMessage {
         sender: [1u8; 32],
         destination: 1297040200,
         recipient: [2u8; 32],
-        body: vec![7u8; 64],
+        body: vec![nonce as u8; 4],
     }
 }
 
@@ -168,108 +170,64 @@ fn tree_of(n: u32) -> (MerkleTree, Vec<[u8; 32]>) {
     (t, ids)
 }
 
+/// What delivery does: the message's id, its branch and its index fold to the attested root.
 #[test]
-fn the_exact_message_batch_is_accepted() {
+fn a_dispatched_message_proves_itself_against_the_attested_root() {
     let (snapshot, _) = tree_of(5);
     let (onchain, all) = tree_of(9);
-    assert_eq!(verify_message_batch(snapshot, &all[5..], &onchain), Ok(()));
-}
-
-/// With nothing dispatched an empty batch replays exactly; `attest_with` bounds how often.
-#[test]
-fn an_empty_batch_is_accepted_when_nothing_was_dispatched() {
-    let (t, _) = tree_of(5);
-    assert_eq!(verify_message_batch(t, &[], &t), Ok(()));
-}
-
-/// An empty batch cannot pass over messages that were dispatched.
-#[test]
-fn an_empty_batch_cannot_hide_dispatched_messages() {
-    let (snapshot, _) = tree_of(5);
-    let (onchain, _) = tree_of(9);
-    assert!(matches!(
-        verify_message_batch(snapshot, &[], &onchain),
-        Err(BatchError::CountMismatch { .. })
-    ));
+    let root = get_tree_root(&onchain);
+    for index in 5..9u32 {
+        let proof = branch_proof(&snapshot, &all[5..], index).unwrap();
+        assert_eq!(get_branch_root(all[index as usize], &proof, index), root);
+    }
 }
 
 #[test]
-fn a_forged_message_id_is_rejected() {
+fn a_forged_message_id_does_not_fold_to_the_root() {
     let (snapshot, _) = tree_of(5);
     let (onchain, all) = tree_of(9);
-    let mut forged = all[5..].to_vec();
-    forged[1] = [0xde; 32];
-    assert!(matches!(
-        verify_message_batch(snapshot, &forged, &onchain),
-        Err(BatchError::ReplayMismatch { .. })
-    ));
+    let proof = branch_proof(&snapshot, &all[5..], 6).unwrap();
+    assert_ne!(
+        get_branch_root([0xde; 32], &proof, 6),
+        get_tree_root(&onchain)
+    );
 }
 
+/// A branch is for one position: the same leaf claimed at another index folds elsewhere.
 #[test]
-fn a_gap_in_the_batch_is_rejected() {
+fn a_message_at_the_wrong_index_does_not_fold_to_the_root() {
     let (snapshot, _) = tree_of(5);
     let (onchain, all) = tree_of(9);
-    let gapped: Vec<_> = all[5..].iter().skip(1).copied().collect();
-    assert!(matches!(
-        verify_message_batch(snapshot, &gapped, &onchain),
-        Err(BatchError::CountMismatch { .. })
-    ));
+    let proof = branch_proof(&snapshot, &all[5..], 6).unwrap();
+    assert_ne!(get_branch_root(all[6], &proof, 7), get_tree_root(&onchain));
+    assert_ne!(get_branch_root(all[7], &proof, 7), get_tree_root(&onchain));
 }
 
+/// A proof is against one root. Against the root of a tree with more leaves it fails, so the
+/// relayer must name the root it built the proof for, which the ISM then has to have attested.
 #[test]
-fn reordering_the_batch_is_rejected() {
+fn a_proof_is_bound_to_its_root() {
     let (snapshot, _) = tree_of(5);
-    let (onchain, all) = tree_of(9);
-    let mut swapped = all[5..].to_vec();
-    swapped.swap(0, 1);
-    assert!(matches!(
-        verify_message_batch(snapshot, &swapped, &onchain),
-        Err(BatchError::ReplayMismatch { .. })
-    ));
-}
-
-/// A snapshot that already contains messages the chain has not yet seen would let a
-/// relayer skip a batch silently.
-#[test]
-fn a_snapshot_ahead_of_chain_state_is_rejected() {
-    let (ahead, ids) = tree_of(9);
-    let (onchain, _) = tree_of(5);
-    assert!(matches!(
-        verify_message_batch(ahead, &ids[..1], &onchain),
-        Err(BatchError::SnapshotAhead {
-            snapshot: 9,
-            onchain: 5
-        })
-    ));
-}
-
-/// The tree root must be a function of the whole history, not just the new batch.
-#[test]
-fn a_wrong_snapshot_cannot_reproduce_the_onchain_tree() {
-    let (_, all) = tree_of(9);
-    let wrong = MerkleTree::default();
-    let (onchain, _) = tree_of(9);
-    assert!(matches!(
-        verify_message_batch(wrong, &all[5..], &onchain),
-        Err(BatchError::CountMismatch { .. })
-    ));
-    // ...whereas the true snapshot does.
-    let (snapshot, _) = tree_of(5);
-    assert_eq!(verify_message_batch(snapshot, &all[5..], &onchain), Ok(()));
-    assert_eq!(get_tree_root(&onchain), get_tree_root(&onchain));
+    let (at_nine, all) = tree_of(9);
+    let (at_ten, more) = tree_of(10);
+    let proof = branch_proof(&snapshot, &all[5..], 6).unwrap();
+    assert_eq!(get_branch_root(all[6], &proof, 6), get_tree_root(&at_nine));
+    assert_ne!(get_branch_root(all[6], &proof, 6), get_tree_root(&at_ten));
+    let later = branch_proof(&snapshot, &more[5..], 6).unwrap();
+    assert_eq!(get_branch_root(all[6], &later, 6), get_tree_root(&at_ten));
 }
 
 /// hyperlane-cosmos pre-fills a tree's unused branch levels with the canonical zero hashes;
 /// Solidity leaves them zero. Those levels sit above the highest set bit of `count`, so they
-/// change neither the root nor which messages are in the tree.
+/// change neither the root nor the proofs built from the frontier.
 ///
-/// Comparing raw structs would therefore reject every Celestia-origin batch while proving
-/// nothing - which is exactly what happened against live mocha-5 before this was fixed.
+/// Comparing raw structs would therefore have rejected every Celestia-origin tree while proving
+/// nothing - which is exactly what happened against live mocha-5 once.
 #[test]
 fn unused_branch_levels_may_differ_between_implementations() {
     use hyperlane_types::zero_hashes;
 
-    let (mut solidity_style, ids) = tree_of(3);
+    let (solidity_style, _) = tree_of(3);
     let mut cosmos_style = solidity_style;
     let zeros = zero_hashes();
     // Only levels the tree has not reached yet.
@@ -284,14 +242,16 @@ fn unused_branch_levels_may_differ_between_implementations() {
         "but they mean the same tree"
     );
 
-    let snapshot = MerkleTree::default();
-    assert_eq!(verify_message_batch(snapshot, &ids, &cosmos_style), Ok(()));
-    assert_eq!(
-        verify_message_batch(snapshot, &ids, &solidity_style),
-        Ok(())
-    );
-
-    // And a genuinely different tree is still refused.
-    solidity_style.branch[0] = [0xff; 32];
-    assert!(verify_message_batch(snapshot, &ids, &solidity_style).is_err());
+    let (onchain, all) = tree_of(6);
+    for index in 3..6u32 {
+        assert_eq!(
+            branch_proof(&cosmos_style, &all[3..], index).unwrap(),
+            branch_proof(&solidity_style, &all[3..], index).unwrap()
+        );
+        let proof = branch_proof(&cosmos_style, &all[3..], index).unwrap();
+        assert_eq!(
+            get_branch_root(all[index as usize], &proof, index),
+            get_tree_root(&onchain)
+        );
+    }
 }

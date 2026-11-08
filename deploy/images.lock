@@ -1,8 +1,8 @@
 # <chain> <nix store path of the image> <registry digest>
 # Written only by `teeism images`. `teeism enclaves up` refuses to deploy a chain whose
 # current source no longer evaluates to its store path here.
-arbitrum /nix/store/6ylgvjai655lh3qaxl780551xxkz4ylz-tee-node.tar.gz sha256:50dac593d886154ff2fa28d11781954a418dffe06293ef5ba7e52c6d434dd9d5
-base /nix/store/b7jx4m1nbbfbxz4kcp3zq422izbz6n6r-tee-node.tar.gz sha256:fcfab06eebe10ed12f682ffbf97fdfbd750c876644f49d61c34cce9340ca6307
-celestia /nix/store/9qnhbknrdxg1l2yfm3pggjf6w0aawqd6-tee-node.tar.gz sha256:eea9ed5f1e7ccd4d6d00011c3010867886607fbde0da9adc18e251e3baf3c71b
-eden /nix/store/0cbrbw3d68n6w1081h8lvmby5hbwqazd-tee-node.tar.gz sha256:01bc63d636f0a8c4d09ec23db65ef78edbab7b71ed75a9348d024aed86034ab4
-ethereum /nix/store/mq85inr5llln6kp7cinnipd7kvxkf39y-tee-node.tar.gz sha256:a229ab852eb41bf6bf79bfa3df6b1b031bc4fef5194eb16aa421e259b0366802
+arbitrum /nix/store/9n92y9cg95y4p8g4dz2r9wn4l02llipy-tee-node.tar.gz sha256:86ff6c107d31597f1213e93e4f0177947c43fcee6981cfaa648240568926d732
+base /nix/store/83y3v6cq2zbqz224f8yb65xrxl8cz6pm-tee-node.tar.gz sha256:2a55706867aa06881c2aa78469862c8622b47be8019552f44074423853bd23b5
+celestia /nix/store/4qlckpzkvcjazqfzj94acnbbjkvl7ydp-tee-node.tar.gz sha256:95b42f87cabf9ae5298933f48fd975477bad9add9e8c79d26fd1b4079a470f5c
+eden /nix/store/idnznciz11zw6rqrx3r6dgxrfnyaii11-tee-node.tar.gz sha256:116c0a5bde7d6aa7610b7187d04e8c82173458c42fe90be44e2dd1497c95ba97
+ethereum /nix/store/x49q4pv9h9l40lrjfgfzhwjkybzhh350-tee-node.tar.gz sha256:cb3fa8e82dbcc4d3257fe4365172f894af5eb7d3ae14f51bbd13015c60c3b045

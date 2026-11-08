@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use hyperlane_types::MerkleTree;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
@@ -14,10 +15,14 @@ use crate::origin::{Indexer, Message};
 
 /// A route whose trusted state is this old attests anyway, with no messages if there are none.
 /// Quiet routes otherwise fall far behind, and a route far behind has to read further back than
-/// its RPCs will serve: four days of that stopped every Celestia route once. Twice the interval
-/// the enclave and both ISMs require between empty batches
-/// (`tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS`), so the origin's clock always clears it.
+/// its RPCs will serve: four days of that stopped every Celestia route once. Far more than the
+/// interval both ISMs require between attestations that leave the tree root where it is
+/// (`EMPTY_BATCH_MIN_INTERVAL_SECS`), so the origin's clock always clears it.
 pub const HEARTBEAT: Duration = Duration::from_secs(24 * 60 * 60);
+/// How far an attestation that carries no new leaves must move the origin's clock. Enforced by
+/// `TeeDcapIsm` and `x/teeism`, which hold the previous root; the enclave does not, so this is
+/// the relayer's knowledge of the rule rather than a check it can run.
+pub const EMPTY_BATCH_MIN_INTERVAL_SECS: u64 = 30 * 60;
 /// A staged batch older than this is rebuilt rather than retried. Both kinds of ISM refuse an
 /// attestation older than 24h, so past that it could never land, and retrying it forever would
 /// stall the route long after whatever delayed it had passed.
@@ -36,6 +41,14 @@ pub struct Parked {
     pub id: String,
     /// The message bytes, hex.
     pub message: String,
+    /// What proves it against an attested root, hex: `root(32) index(4) proof(32 * 32)`. Absent
+    /// in records written before roots were attested; those cannot be delivered any more.
+    #[serde(default)]
+    pub metadata: String,
+    /// The tree the proof was built from, so it can be rebuilt against a later root if the ISM
+    /// never attested this one. Absent in records from before it was kept.
+    #[serde(default)]
+    pub provenance: Option<Provenance>,
     pub attempts: u32,
     pub first_failed_at: u64,
     pub last_attempt_at: u64,
@@ -43,6 +56,17 @@ pub struct Parked {
     pub reason: String,
     /// The last failed transaction, if one landed.
     pub tx: Option<String>,
+}
+
+/// Where a message's proof came from: the origin tree as of the ISM's trusted height when the
+/// step was built, and that height. A proof only lands against the root it was built for, and
+/// the ISM may never attest that root (someone else moved it first, or it was replaced), so the
+/// relayer keeps enough to prove the message again against whatever root the ISM holds: this
+/// frontier plus the leaves indexed from `from_height` to the ISM's height.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct Provenance {
+    pub from_height: u64,
+    pub frontier: MerkleTree,
 }
 
 /// A delivery this relayer made or saw, kept in `delivered/<id>.json`.
@@ -150,7 +174,10 @@ impl Route {
             debug!(route = %self.config.name, head = step.head, "idle");
             self.record_activity(
                 "idle",
-                format!("the origin has not moved past the ISM's height {}", trusted.height),
+                format!(
+                    "the origin has not moved past the ISM's height {}",
+                    trusted.height
+                ),
             );
             return Ok(None);
         }
@@ -174,7 +201,10 @@ impl Route {
             debug!(route = %self.config.name, head = step.head, "nothing dispatched");
             self.record_activity(
                 "waiting",
-                format!("nothing dispatched between heights {} and {}", trusted.height, step.head),
+                format!(
+                    "nothing dispatched between heights {} and {}",
+                    trusted.height, step.head
+                ),
             );
             return Ok(None);
         }
@@ -215,7 +245,10 @@ impl Route {
         self.record_activity(
             "attesting",
             if messages.is_empty() {
-                format!("heartbeat: asking the enclave to attest heights {} to {} with no messages", trusted.height, step.head)
+                format!(
+                    "heartbeat: asking the enclave to attest heights {} to {} with no messages",
+                    trusted.height, step.head
+                )
             } else {
                 format!(
                     "asking the enclave to attest heights {} to {} with {} messages",
@@ -226,25 +259,59 @@ impl Route {
             },
         );
         debug!(route = %self.config.name, from = trusted.height, to = step.head, leaves = messages.len(), "attesting");
+        // Each message proves itself at delivery with a branch against the root the enclave is
+        // about to attest. Built here, from the tree at the trusted height and the leaves just
+        // indexed, and checked against the head's tree before the enclave is asked: an index
+        // that disagrees with the chain is caught where it can be named.
+        let (frontier, metadata) = proofs(&step, &trusted, &messages, self.destination_domain)?;
         let request = json!({
             "protocol": tee_node::attest::PROTOCOL_VERSION,
             "trusted_state": hex::encode(trusted.encode()),
             "chain": step.chain,
             "input": step.input,
             "tree": step.tree,
-            "tree_snapshot": step.tree_snapshot,
-            "message_ids": messages.iter().map(|m| m.id).collect::<Vec<_>>(),
             "merkle_tree_address": step.tree_address,
         });
         let attestation = self.enclave.attest(&request).await?;
+        let new_state = tee_node::state::IsmState::decode(&hex::decode(
+            attestation.new_state.trim_start_matches("0x"),
+        )?)?;
+        // The enclave attests an unchanged root whenever asked; the ISMs refuse one that moves
+        // the origin clock too little. Nothing to stage then: the next tick finds a later head.
+        if too_soon(&trusted, &new_state, !messages.is_empty()) {
+            debug!(route = %self.config.name, head = step.head, "too soon for an attestation with no new leaves");
+            self.record_activity(
+                "waiting",
+                format!(
+                    "no new leaves and the origin clock moved only {}s since height {}; the ISM wants {}s",
+                    new_state.timestamp.saturating_sub(trusted.timestamp),
+                    trusted.height,
+                    EMPTY_BATCH_MIN_INTERVAL_SECS
+                ),
+            );
+            return Ok(None);
+        }
+        if let Some(first) = metadata.iter().find(|m| !m.is_empty()) {
+            anyhow::ensure!(
+                attestation.tree_root.trim_start_matches("0x") == hex::encode(&first[..32]),
+                "the enclave attested tree root {} but the proofs were built for {}",
+                attestation.tree_root,
+                hex::encode(&first[..32])
+            );
+        }
         let record = json!({
             "attestation": {
                 "quote": attestation.quote,
                 "event_log": attestation.event_log,
                 "payload": attestation.payload,
                 "new_state": attestation.new_state,
+                "tree_root": attestation.tree_root,
+                "tree_count": attestation.tree_count,
             },
             "messages": messages.iter().map(|m| hex::encode(&m.bytes)).collect::<Vec<_>>(),
+            "metadata": metadata.iter().map(hex::encode).collect::<Vec<_>>(),
+            "from_height": trusted.height,
+            "frontier": frontier,
         });
         std::fs::write(self.staged(), serde_json::to_vec_pretty(&record)?)?;
         self.submit_staged().await
@@ -271,45 +338,74 @@ impl Route {
                 .map(str::to_string)
                 .context("malformed staged batch")
         };
+        let hex_list = |v: &Value| -> Vec<Vec<u8>> {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|m| hex::decode(m.as_str()?).ok())
+                .collect()
+        };
         let batch = Batch {
             quote: text(&att["quote"])?,
             event_log: text(&att["event_log"])?,
             payload: hex::decode(text(&att["payload"])?.trim_start_matches("0x"))?,
-            messages: record["messages"]
-                .as_array()
-                .context("messages")?
-                .iter()
-                .filter_map(|m| hex::decode(m.as_str()?).ok())
-                .collect(),
+            messages: hex_list(&record["messages"]),
+            metadata: hex_list(&record["metadata"]),
         };
-        let update = tee_node::state::AttestedUpdate::decode(&batch.payload)?;
+        // A batch staged by an earlier relayer carried message ids, which no ISM accepts any
+        // more, and no metadata, so its messages could not be delivered either. Rebuild.
+        let update = match tee_node::state::AttestedUpdate::decode(&batch.payload) {
+            Ok(u) if batch.metadata.len() == batch.messages.len() => u,
+            _ => {
+                warn!(route = %self.config.name, "discarding a staged batch in the previous format; rebuilding");
+                std::fs::remove_file(&path)?;
+                return Ok(None);
+            }
+        };
+        let provenance = serde_json::from_value::<MerkleTree>(record["frontier"].clone())
+            .ok()
+            .map(|frontier| Provenance {
+                from_height: update.prev_state.height,
+                frontier,
+            });
+        if too_soon(
+            &update.prev_state,
+            &update.new_state,
+            !batch.messages.is_empty(),
+        ) {
+            // Carries no messages (the root did not move), so nothing to keep.
+            warn!(route = %self.config.name, "discarding a staged batch the ISM would refuse as too soon; rebuilding later");
+            std::fs::remove_file(&path)?;
+            return Ok(None);
+        }
         self.record_activity(
             "submitting",
             format!(
                 "submitting the attestation for heights {} to {} ({} messages) and delivering",
                 update.prev_state.height,
                 update.new_state.height,
-                update.message_ids.len()
+                batch.messages.len()
             ),
         );
         if age > STAGED_BATCH_MAX_AGE {
             warn!(route = %self.config.name, age_secs = age.as_secs(), "discarding a staged batch too old to be accepted; rebuilding");
-            self.discard(&batch, &path).await?;
+            self.discard(&batch, provenance.as_ref(), &path).await?;
             return Ok(None);
         }
         let submitted = match self.destination.submit(&batch).await {
             Ok(d) => d,
-            // The ISM moved past this batch's start, so no retry can land it. The next pass
-            // builds from where the ISM actually is, which skips nothing.
+            // The ISM moved past this batch's start: someone else attested first. No retry can
+            // land it, and its root may never be attested, so its messages are kept with what
+            // re-proves them. The next pass builds from where the ISM actually is.
             Err(e) if e.is::<Stale>() => {
                 warn!(route = %self.config.name, "discarding a batch the ISM has moved past; rebuilding");
-                self.discard(&batch, &path).await?;
+                self.discard(&batch, provenance.as_ref(), &path).await?;
                 return Ok(None);
             }
             Err(e) => return Err(e),
         };
         for d in submitted.deliveries {
-            self.settle(d);
+            self.settle(d, provenance.as_ref());
         }
 
         let height = update.new_state.height;
@@ -318,16 +414,18 @@ impl Route {
         record["attested_at"] = update.attested_at.into();
         record["submitted_at"] = now().into();
         record["attestation_tx"] = submitted.attestation_tx.clone().into();
-        record["heartbeat"] = update.message_ids.is_empty().into();
+        record["heartbeat"] = batch.messages.is_empty().into();
         record["height"] = height.into();
         record["state_root"] = format!("0x{}", hex::encode(update.new_state.state_root)).into();
+        record["tree_root"] = format!("0x{}", hex::encode(update.tree_root)).into();
+        record["tree_count"] = update.tree_count.into();
         record["quote"] = batch.quote.clone().into();
         record["measurements"] =
             serde_json::to_value(crate::api::measurements(&batch.quote, &batch.event_log)?)?;
-        record["batch"] = update
-            .message_ids
+        record["batch"] = batch
+            .messages
             .iter()
-            .map(|id| format!("0x{}", hex::encode(id)))
+            .map(|m| format!("0x{}", hex::encode(alloy_primitives::keccak256(m))))
             .collect::<Vec<_>>()
             .into();
         std::fs::write(
@@ -350,27 +448,28 @@ impl Route {
         Ok(Some(height))
     }
 
-    /// Drop a staged batch that can no longer land. If the ISM already covers it, its
-    /// attestation did land, and a rebuild would start after its messages: park the ones not
-    /// yet delivered so they are not lost.
-    async fn discard(&self, batch: &Batch, path: &std::path::Path) -> Result<()> {
-        let covered = tee_node::state::IsmState::decode(batch.new_state())?.height;
-        let ism = self
-            .destination
-            .state()
-            .await
-            .context("reading the ISM before discarding a batch")?;
-        if ism.height >= covered {
-            for (id, message) in batch.for_domain(self.destination_domain) {
-                if !self.destination.delivered(&id).await? {
-                    warn!(route = %self.config.name, id, "parking a covered message from a discarded batch");
-                    self.park(
-                        &id,
-                        message,
-                        "left over from a batch that could not finish".into(),
-                        None,
-                    );
-                }
+    /// Drop a staged batch that can no longer land, keeping what it owes: every message of ours
+    /// in it that is not delivered is parked with its proof and where that proof came from.
+    /// Redelivery lands it once the ISM covers it, re-proving it first if the ISM holds another
+    /// root than the one it was built for; until then the next step indexes it again, and the
+    /// parked copy is found delivered.
+    async fn discard(
+        &self,
+        batch: &Batch,
+        provenance: Option<&Provenance>,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        for (id, message, metadata) in batch.for_domain(self.destination_domain) {
+            if !self.destination.delivered(&id).await? {
+                warn!(route = %self.config.name, id, "parking a message from a discarded batch");
+                self.park(
+                    &id,
+                    message,
+                    metadata,
+                    provenance,
+                    "left over from a batch that could not finish".into(),
+                    None,
+                );
             }
         }
         std::fs::remove_file(path)?;
@@ -378,13 +477,13 @@ impl Route {
     }
 
     /// Record what became of one message.
-    fn settle(&self, d: Delivery) {
+    fn settle(&self, d: Delivery, provenance: Option<&Provenance>) {
         match d.outcome {
             Outcome::Delivered { tx } => self.mark_delivered(&d.id, Some(tx)),
             Outcome::AlreadyDelivered => self.mark_delivered(&d.id, None),
             Outcome::Refused { tx, reason } => {
                 warn!(route = %self.config.name, id = d.id, reason, "delivery refused; parked for redelivery");
-                self.park(&d.id, &d.message, reason, tx);
+                self.park(&d.id, &d.message, &d.metadata, provenance, reason, tx);
             }
         }
     }
@@ -406,7 +505,17 @@ impl Route {
         let _ = std::fs::remove_file(self.dir.join("undelivered").join(format!("{id}.json")));
     }
 
-    fn park(&self, id: &str, message: &[u8], reason: String, tx: Option<String>) {
+    /// Keep a message for redelivery. `provenance` is kept from the earlier record when none
+    /// is given, so a retry never loses what re-proves the message.
+    fn park(
+        &self,
+        id: &str,
+        message: &[u8],
+        metadata: &[u8],
+        provenance: Option<&Provenance>,
+        reason: String,
+        tx: Option<String>,
+    ) {
         let path = self.dir.join("undelivered").join(format!("{id}.json"));
         let at = now();
         let previous: Option<Parked> = std::fs::read(&path)
@@ -416,6 +525,10 @@ impl Route {
         let body = Parked {
             id: id.to_string(),
             message: hex::encode(message),
+            metadata: hex::encode(metadata),
+            provenance: provenance
+                .cloned()
+                .or_else(|| previous.as_ref().and_then(|p| p.provenance.clone())),
             attempts,
             first_failed_at: previous.as_ref().map_or(at, |p| p.first_failed_at),
             last_attempt_at: at,
@@ -447,7 +560,33 @@ impl Route {
             let Ok(message) = hex::decode(&parked.message) else {
                 continue;
             };
-            match self.destination.deliver(&message).await {
+            let Ok(mut metadata) = hex::decode(&parked.metadata) else {
+                continue;
+            };
+            // A proof lands only against the root it was built for. If the ISM never attested
+            // that root (someone else's attestation moved it past ours, or it was replaced and
+            // started over), build one against the root it holds now, which covers every
+            // earlier leaf.
+            match self.current_proof(&parked, &metadata).await {
+                Ok(Some(fresh)) => {
+                    info!(route = %self.config.name, id = parked.id, "re-proved against the root the ISM holds");
+                    metadata = fresh;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(route = %self.config.name, id = parked.id, error = %format!("{e:#}"), "cannot re-prove yet");
+                    self.park(
+                        &parked.id,
+                        &message,
+                        &metadata,
+                        None,
+                        format!("{e:#}"),
+                        parked.tx,
+                    );
+                    continue;
+                }
+            }
+            match self.destination.deliver(&message, &metadata).await {
                 Ok(outcome) => {
                     if matches!(
                         outcome,
@@ -455,18 +594,69 @@ impl Route {
                     ) {
                         info!(route = %self.config.name, id = parked.id, attempts = parked.attempts + 1, "parked message delivered");
                     }
-                    self.settle(Delivery {
-                        id: parked.id,
-                        message,
-                        outcome,
-                    })
+                    self.settle(
+                        Delivery {
+                            id: parked.id,
+                            message,
+                            metadata,
+                            outcome,
+                        },
+                        None,
+                    )
                 }
                 Err(e) => {
                     warn!(route = %self.config.name, id = parked.id, error = %format!("{e:#}"), "redelivery failed");
-                    self.park(&parked.id, &message, format!("{e:#}"), parked.tx);
+                    self.park(
+                        &parked.id,
+                        &message,
+                        &metadata,
+                        None,
+                        format!("{e:#}"),
+                        parked.tx,
+                    );
                 }
             }
         }
+    }
+
+    /// A proof for a parked message against the root the ISM holds now, when the one it has
+    /// is against a root the ISM never attested. `None` when the current proof is fine.
+    async fn current_proof(&self, parked: &Parked, metadata: &[u8]) -> Result<Option<Vec<u8>>> {
+        anyhow::ensure!(
+            metadata.len() == METADATA_BYTES,
+            "no proof was recorded for this message (written before roots were attested)"
+        );
+        let root: [u8; 32] = metadata[..32].try_into()?;
+        if self.destination.root_attested(root).await? {
+            return Ok(None);
+        }
+        let index = u32::from_be_bytes(metadata[32..36].try_into()?);
+        let provenance = parked
+            .provenance
+            .as_ref()
+            .context("the ISM never attested this proof's root and no record of the tree it was built from was kept")?;
+        let (want_root, want_count) = self.destination.tree().await?;
+        anyhow::ensure!(
+            want_root != [0u8; 32],
+            "the ISM has not attested any root yet"
+        );
+        anyhow::ensure!(
+            index < want_count,
+            "leaf {index} is past the ISM's tree of {want_count} leaves; the next attestation covers it"
+        );
+        let ism = self.destination.state().await?;
+        let messages = self
+            .origin
+            .index(provenance.from_height, ism.height)
+            .await
+            .with_context(|| {
+                format!(
+                    "indexing heights {} to {} to re-prove leaf {index}",
+                    provenance.from_height, ism.height
+                )
+            })?;
+        let ids: Vec<[u8; 32]> = messages.iter().map(|m| m.id).collect();
+        reprove(&provenance.frontier, &ids, index, want_root, want_count).map(Some)
     }
 
     /// What the route is doing right now, for the dashboard. `since` moves only when the phase
@@ -556,6 +746,124 @@ fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<(
     Ok(())
 }
 
+/// The delivery metadata for the messages of a step, `root(32) index(4) proof(32 * 32)` with
+/// the head tree's root, which the enclave is about to attest. One entry per message, in order;
+/// empty for a message bound elsewhere, which this route never delivers. An origin's tree is
+/// shared by every bridge on it, so a step can carry thousands of leaves that are not ours.
+///
+/// The frontier at the trusted height and the tree at the head are both read through the
+/// enclave's own `merkle_tree`, under the roots the ISM holds and moves to, so the proofs are
+/// built from state the chain commits to. Replaying the indexed leaves onto the frontier has to
+/// reproduce the head's tree: if it does not, the index missed or invented a dispatch, and the
+/// step is refused here rather than at delivery.
+fn proofs(
+    step: &crate::origin::Step,
+    trusted: &tee_node::state::IsmState,
+    messages: &[Message],
+    destination: u32,
+) -> Result<(MerkleTree, Vec<Vec<u8>>)> {
+    use hyperlane_types::{get_tree_root, insert_leaf};
+    let chain = tee_node::origin::find(step.chain)
+        .with_context(|| format!("the enclave registry has no chain `{}`", step.chain))?;
+    let frontier = chain
+        .origin
+        .merkle_tree(step.tree_snapshot.clone(), trusted.state_root.into())?
+        .tree;
+    let head = chain
+        .origin
+        .merkle_tree(step.tree.clone(), step.state_root)?
+        .tree;
+    let ids: Vec<[u8; 32]> = messages.iter().map(|m| m.id).collect();
+    let mut replayed = frontier;
+    for id in &ids {
+        insert_leaf(&mut replayed, *id).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    let root = get_tree_root(&head);
+    anyhow::ensure!(
+        replayed.count == head.count && get_tree_root(&replayed) == root,
+        "the {} indexed leaves on the tree at height {} do not reproduce the tree at height {} \
+         ({} leaves); the index missed or invented a dispatch",
+        ids.len(),
+        trusted.height,
+        step.head,
+        head.count
+    );
+    let mut builder = crate::proofs::ProofBuilder::new(&frontier, &ids)?;
+    let metadata = messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let ours = hyperlane_types::decode_hyperlane_message(&m.bytes)
+                .is_ok_and(|d| d.destination == destination);
+            if !ours {
+                return Ok(Vec::new());
+            }
+            let index = frontier.count + i as u32;
+            Ok(metadata(root, index, &builder.proof(index)?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((frontier, metadata))
+}
+
+/// Prove leaf `index` again, against the tree the ISM holds (`root`, `count` leaves), from the
+/// frontier the original proof came from plus the leaves indexed since. The replay must land
+/// exactly on the ISM's tree: a leaf missed or invented would be a proof against a root nobody
+/// attested.
+fn reprove(
+    frontier: &MerkleTree,
+    leaves: &[[u8; 32]],
+    index: u32,
+    root: [u8; 32],
+    count: u32,
+) -> Result<Vec<u8>> {
+    use hyperlane_types::{get_tree_root, insert_leaf};
+    let mut replayed = *frontier;
+    for leaf in leaves {
+        insert_leaf(&mut replayed, *leaf).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    anyhow::ensure!(
+        replayed.count == count && get_tree_root(&replayed) == root,
+        "the {} leaves indexed after the {}-leaf frontier give a {}-leaf tree with root {}, but the ISM holds \
+         {} leaves under {}",
+        leaves.len(),
+        frontier.count,
+        replayed.count,
+        hex::encode(get_tree_root(&replayed)),
+        count,
+        hex::encode(root)
+    );
+    let mut builder = crate::proofs::ProofBuilder::new(frontier, leaves)?;
+    Ok(metadata(root, index, &builder.proof(index)?))
+}
+
+/// Would both ISMs refuse this transition? They require an attestation that leaves the tree
+/// root where it is to move the origin clock by `EMPTY_BATCH_MIN_INTERVAL_SECS`.
+fn too_soon(
+    prev: &tee_node::state::IsmState,
+    next: &tee_node::state::IsmState,
+    root_changed: bool,
+) -> bool {
+    !root_changed && next.timestamp < prev.timestamp + EMPTY_BATCH_MIN_INTERVAL_SECS
+}
+
+/// What a delivery hands the ISM: `root(32) index(4 BE) proof(32 * 32)`, 1060 bytes, as both
+/// `TeeDcapIsm.verify` and `x/teeism`'s `Verify` read it.
+const METADATA_BYTES: usize = 32 + 4 + 32 * hyperlane_types::TREE_DEPTH;
+
+fn metadata(
+    root: [u8; 32],
+    index: u32,
+    proof: &[[u8; 32]; hyperlane_types::TREE_DEPTH],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32 + 4 + 32 * proof.len());
+    out.extend_from_slice(&root);
+    out.extend_from_slice(&index.to_be_bytes());
+    for node in proof {
+        out.extend_from_slice(node);
+    }
+    out
+}
+
 /// The tree says how many leaves the range must hold, so a scan that disagrees is caught here,
 /// where the cause can be named, rather than by the enclave's replay a round trip later.
 fn check_index(expected: usize, found: usize) -> Result<()> {
@@ -588,8 +896,7 @@ fn worth_attesting(messages: &[Message], destination: u32, routers: &[String]) -
         .collect();
     messages.iter().any(|m| {
         hyperlane_types::decode_hyperlane_message(&m.bytes).is_ok_and(|d| {
-            d.destination == destination
-                && (ours.is_empty() || ours.contains(&d.recipient))
+            d.destination == destination && (ours.is_empty() || ours.contains(&d.recipient))
         })
     })
 }
@@ -627,6 +934,9 @@ struct Attestation {
     pub payload: String,
     /// The ISM state this update moves to, hex.
     pub new_state: String,
+    /// The origin tree's root and leaf count at that state, hex and plain.
+    pub tree_root: String,
+    pub tree_count: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -745,8 +1055,104 @@ mod tests {
         assert!(!heartbeat_due(1_000, 1_000 + day - 1), "not yet a day");
         assert!(heartbeat_due(1_000, 1_000 + day), "a day old");
         assert!(
-            day >= 2 * tee_node::attest::EMPTY_BATCH_MIN_INTERVAL_SECS,
+            day >= 2 * EMPTY_BATCH_MIN_INTERVAL_SECS,
             "the heartbeat must clear the ISMs' minimum interval with room for origin lag"
+        );
+    }
+
+    /// The layout both ISMs parse, byte for byte.
+    #[test]
+    fn delivery_metadata_is_root_index_proof() {
+        let mut proof = [[0u8; 32]; hyperlane_types::TREE_DEPTH];
+        proof[0] = [0xaa; 32];
+        proof[31] = [0xbb; 32];
+        let m = metadata([0x11; 32], 0x0102_0304, &proof);
+        assert_eq!(m.len(), 1060);
+        assert_eq!(&m[..32], &[0x11; 32]);
+        assert_eq!(&m[32..36], &[1, 2, 3, 4]);
+        assert_eq!(&m[36..68], &[0xaa; 32]);
+        assert_eq!(&m[1028..], &[0xbb; 32]);
+    }
+
+    fn proof_in(metadata: &[u8]) -> [[u8; 32]; hyperlane_types::TREE_DEPTH] {
+        let mut p = [[0u8; 32]; hyperlane_types::TREE_DEPTH];
+        for (node, chunk) in p.iter_mut().zip(metadata[36..].chunks(32)) {
+            node.copy_from_slice(chunk);
+        }
+        p
+    }
+
+    /// Someone else attested past us: our proof names a root the ISM never recorded. Built
+    /// again from the frontier we proved from plus the leaves indexed since, the same message
+    /// proves against the root the ISM holds.
+    #[test]
+    fn a_message_is_re_proven_against_the_root_the_ism_holds() {
+        use hyperlane_types::{get_branch_root, get_tree_root, insert_leaf, keccak256};
+        let leaves: Vec<[u8; 32]> = (0u32..12).map(|i| keccak256(&i.to_be_bytes())).collect();
+        let tree = |n: usize| {
+            let mut t = MerkleTree::default();
+            for l in &leaves[..n] {
+                insert_leaf(&mut t, *l).unwrap();
+            }
+            t
+        };
+        let frontier = tree(3); // the ISM's trusted height when we built our step
+        let ours = tree(7); // our head: leaves 3..7
+        let theirs = tree(12); // what the ISM attested instead
+        let index = 5u32;
+        let stale = {
+            let mut b = crate::proofs::ProofBuilder::new(&frontier, &leaves[3..7]).unwrap();
+            metadata(get_tree_root(&ours), index, &b.proof(index).unwrap())
+        };
+        let their_root = get_tree_root(&theirs);
+        assert_ne!(
+            get_branch_root(leaves[5], &proof_in(&stale), index),
+            their_root,
+            "the stale proof cannot land under the ISM's root"
+        );
+
+        let fresh = reprove(&frontier, &leaves[3..12], index, their_root, 12).unwrap();
+        assert_eq!(fresh.len(), METADATA_BYTES);
+        assert_eq!(&fresh[..32], &their_root);
+        assert_eq!(&fresh[32..36], &index.to_be_bytes());
+        assert_eq!(
+            get_branch_root(leaves[5], &proof_in(&fresh), index),
+            their_root
+        );
+
+        assert!(
+            reprove(&frontier, &leaves[3..12], 12, their_root, 12).is_err(),
+            "a leaf the ISM does not cover yet"
+        );
+        assert!(
+            reprove(&frontier, &leaves[3..11], index, their_root, 12)
+                .unwrap_err()
+                .to_string()
+                .contains("but the ISM holds"),
+            "a replay that misses a leaf"
+        );
+        assert!(
+            reprove(&frontier, &leaves[3..12], 2, their_root, 12).is_err(),
+            "a leaf before the frontier"
+        );
+    }
+
+    #[test]
+    fn an_attestation_with_no_new_leaves_waits_for_the_isms_interval() {
+        let s = |t: u64| tee_node::state::IsmState {
+            state_root: [0; 32],
+            origin_domain: 1,
+            height: 1,
+            timestamp: t,
+            lc_store_commit: [0; 32],
+            identity_digest: [0; 32],
+        };
+        let gap = EMPTY_BATCH_MIN_INTERVAL_SECS;
+        assert!(too_soon(&s(1000), &s(1000 + gap - 1), false));
+        assert!(!too_soon(&s(1000), &s(1000 + gap), false));
+        assert!(
+            !too_soon(&s(1000), &s(1001), true),
+            "new leaves move the root; no interval applies"
         );
     }
 
