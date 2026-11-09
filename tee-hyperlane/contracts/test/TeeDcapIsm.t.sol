@@ -3,6 +3,9 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 import {TeeDcapIsm, IDcapAttestation} from "../src/TeeDcapIsm.sol";
+import {MerkleLib} from "@hyperlane-xyz/core/contracts/libs/Merkle.sol";
+import {IInterchainSecurityModule} from "@hyperlane-xyz/core/contracts/interfaces/IInterchainSecurityModule.sol";
+import {AtomicInitDomainRoutingIsm} from "@hyperlane-xyz/core/contracts/isms/routing/AtomicInitDomainRoutingIsm.sol";
 
 /// A stand-in for Automata's verifier, so everything downstream of the signature check can be
 /// exercised without a live quote. The fork test below covers the real one.
@@ -29,8 +32,11 @@ contract TeeDcapIsmTest is Test {
     address constant MAILBOX = address(0xBEEF);
     uint256 constant SKEW = 1 days;
 
+    using MerkleLib for MerkleLib.Tree;
+
     MockDcap dcap;
     TeeDcapIsm ism;
+    MerkleLib.Tree routedTree;
 
     uint64 constant GENESIS_HEIGHT = 100;
     uint64 constant GENESIS_TIME = 1_800_000_000;
@@ -492,7 +498,7 @@ contract TeeDcapIsmTest is Test {
     }
 
     function test_reportsItsRevision() public view {
-        assertEq(ism.VERSION(), 5);
+        assertEq(ism.VERSION(), 6);
     }
 
     // ---------------------------------------------------------------- re-pinning
@@ -543,9 +549,44 @@ contract TeeDcapIsmTest is Test {
         assertEq(ism.enclaveMeasurements(), _zeroMeasurements());
     }
 
-    function test_verifyOnlyFromMailbox() public {
-        vm.expectRevert(TeeDcapIsm.NotMailbox.selector);
-        ism.verify(hex"", hex"00");
+    /// A view that consumes nothing answers anyone the same way.
+    function test_verifyAnswersAnyCaller() public {
+        TeeDcapIsm target = _fresh();
+        _attestVector(target);
+        bytes memory metadata = _metadata(VECTOR_ROOT, VECTOR_INDEX, _vectorProof());
+        vm.prank(address(0xCAFE));
+        assertTrue(target.verify(metadata, _vectorMessage()));
+        assertFalse(target.verify(_metadata(SOME_ROOT, VECTOR_INDEX, _vectorProof()), _vectorMessage()));
+    }
+
+    /// Behind Hyperlane's routing ISM, as a route whose token owner points at our router: the
+    /// mailbox calls the router, and the router calls this ISM.
+    function test_verifiesBehindARoutingIsm() public {
+        uint32 origin = 1128614981;
+        bytes memory message = abi.encodePacked(
+            uint8(3), uint32(0), origin, bytes32(uint256(0x70c3)), uint32(3735928814), bytes32(uint256(0xed3)), hex"0b0d1e"
+        );
+        routedTree.insert(keccak256(message));
+        bytes32 root = routedTree.root();
+
+        TeeDcapIsm target = _fresh();
+        _submit(
+            target,
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), root, 1)
+        );
+
+        uint32[] memory domains = new uint32[](1);
+        domains[0] = origin;
+        IInterchainSecurityModule[] memory modules = new IInterchainSecurityModule[](1);
+        modules[0] = IInterchainSecurityModule(address(target));
+        AtomicInitDomainRoutingIsm router = new AtomicInitDomainRoutingIsm(address(this), domains, modules);
+
+        // A one-leaf tree: leaf 0's siblings are the empty subtrees.
+        bytes memory metadata = _metadata(root, 0, MerkleLib.zeroHashes());
+        vm.prank(MAILBOX);
+        assertTrue(router.verify(metadata, message));
+        vm.prank(MAILBOX);
+        assertFalse(router.verify(_metadata(SOME_ROOT, 0, MerkleLib.zeroHashes()), message));
     }
 
     // ---------------------------------------------------------------- refusals

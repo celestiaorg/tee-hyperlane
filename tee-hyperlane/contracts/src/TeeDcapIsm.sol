@@ -100,7 +100,8 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     /// deployments have no `VERSION` at all. 3 lets the owner re-pin the enclave. 4 bounds how
     /// often a batch with no messages may advance the state. 5 attests the origin tree's root
     /// and has each message prove itself at delivery, instead of carrying every message id.
-    uint8 public constant VERSION = 5;
+    /// 6 answers `verify` for any caller, so it can sit behind a routing ISM.
+    uint8 public constant VERSION = 6;
 
     IDcapAttestation public immutable dcap;
 
@@ -174,7 +175,6 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     error AttestationTooOld(uint64 blockTime, uint64 attestedAt, uint256 maxSkew);
     error AttestedBeforeState(uint64 attestedAt, uint64 stateTimestamp);
     error EmptyBatchTooSoon(uint64 previous, uint64 next, uint64 minInterval);
-    error NotMailbox();
 
     constructor(
         IDcapAttestation _dcap,
@@ -233,8 +233,9 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     ///   root(32) index(4) proof(32*32)
     /// Anything that does not fold the message's id to a root this ISM attested is refused.
     /// Nothing is consumed here: the mailbox itself refuses to process a message id twice.
+    /// Any caller may ask: behind a routing ISM the caller is the router, not the mailbox, and
+    /// a view that consumes nothing gives the same answer to everyone.
     function verify(bytes calldata metadata, bytes calldata message) external view returns (bool) {
-        if (msg.sender != mailbox) revert NotMailbox();
         if (metadata.length != METADATA_BYTES) return false;
         bytes32 root = bytes32(metadata[0:32]);
         if (!attestedRoots[root]) return false;
