@@ -41,8 +41,8 @@ interface IInterchainSecurityModule {
 ///
 /// It admits a set of enclaves, any one of which may attest (`setEnclaves`). A set rather than
 /// one so that a second enclave keeps a route alive, and so that a rotation pins the old and the
-/// new enclave together, moves the relayer, then drops the old one, with nothing refused in
-/// between. Changing the set is the owner's: a platform update under the enclave (a new OS
+/// new enclave together, moves the relayer, then drops the old one, so either enclave is
+/// accepted throughout. Changing the set is the owner's: a platform update under the enclave (a new OS
 /// image, new firmware) or a replacement enclave is a transaction rather than a new ISM. That is
 /// emergency control over the bridge.
 contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
@@ -215,7 +215,9 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
 
     /// Admit exactly these enclaves from now on, replacing the whole set in one transaction.
     /// A rotation pins the old and the new enclave together, moves the relayer, then pins the
-    /// new one alone, so no attestation is refused on the way.
+    /// new one alone, so either enclave is accepted throughout. Rewriting the state's digest
+    /// strands an attestation already built against the old bytes (`TrustedStateMismatch`);
+    /// the relayer rebuilds it from the new state.
     ///
     /// The trusted state keeps its root, height and light client store; only the identity
     /// digest it carries is swapped, because the enclave copies that forward into every state

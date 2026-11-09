@@ -243,7 +243,7 @@ openssl x509 -inform der -in Intel_SGX_Provisioning_Certification_RootCA.cer -pu
 | TD_QE identity per evaluation number | `tdx/certification/v4/qe/identity?tcbEvaluationDataNumber=` | 30 days |
 
 - EVM: `teeism pccs seed` uploads all of it; the DAOs verify each signature. Monthly ([MAINTAIN](MAINTAIN.md#monthly-intel-collateral)).
-- Celestia: the relayer fetches the same collateral fresh with every attestation (`teeism-collateral`). Nothing to do.
+- Celestia: the relayer fetches the same collateral fresh with every attestation (`teeism-collateral`). Nothing to do. `x/teeism` refuses collateral older than 14 days, or older than the newest an ISM has accepted, so a revoked platform cannot attest with the collateral from before.
 
 ## C. Signing on a Ledger
 

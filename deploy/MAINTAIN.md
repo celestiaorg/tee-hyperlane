@@ -11,7 +11,7 @@ teeism pccs seed            # republish all of it; --dry-run checks and fetches 
 
 - Skipped: Celestia -> EVM routes stop 30 days after the last seed, with `TCBR` or `PCKCRLH`. `pccs status` prints the date per chain; seed a week before it.
 - Collateral is per CPU platform (FMSPC); only `20a06f000000`, the platform our CVMs ran on so far, is seeded. A CVM on a Phala node with a different CPU passes Celestia but fails every EVM route with `TCBR`: seed its platform, `teeism pccs seed --fmspc <hex>`.
-- Celestia-destination routes need nothing: the relayer fetches fresh collateral with each attestation.
+- Celestia-destination routes need nothing: the relayer fetches fresh collateral with each attestation. `x/teeism` refuses collateral issued more than 14 days before block time, or more than a day older than the newest the ISM accepted, so a cached or replayed bundle fails with `invalid collateral`: nothing to seed, only a relayer that must fetch.
 - The public endpoints rate limit (Base Sepolia: 25 requests a second). The CLI retries a 429 with a backoff and keeps polling for a receipt through failed polls, so a limited run is slow, not failed. A chain that does fail is reported and the others are still seeded; rerun `teeism pccs seed --chain <chain>` for it. An upload that landed reports as `already current`, so a rerun never double-publishes.
 - Where it comes from and what it is checked against: [DEPLOY B](DEPLOY.md#b-intel-root-ca-and-collateral).
 
@@ -53,7 +53,7 @@ For anything that changes what the ISMs pin: enclave code (`crates/tee-node`, `h
 
 After a `TeeDcapIsm` revision change, `teeism warp evm` re-points Eden's routers straight at the new ISM. Put them back behind the routing ISM: `source devnet/.state/eden-routing.env`, then `cast send $ROUTING_ISM "set(uint32,address)" 1297040299 <new ism>` and `setInterchainSecurityModule($ROUTING_ISM)` on both routers (README, Deployments).
 
-The new enclave runs next to the old one, and the ISMs pin both until the relayer has moved, so no attestation is refused on the way:
+The new enclave runs next to the old one, and the ISMs pin both until the relayer has moved, so whichever enclave the relayer asks is accepted throughout. Each re-pin rewrites the state's identity digest, so a batch already in flight is refused as a trusted-state mismatch and rebuilt by the relayer; nothing is lost.
 
 ```sh
 git pull && git -C ../celestia-app-local pull && cargo install --locked --path cli && teeism build
