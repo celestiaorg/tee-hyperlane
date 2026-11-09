@@ -45,7 +45,9 @@ pub struct Route {
     pub to: String,
     /// The enclaves that may attest `from`, each one the ISM pins. Asked in turn, starting with
     /// the last that answered, so a second enclave keeps the route alive while the first is
-    /// down or being rotated out.
+    /// down or being rotated out. A config written for one enclave, `enclave = "..."`, still
+    /// reads as a list of one.
+    #[serde(alias = "enclave", deserialize_with = "one_or_many")]
     pub enclaves: Vec<String>,
     /// The ISM on `to` that this route advances.
     pub ism: String,
@@ -61,6 +63,20 @@ pub struct Route {
     /// or not anything is for us. Keeps the proof at the trusted height recent, which a full
     /// node needs: it rebuilds old state from the head, slower the further back it goes.
     pub max_lag: Option<u64>,
+}
+
+/// `enclaves = [...]`, or the one-enclave form `enclave = "..."` from before ISMs pinned sets.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        Many(Vec<String>),
+        One(String),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::Many(list) => list,
+        OneOrMany::One(url) => vec![url],
+    })
 }
 
 fn default_tick() -> u64 {
@@ -194,5 +210,33 @@ impl Config {
                 ism: ism.to_string(),
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A route names its enclaves as a list, or one enclave by the old key.
+    #[test]
+    fn a_route_reads_one_enclave_or_a_list() {
+        let one: Route = toml::from_str(
+            r#"name = "a"
+from = "celestia"
+to = "eden"
+enclave = "https://x-8080.g"
+ism = "0x1""#,
+        )
+        .unwrap();
+        assert_eq!(one.enclaves, vec!["https://x-8080.g"]);
+        let many: Route = toml::from_str(
+            r#"name = "a"
+from = "celestia"
+to = "eden"
+enclaves = ["https://x-8080.g", "https://y-8080.g"]
+ism = "0x1""#,
+        )
+        .unwrap();
+        assert_eq!(many.enclaves.len(), 2);
     }
 }
