@@ -28,7 +28,7 @@ use crate::steps::services::write_config;
 sol! {
     #[sol(rpc)]
     interface ITeeDcapIsm {
-        function enclaveMeasurements() external view returns (bytes32);
+        function enclaves() external view returns (bytes32[] memory measurements, bytes32[] memory identities);
         function dcap() external view returns (address);
         function identityDigest() external view returns (bytes32);
         function state() external view returns (bytes memory);
@@ -36,7 +36,7 @@ sol! {
         function VERSION() external view returns (uint8);
         function mailbox() external view returns (address);
         function merkleTreeAddress() external view returns (bytes32);
-        function setEnclave(bytes32 _enclaveMeasurements, bytes32 _identityDigest) external;
+        function setEnclaves(bytes32[] calldata measurements, bytes32[] calldata identities) external;
         function transferOwnership(address newOwner) external;
     }
 
@@ -53,14 +53,82 @@ pub(super) const MAX_QUOTE_SKEW: u64 = 86400;
 const STATE_BYTES: usize = 116;
 const IDENTITY_OFFSET: usize = 84;
 
-pub async fn pinned_measurements(rpc: &str, ism: Address) -> Result<String> {
+/// The measurements a TeeDcapIsm pins, one per enclave.
+pub async fn pinned_measurements(rpc: &str, ism: Address) -> Result<Vec<String>> {
     let r = crate::shared::evm::reader(rpc)?;
-    let m = ITeeDcapIsm::new(ism, &r)
-        .enclaveMeasurements()
+    let pinned = ITeeDcapIsm::new(ism, &r)
+        .enclaves()
         .call()
         .await
         .with_context(|| format!("reading what {ism} pins"))?;
-    Ok(format!("{m}"))
+    Ok(pinned.measurements.iter().map(|m| format!("{m}")).collect())
+}
+
+/// The most enclaves one ISM pins, as both ISMs bound it.
+const MAX_ENCLAVES: usize = 8;
+
+/// The enclaves serving one chain, as the ISMs for its routes pin them: identity digests
+/// ascending, each with its TeeDcapIsm measurements and its identity file, and the digest the
+/// set is named by. Two CVMs of the same image share an identity and count once.
+pub(super) struct EnclaveSet {
+    pub identities: Vec<FixedBytes<32>>,
+    pub measurements: Vec<FixedBytes<32>>,
+    pub files: Vec<std::path::PathBuf>,
+    pub digest: FixedBytes<32>,
+}
+
+pub(super) fn enclave_set(ctx: &Ctx, enclave: &str) -> Result<EnclaveSet> {
+    let d = ctx.deployment()?;
+    let list = d
+        .enclaves
+        .chains
+        .get(enclave)
+        .filter(|l| !l.is_empty())
+        .with_context(|| format!("no {enclave} enclave; run `teeism enclaves up`"))?;
+    let mut entries = Vec::new();
+    for e in list {
+        let what = |field: &str| {
+            format!(
+                "the {enclave} enclave in {}: its {field} is not recorded; run `teeism enclaves identity --chain {enclave}`",
+                e.target
+            )
+        };
+        let id = b32(e.identity_digest.as_deref().with_context(|| what("identity"))?)?;
+        let m = b32(e.measurements.as_deref().with_context(|| what("measurements"))?)?;
+        entries.push((id, m, enclaves::quote::identity_file(ctx, enclave, &e.target)));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.dedup_by(|a, b| a.0 == b.0);
+    if entries.len() > MAX_ENCLAVES {
+        bail!(
+            "{} distinct {enclave} enclaves recorded; an ISM pins at most {MAX_ENCLAVES}. Retire some (`teeism enclaves retire <slot>`)",
+            entries.len()
+        );
+    }
+    let identities: Vec<_> = entries.iter().map(|e| e.0).collect();
+    Ok(EnclaveSet {
+        digest: identity_set_digest(&identities),
+        measurements: entries.iter().map(|e| e.1).collect(),
+        files: entries.into_iter().map(|e| e.2).collect(),
+        identities,
+    })
+}
+
+/// The digest a set of enclave identities is named by, identical to TeeDcapIsm's and
+/// x/teeism's: the one digest for a set of one, otherwise
+/// sha256("teeism/identity-set/v1" ++ u8(n) ++ the digests ascending). `ids` must be ascending.
+pub fn identity_set_digest(ids: &[FixedBytes<32>]) -> FixedBytes<32> {
+    use sha2::{Digest, Sha256};
+    if ids.len() == 1 {
+        return ids[0];
+    }
+    let mut h = Sha256::new();
+    h.update(b"teeism/identity-set/v1");
+    h.update([ids.len() as u8]);
+    for id in ids {
+        h.update(id.as_slice());
+    }
+    FixedBytes::from_slice(&h.finalize())
 }
 
 /// The TeeDcapIsm revision this checkout deploys, read from its source.
@@ -140,31 +208,16 @@ pub fn merkle_hook_of(d: &crate::shared::record::Deployment, chain: &EvmChain) -
 
 // ---------------------------------------------------------------- teeism isms evm
 
-fn celestia_enclave(ctx: &Ctx) -> Result<(String, String)> {
-    let d = ctx.deployment()?;
-    let e = d
-        .enclaves
-        .chains
-        .get("celestia")
-        .context("no celestia enclave; run `teeism enclaves up`")?;
-    let m = e
-        .measurements
-        .clone()
-        .context("the celestia enclave's measurements are not recorded; run `teeism enclaves up`")?;
-    let i = e
-        .identity_digest
-        .clone()
-        .context("the celestia enclave's identity is not recorded; run `teeism enclaves up`")?;
-    Ok((m, i))
-}
-
 /// `teeism isms evm`
 pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
     let rev = revision(ctx)?;
-    // An EVM destination verifies a Celestia-origin attestation, so these pin the Celestia enclave.
-    let (measurements, identity) = celestia_enclave(ctx)?;
-    print::kv("measurements", &measurements);
-    print::kv("identity", &identity);
+    // An EVM destination verifies a Celestia-origin attestation, so these pin the Celestia enclaves.
+    let set = enclave_set(ctx, "celestia")?;
+    for (m, i) in set.measurements.iter().zip(&set.identities) {
+        print::kv("enclave", format!("measurements {m}, identity {i}"));
+    }
+    print::kv("set digest", format!("{}", set.digest));
+    let identity = format!("{}", set.digest);
     let hook = ctx
         .deployment()?
         .celestia
@@ -183,15 +236,11 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
 
         if let Some(existing) = d.evm(chain.name).and_then(|e| e.ism) {
             let ism = ITeeDcapIsm::new(existing, &c.p);
-            let cur = format!(
-                "{}",
-                ism.enclaveMeasurements()
-                    .call()
-                    .await
-                    .with_context(|| format!("reading {existing}"))?
-            );
-            // The first deployments have no VERSION(), and the call reverts: revision 1.
-            let cur_rev = ism.VERSION().call().await.unwrap_or(1);
+            let cur_rev = ism
+                .VERSION()
+                .call()
+                .await
+                .with_context(|| format!("reading {existing}'s revision"))?;
             // The verifier is fixed at construction, so a new PCCS deployment needs a new ISM.
             let cur_dcap = ism
                 .dcap()
@@ -219,30 +268,50 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
                     chain.name
                 );
             }
-            if cur == measurements && cur_rev == rev && cur_dcap == entry {
-                print::info(format!("{existing} already pins this enclave"));
+            // Only an ISM of this revision is asked what it pins: another revision may not have
+            // `enclaves()` at all, and is replaced whatever it pins.
+            let pinned = if cur_rev == rev {
+                let p = ism
+                    .enclaves()
+                    .call()
+                    .await
+                    .with_context(|| format!("reading what {existing} pins"))?;
+                Some((p.measurements, p.identities))
+            } else {
+                None
+            };
+            let same_set = pinned
+                .as_ref()
+                .is_some_and(|(m, i)| *m == set.measurements && *i == set.identities);
+            if same_set && cur_dcap == entry {
+                print::info(format!("{existing} already pins these enclaves"));
                 own_mailbox(&c, &d, chain, mailbox, existing).await?;
                 continue;
             }
             if cur_dcap != entry {
                 print::info(format!("{existing} verifies through {cur_dcap}, not this PCCS's entrypoint {entry}; replacing it"));
-            } else if cur_rev == rev && rev >= 3 {
+            } else if let Some((_, cur_ids)) = &pinned {
                 let owner = ism
                     .owner()
                     .call()
                     .await
                     .with_context(|| format!("reading {existing}'s owner"))?;
                 if owner == c.from {
-                    print::info(format!("re-pinning {existing}: {cur} -> {measurements}"));
-                    let data = ITeeDcapIsm::setEnclaveCall {
-                        _enclaveMeasurements: b32(&measurements)?,
-                        _identityDigest: b32(&identity)?,
+                    print::info(format!(
+                        "re-pinning {existing}: {} -> {} enclaves, set {}",
+                        cur_ids.len(),
+                        set.identities.len(),
+                        set.digest
+                    ));
+                    let data = ITeeDcapIsm::setEnclavesCall {
+                        measurements: set.measurements.clone(),
+                        identities: set.identities.clone(),
                     }
                     .abi_encode();
-                    c.send("setEnclave", existing, data.into()).await?;
-                    let got = format!("{}", ism.enclaveMeasurements().call().await?);
-                    if got != measurements {
-                        bail!("{existing} pins {got} after the re-pin, expected {measurements}");
+                    c.send("setEnclaves", existing, data.into()).await?;
+                    let after = ism.enclaves().call().await?;
+                    if after.measurements != set.measurements || after.identities != set.identities {
+                        bail!("{existing} does not pin the new set after the re-pin");
                     }
                     print::ok(format!("{existing} re-pinned"));
                     own_mailbox(&c, &d, chain, mailbox, existing).await?;
@@ -275,8 +344,8 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
         let art = Artifact::load(&ctx.contracts_dir(), "TeeDcapIsm", "TeeDcapIsm")?;
         let args = (
             entry,
-            b32(&measurements)?,
-            b32(&identity)?,
+            set.measurements.clone(),
+            set.identities.clone(),
             b32(&hook)?,
             mailbox,
             Bytes::from(genesis),
@@ -286,9 +355,9 @@ pub async fn evm(ctx: &Ctx, selection: &[String]) -> Result<()> {
         let ism = c
             .deploy("deploying TeeDcapIsm", art.initcode(&args).into())
             .await?;
-        let got = pinned_measurements(&c.rpc, ism).await?;
-        if got != measurements {
-            bail!("the new ISM {ism} pins {got}, expected {measurements}");
+        let got = ITeeDcapIsm::new(ism, &c.p).enclaves().call().await?;
+        if got.measurements != set.measurements || got.identities != set.identities {
+            bail!("the new ISM {ism} does not pin the recorded set");
         }
         d.evm_mut(chain.name).ism = Some(ism);
         ctx.save(&d)?;
@@ -384,38 +453,34 @@ pub async fn celestia(ctx: &Ctx, selection: &[String]) -> Result<()> {
         let enclave = chains::enclave_for(chain.name);
         print::step(format!("{} origin ({enclave} enclave)", chain.label));
         let mut d = ctx.deployment()?;
-        let identity = d
-            .enclaves
-            .chains
-            .get(enclave)
-            .and_then(|e| e.identity_digest.clone())
-            .with_context(|| format!("no identity for the {enclave} enclave; run `teeism enclaves up`"))?;
-        let identity_file = enclaves::quote::identity_file(ctx, enclave);
-        let want = hex::encode(b32(&identity)?);
+        let set = enclave_set(ctx, enclave)?;
+        let identity = format!("{}", set.digest);
+        let want = hex::encode(set.digest);
+        let files: Vec<String> = set
+            .files
+            .iter()
+            .map(|f| f.to_string_lossy().to_string())
+            .collect();
         let mut genesis = None;
 
         if let Some(existing) = d.celestia.isms.get(chain.name).cloned() {
             let ism = query_ism(&appd, &existing)?;
             let pinned = hex::encode(&ism.state[ism.state.len().saturating_sub(32)..]);
             if pinned == want {
-                print::info(format!("{existing} already pins this enclave"));
+                print::info(format!("{existing} already pins these enclaves"));
                 continue;
             }
             if ism.owner == relayer {
-                print::info(format!("re-pinning {existing}: 0x{pinned} -> 0x{want}"));
-                appd.tx(
-                    &format!("re-pinning the {} ISM", chain.name),
-                    "relayer",
-                    &[
-                        "teeism",
-                        "update-identity",
-                        &existing,
-                        &identity_file.to_string_lossy(),
-                    ],
-                )?;
+                print::info(format!(
+                    "re-pinning {existing}: 0x{pinned} -> 0x{want} ({} enclaves)",
+                    files.len()
+                ));
+                let mut args = vec!["teeism", "set-identities", existing.as_str()];
+                args.extend(files.iter().map(String::as_str));
+                appd.tx(&format!("re-pinning the {} ISM", chain.name), "relayer", &args)?;
                 let after = query_ism(&appd, &existing)?;
                 if hex::encode(&after.state[after.state.len() - 32..]) != want {
-                    bail!("{existing} does not pin the new identity after the re-pin");
+                    bail!("{existing} does not pin the new set after the re-pin");
                 }
                 print::ok(format!("{existing} re-pinned"));
                 continue;
@@ -443,12 +508,13 @@ pub async fn celestia(ctx: &Ctx, selection: &[String]) -> Result<()> {
                 }
             },
         };
-        let identity_json: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&identity_file)
-                .with_context(|| format!("reading {}", identity_file.display()))?,
-        )?;
+        let mut identities = Vec::new();
+        for f in &set.files {
+            let raw = std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?;
+            identities.push(serde_json::from_str::<serde_json::Value>(&raw)?);
+        }
         let tree = appd::pad32(&merkle_hook_of(&d, chain)?);
-        let origin = serde_json::json!({ "state": format!("0x{}", hex::encode(&genesis)), "merkle_tree_address": tree, "identity": identity_json });
+        let origin = serde_json::json!({ "state": format!("0x{}", hex::encode(&genesis)), "merkle_tree_address": tree, "identities": identities });
         let file = ctx
             .state_dir
             .join("identity")
@@ -561,4 +627,24 @@ pub async fn celestia(ctx: &Ctx, selection: &[String]) -> Result<()> {
         return Err(Incomplete(incomplete).into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod set_tests {
+    use super::*;
+
+    /// The vectors TeeDcapIsm's and x/teeism's tests pin: all three name a set alike.
+    #[test]
+    fn the_set_digest_matches_both_isms() {
+        let b = |x: u8| FixedBytes::<32>::from([x; 32]);
+        assert_eq!(identity_set_digest(&[b(0x11)]), b(0x11));
+        assert_eq!(
+            format!("{}", identity_set_digest(&[b(0x11), b(0x22)])),
+            "0xec1daf6eea2286feaecc70758f647a8e318b73f711043bffd2d6bcb0a5b41807"
+        );
+        assert_eq!(
+            format!("{}", identity_set_digest(&[b(0x11), b(0x22), b(0x33)])),
+            "0x2fa9b2f90d7deb2663ea2c8b1bd32985ddac3c536c93656d3cf92ba14676d77e"
+        );
+    }
 }

@@ -13,11 +13,11 @@ Rotations: [MAINTAIN.md](MAINTAIN.md). Multisig before mainnet ([Celestia](#tran
 
 | Control | Celestia | EVM |
 |---|---|---|
-| Re-pin identity | `tx teeism update-identity` | `setEnclave` (ISM `VERSION` 3+) |
+| Set the pinned enclaves (any one may attest) | `tx teeism set-identities` | `setEnclaves` |
 | Transfer ownership | `tx teeism update-owner` | `transferOwnership` |
 | New Intel root CA | `set-verifier-overrides --trusted-root-cert` | new PCCS `PcsDao` |
 | New quote version | v4, v5 built in; later: celestia-app upgrade | `setQuoteVerifier` (`teeism pccs deploy` registers v4 and v5) |
-| Stop an ISM | re-pin to unused identity | `setEnclave` to unused measurements |
+| Stop an ISM | pin an unused identity | `setEnclaves` with unused measurements |
 
 ## Setup
 
@@ -43,14 +43,15 @@ $A q teeism ism $ISM --node http://localhost:26657 -o json | jq '.ism | {owner, 
 
 ### Re-pin the enclave identity
 
-`teeism isms celestia` does this for every ISM `relayer` owns. By hand:
+An ISM pins a set of 1 to 8 enclaves; any one may attest. `set-identities` replaces the whole set, so pass every enclave that should stay. `teeism isms celestia` does this for every ISM `relayer` owns, from the enclaves recorded for the origin. By hand:
 
-**Payload:** `.state/identity/<enclave>.json` (`teeism enclaves up` or `teeism enclaves identity`), or read the live enclave:
+**Payload:** one identity file per enclave, `.state/identity/<enclave>.json` and `.state/identity/<enclave>@<target>-<n>.json` for one added with `--add` (`teeism enclaves up` or `teeism enclaves identity`), or read a live enclave:
 
 ```sh
-../tee-hyperlane/target/release/tee-hyperlane identity --url $(jq -r .enclaves.chains.$ENCLAVE.url $D) --json /tmp/identity.json
-.state/bin/teeism-identity -identity /tmp/identity.json      # digest, to compare with `teeism status`
-$A tx teeism update-identity $ISM /tmp/identity.json --from relayer $TX
+../tee-hyperlane/target/release/tee-hyperlane identity --url $(jq -r ".enclaves.chains.$ENCLAVE[0].url" $D) --json /tmp/identity.json
+.state/bin/teeism-identity -identity /tmp/identity.json      # its digest, to compare with `teeism status`
+.state/bin/teeism-identity -identity a.json -identity b.json # the set's digest, which the ISM state carries
+$A tx teeism set-identities $ISM a.json b.json --from relayer $TX
 ```
 
 ### Transfer ownership
@@ -64,7 +65,7 @@ Multisig owner:
 
 ```sh
 $A keys add admin --multisig signer1,signer2,signer3 --multisig-threshold 2 $H
-$A tx teeism update-identity $ISM /tmp/identity.json --from admin --generate-only $TX > unsigned.json
+$A tx teeism set-identities $ISM /tmp/identity.json --from admin --generate-only $TX > unsigned.json
 $A tx sign unsigned.json --from signer1 --multisig $($A keys show admin -a $H) $TX > s1.json   # each signer
 $A tx multisign unsigned.json admin s1.json s2.json $TX > signed.json
 $A tx broadcast signed.json --node http://localhost:26657
@@ -87,11 +88,11 @@ $A tx teeism set-verifier-overrides $ISM --clear --from relayer $TX     # back t
 
 ### Stop an ISM
 
-Re-pin back to resume.
+Pin an identity no enclave has; re-pin the real set to resume.
 
 ```sh
 jq '.compose_hash = "0x" + ("00" * 32)' /tmp/identity.json > /tmp/stopped.json
-$A tx teeism update-identity $ISM /tmp/stopped.json --from relayer $TX
+$A tx teeism set-identities $ISM /tmp/stopped.json --from relayer $TX
 ```
 
 ## EVM
@@ -104,19 +105,21 @@ CHAIN=base                                 # any of arbitrum, base, sepolia, ede
 ISM=$(jq -r .evm.$CHAIN.ism $D)
 RPC=https://sepolia.base.org               # the chain's endpoint (DEPLOY G)
 cast call $ISM "owner()(address)" --rpc-url $RPC
-cast call $ISM "VERSION()(uint8)" --rpc-url $RPC      # reverts on revision 1
+cast call $ISM "VERSION()(uint8)" --rpc-url $RPC
+cast call $ISM "enclaves()(bytes32[],bytes32[])" --rpc-url $RPC   # pinned measurements, identity digests
 ```
 
 ### Re-pin the enclave identity
 
 `teeism isms evm` does this for every ISM its signer owns. `VERSION` other than this checkout's: it replaces the ISM from its last state, and `teeism warp evm` re-points the routers.
 
-**Payload:** the Celestia enclave's `keccak256(mr_td ++ mr_config_id ++ rtmr0 ++ rtmr1 ++ rtmr2)` and identity digest, read from its quote by `teeism enclaves up` (or `teeism enclaves identity`):
+**Payload:** for each Celestia enclave to pin, its `keccak256(mr_td ++ mr_config_id ++ rtmr0 ++ rtmr1 ++ rtmr2)` and identity digest, read from its quote by `teeism enclaves up` (or `teeism enclaves identity`). `setEnclaves` replaces the whole set; the identities must be ascending, each measurement at the same position as its identity:
 
 ```sh
-MEASUREMENTS=$(jq -r .enclaves.chains.celestia.measurements $D)
-IDENTITY=$(jq -r .enclaves.chains.celestia.identity_digest $D)
-cast send $ISM "setEnclave(bytes32,bytes32)" $MEASUREMENTS $IDENTITY --rpc-url $RPC $SIGN
+PAIRS=$(jq -r '.enclaves.chains.celestia | map({i: .identity_digest, m: .measurements}) | unique_by(.i) | sort_by(.i)' $D)
+MEASUREMENTS=$(jq -r 'map(.m) | "[" + join(",") + "]"' <<<"$PAIRS")
+IDENTITIES=$(jq -r 'map(.i) | "[" + join(",") + "]"' <<<"$PAIRS")
+cast send $ISM "setEnclaves(bytes32[],bytes32[])" "$MEASUREMENTS" "$IDENTITIES" --rpc-url $RPC $SIGN
 ```
 
 ### <a name="evm-transfer-ownership"></a>Transfer ownership

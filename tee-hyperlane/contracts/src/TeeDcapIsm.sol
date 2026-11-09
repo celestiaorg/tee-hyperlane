@@ -39,9 +39,12 @@ interface IInterchainSecurityModule {
 /// record must have been published on this chain. That is a data prerequisite, not a trust
 /// one: the record is signed by Intel and checked on upload.
 ///
-/// Which enclave it admits is the owner's to change (`setEnclave`), so that a platform update
-/// under the enclave (a new OS image, new firmware) or a replacement enclave is a transaction
-/// rather than a new ISM. That is emergency control over the bridge, held by one key for now.
+/// It admits a set of enclaves, any one of which may attest (`setEnclaves`). A set rather than
+/// one so that a second enclave keeps a route alive, and so that a rotation pins the old and the
+/// new enclave together, moves the relayer, then drops the old one, with nothing refused in
+/// between. Changing the set is the owner's: a platform update under the enclave (a new OS
+/// image, new firmware) or a replacement enclave is a transaction rather than a new ISM. That is
+/// emergency control over the bridge.
 contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     // ---------------------------------------------------------------- layout
     //
@@ -96,16 +99,19 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     uint8 public constant MODULE_TYPE = 43;
 
     /// Which revision of this contract is deployed. `teeism isms evm` replaces an ISM whose
-    /// `VERSION` differs even when it pins the right enclave. 2 accepts v5 quotes; the first
-    /// deployments have no `VERSION` at all. 3 lets the owner re-pin the enclave. 4 bounds how
-    /// often a batch with no messages may advance the state. 5 attests the origin tree's root
-    /// and has each message prove itself at delivery, instead of carrying every message id.
-    /// 6 answers `verify` for any caller, so it can sit behind a routing ISM.
-    uint8 public constant VERSION = 6;
+    /// `VERSION` differs even when it pins the right enclaves.
+    uint8 public constant VERSION = 1;
+
+    /// The most enclaves one ISM admits. Any of them may attest, so every one added widens what
+    /// has to stay honest; the bound keeps the set a handful, and the gas of replacing it fixed.
+    uint256 public constant MAX_ENCLAVES = 8;
+
+    /// Domain tag of the set digest, identical to the Celestia module's.
+    bytes private constant IDENTITY_SET_TAG = "teeism/identity-set/v1";
 
     IDcapAttestation public immutable dcap;
 
-    /// keccak256(mr_td ++ mr_config_id ++ rtmr0 ++ rtmr1 ++ rtmr2).
+    /// Each pinned enclave's keccak256(mr_td ++ mr_config_id ++ rtmr0 ++ rtmr1 ++ rtmr2).
     ///
     /// Everything here is signed by Intel as part of the TD report, and every field is a
     /// property of the code and the environment rather than of the machine it ran on:
@@ -120,11 +126,19 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     /// the first enclave replacement. Leaving it out costs nothing, because `mr_config_id`
     /// already carries the compose hash that the Celestia module has to replay the event log
     /// to recover.
-    bytes32 public enclaveMeasurements;
+    ///
+    /// Kept in the order of `_identities`, entry for entry.
+    bytes32[] private _measurements;
+    /// Whether a measurement belongs to a pinned enclave: the check every attestation makes.
+    mapping(bytes32 => bool) public pinned;
+    /// Each pinned enclave's identity digest, as the Celestia module computes it, ascending.
+    bytes32[] private _identities;
 
-    /// The identity digest the attested state must carry, which is the same 32 bytes the
-    /// Celestia ISM pins. Redundant with the measurements above and kept anyway, so the two
-    /// chains name the same enclave in a form a human can compare.
+    /// The digest of the pinned set, which every attested state must carry: the one identity
+    /// digest when one enclave is pinned, otherwise
+    /// sha256("teeism/identity-set/v1" ++ uint8(n) ++ the identity digests in ascending order).
+    /// The Celestia module computes the same, so the two chains name the same set in a form a
+    /// human can compare.
     bytes32 public identityDigest;
 
     /// Origin merkle tree hook, as a Hyperlane message addresses it.
@@ -149,9 +163,7 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     event StateAdvanced(
         bytes32 indexed stateRoot, uint64 height, uint64 timestamp, bytes32 treeRoot, uint32 treeCount
     );
-    event EnclaveChanged(
-        bytes32 previousMeasurements, bytes32 measurements, bytes32 previousIdentity, bytes32 identity
-    );
+    event EnclavesChanged(bytes32 previousIdentityDigest, bytes32 identityDigest, bytes32[] measurements);
 
     /// The verifier refused the quote. `code` is Automata's four-letter reason, kept raw so
     /// the failure path stays cheap; call `describeQuoteError` off chain to expand it.
@@ -160,7 +172,8 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     error UnsupportedQuote(uint16 version, uint16 bodyType);
     error TcbNotAcceptable(uint8 status);
     error DebugEnclave();
-    error WrongEnclave(bytes32 expected, bytes32 measured);
+    error WrongEnclave(bytes32 measured);
+    error BadEnclaveSet();
     error PayloadNotAttested();
     error ReportDataNotPadded();
     error MalformedPayload();
@@ -176,41 +189,77 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     error AttestedBeforeState(uint64 attestedAt, uint64 stateTimestamp);
     error EmptyBatchTooSoon(uint64 previous, uint64 next, uint64 minInterval);
 
+    /// `measurements[i]` and `identities[i]` describe the same enclave; `identities` ascending.
     constructor(
         IDcapAttestation _dcap,
-        bytes32 _enclaveMeasurements,
-        bytes32 _identityDigest,
+        bytes32[] memory measurements,
+        bytes32[] memory identities,
         bytes32 _merkleTreeAddress,
         address _mailbox,
         bytes memory _genesisState,
         uint256 _maxQuoteSkew
     ) Ownable() {
         if (_genesisState.length != STATE_BYTES) revert MalformedPayload();
-        // The genesis state has to name the enclave this ISM pins, or the first attestation
-        // would be refused and the ISM would be dead on arrival.
-        if (_readBytes32(_genesisState, 84) != _identityDigest) revert IdentityChanged();
+        bytes32 digest = _pin(measurements, identities);
+        // The genesis state has to name the set this ISM pins, or the first attestation would
+        // be refused and the ISM would be dead on arrival.
+        if (_readBytes32(_genesisState, 84) != digest) revert IdentityChanged();
 
         dcap = _dcap;
-        enclaveMeasurements = _enclaveMeasurements;
-        identityDigest = _identityDigest;
+        identityDigest = digest;
         merkleTreeAddress = _merkleTreeAddress;
         mailbox = _mailbox;
         state = _genesisState;
         maxQuoteSkew = _maxQuoteSkew;
     }
 
-    /// Admit a different enclave from now on. The trusted state keeps its root, height and
-    /// light client store; only the identity digest it carries is swapped, because the enclave
-    /// copies that forward into every state it attests. So nothing in flight is lost.
-    function setEnclave(bytes32 _enclaveMeasurements, bytes32 _identityDigest) external onlyOwner {
-        emit EnclaveChanged(enclaveMeasurements, _enclaveMeasurements, identityDigest, _identityDigest);
-        enclaveMeasurements = _enclaveMeasurements;
-        identityDigest = _identityDigest;
+    /// Admit exactly these enclaves from now on, replacing the whole set in one transaction.
+    /// A rotation pins the old and the new enclave together, moves the relayer, then pins the
+    /// new one alone, so no attestation is refused on the way.
+    ///
+    /// The trusted state keeps its root, height and light client store; only the identity
+    /// digest it carries is swapped, because the enclave copies that forward into every state
+    /// it attests. So nothing in flight is lost.
+    function setEnclaves(bytes32[] calldata measurements, bytes32[] calldata identities) external onlyOwner {
+        for (uint256 i = 0; i < _measurements.length; i++) {
+            pinned[_measurements[i]] = false;
+        }
+        bytes32 digest = _pin(measurements, identities);
+        emit EnclavesChanged(identityDigest, digest, measurements);
+        identityDigest = digest;
         bytes memory current = state;
         assembly {
-            mstore(add(add(current, 32), 84), _identityDigest)
+            mstore(add(add(current, 32), 84), digest)
         }
         state = current;
+    }
+
+    /// The pinned enclaves: measurements and identity digests, entry for entry.
+    function enclaves() external view returns (bytes32[] memory measurements, bytes32[] memory identities) {
+        return (_measurements, _identities);
+    }
+
+    /// The digest a set of identity digests is named by. `identities` must be ascending.
+    function identitySetDigest(bytes32[] memory identities) public pure returns (bytes32) {
+        if (identities.length == 1) return identities[0];
+        return sha256(abi.encodePacked(IDENTITY_SET_TAG, uint8(identities.length), identities));
+    }
+
+    /// Store a set and return its digest. One to `MAX_ENCLAVES` enclaves, a measurement per
+    /// identity, identities strictly ascending: one canonical encoding per set, so both chains
+    /// arrive at the same digest and a duplicate cannot pad it.
+    function _pin(bytes32[] memory measurements, bytes32[] memory identities) private returns (bytes32) {
+        uint256 n = identities.length;
+        if (n == 0 || n > MAX_ENCLAVES || measurements.length != n) revert BadEnclaveSet();
+        for (uint256 i = 1; i < n; i++) {
+            if (identities[i] <= identities[i - 1]) revert BadEnclaveSet();
+        }
+        for (uint256 i = 0; i < n; i++) {
+            pinned[measurements[i]] = true;
+        }
+        _measurements = measurements;
+        _identities = identities;
+        return identitySetDigest(identities);
     }
 
     function moduleType() external pure returns (uint8) {
@@ -279,7 +328,7 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
         bytes32 measured = keccak256(
             abi.encodePacked(_slice(out, OFF_MRTD, LEN_MRTD), _slice(out, OFF_RTMR0, LEN_RTMR))
         );
-        if (measured != enclaveMeasurements) revert WrongEnclave(enclaveMeasurements, measured);
+        if (!pinned[measured]) revert WrongEnclave(measured);
     }
 
     /// The quote must commit to exactly this payload.

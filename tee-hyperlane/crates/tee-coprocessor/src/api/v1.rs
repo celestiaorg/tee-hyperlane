@@ -166,6 +166,8 @@ pub struct RouteView {
     pub failing: Option<Failing>,
     pub staged: Option<Staged>,
     pub activity: Option<Activity>,
+    /// Every enclave the route may attest with, and how each last fared.
+    pub enclaves: Vec<crate::route::EnclaveHealth>,
     /// When a quiet route next attests with no messages: an hour after the ISM's trusted state.
     pub next_heartbeat_at: Option<u64>,
     /// The latest attestations landed on this route's ISM, newest first.
@@ -471,6 +473,7 @@ fn route_view(
                 at: a["at"].as_u64()?,
             })
         }),
+        enclaves: crate::tracker::read_json(&route.dir.join("enclaves.json")).unwrap_or_default(),
         next_heartbeat_at: ism_timestamp.map(|t| t + crate::route::HEARTBEAT.as_secs()),
         attestations: recent_attestations(tracker, route),
         counts,
@@ -1089,6 +1092,7 @@ mod tests {
                 since: 1,
                 at: 1,
             }),
+            enclaves: vec![],
             next_heartbeat_at: Some(1),
             attestations: vec![AttestationView {
                 height: 2,

@@ -63,15 +63,17 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
             ),
         );
     }
-    for (chain, e) in &d.enclaves.chains {
-        let up = matches!(
-            reqwest::Client::new().get(format!("{}/health", e.url)).timeout(Duration::from_secs(10)).send().await,
-            Ok(r) if r.status().is_success()
-        );
-        let state = if up { "up" } else { "NOT ANSWERING" };
-        print::kv(chain, format!("{state} {}", e.url));
-        print::kv("  identity", e.identity_digest.as_deref().unwrap_or("-"));
-        print::kv("  measurements", e.measurements.as_deref().unwrap_or("-"));
+    for (chain, list) in &d.enclaves.chains {
+        for e in list {
+            let up = matches!(
+                reqwest::Client::new().get(format!("{}/health", e.url)).timeout(Duration::from_secs(10)).send().await,
+                Ok(r) if r.status().is_success()
+            );
+            let state = if up { "up" } else { "NOT ANSWERING" };
+            print::kv(&format!("{chain} ({})", e.target), format!("{state} {}", e.url));
+            print::kv("  identity", e.identity_digest.as_deref().unwrap_or("-"));
+            print::kv("  measurements", e.measurements.as_deref().unwrap_or("-"));
+        }
     }
 
     for chain in &EVM_CHAINS {

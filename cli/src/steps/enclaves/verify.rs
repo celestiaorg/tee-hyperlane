@@ -36,7 +36,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
             .map(|c| c.app_id.clone())
             .with_context(|| format!("no recorded {} CVM; pass --app-id", a.target))?,
     };
-    let first = *chains_in(&a.target).first().context("unknown target")?;
+    let first = *chains_in(crate::shared::record::slot_target(&a.target))
+        .first()
+        .context("unknown target")?;
     let gateway = match d
         .enclaves
         .cvms
@@ -114,15 +116,17 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
             .and_then(|e| e.ism)
             .with_context(|| format!("no ISM recorded on {}", chain.label))?;
         let pinned = crate::steps::isms::pinned_measurements(&chain.rpc(ctx), ism).await?;
-        if pinned == measurements(&id.quote)? {
+        if pinned.contains(&measurements(&id.quote)?) {
             print::ok(format!(
-                "the ISM {ism} on {} pins exactly this enclave",
-                chain.label
+                "the ISM {ism} on {} pins this enclave ({} pinned in all)",
+                chain.label,
+                pinned.len()
             ));
         } else {
             print::bad(format!(
-                "the ISM {ism} on {} pins {pinned}: it would reject this enclave",
-                chain.label
+                "the ISM {ism} on {} pins {}: it would reject this enclave",
+                chain.label,
+                pinned.join(", ")
             ));
             failed.push("ism");
         }

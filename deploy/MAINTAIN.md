@@ -51,22 +51,30 @@ teeism ui --public-url http://178.199.12.26:3000      # UI changes only
 
 For anything that changes what the ISMs pin: enclave code (`crates/tee-node`, `hyperlane-types`, `tee-hyperlane/Cargo.lock`, which pins helios), a new dstack OS image, another instance type, or Phala host maintenance that moved the measurements. Every ISM keeps its address and state; tokens, routers, the PCCS and the Celestia chain are untouched. Done this way on 2026-10-26 (dstack 0.5.12 -> 0.6.1).
 
+The new enclave runs next to the old one, and the ISMs pin both until the relayer has moved, so no attestation is refused on the way:
+
 ```sh
 git pull && git -C ../celestia-app-local pull && cargo install --locked --path cli && teeism build
 cp -a devnet/.state ~/teeism-state-$(date +%F)            # backup
 teeism images        # only if enclave code changed; enclaves up refuses otherwise. Then: git add deploy/ && git commit && git push
 teeism celestia up --new-image                             # only if x/teeism changed (e.g. its identity)
-teeism enclaves up && teeism enclaves verify               # new CVM; every verify line ok
-teeism isms evm && teeism isms celestia                    # every line must say re-pinning
+teeism enclaves up --add && teeism enclaves verify --target all#2   # new CVM next to the old; every verify line ok
+teeism isms evm && teeism isms celestia                    # pin {old, new}: every line must say re-pinning
+teeism services restart                                    # the relayer lists both; either may attest
+teeism enclaves retire all                                 # drop the old one from the record; it keeps running
+teeism isms evm && teeism isms celestia                    # pin {new}
 teeism services restart
 teeism smoke                                               # Sepolia -> Celestia takes up to ~20 min
 teeism enclaves delete --retired                           # only once smoke passed
 ```
 
+`--add` puts the new CVM in slot `all#2` (`<chain>#2` with `--chain`); `teeism status` lists the slots. Without `--add`, `enclaves up` replaces the CVM at once, as before, and attestations from the old one are refused (`WrongEnclave`) until `services restart`.
+
 - Anything saying `replacing`, or `belongs to an earlier deployment`, instead of `re-pinning`: stop. An ISM owned by a multisig is re-pinned from the multisig first ([ADMIN](ADMIN.md#re-pin-the-enclave-identity)).
 - `isms celestia` failing with `invalid enclave identity`: the node still runs the old celestia-app; run `teeism celestia up --new-image` first.
 - Expected while switching: routes failing for minutes (`enclave unreachable` on the old CVM, `localhost:26657 connection reset` during the node restart, one `account sequence mismatch`, `nothing from the base sequencer` after the restart). Nothing is lost; they recover on their own.
-- Rollback before `delete --retired`: the old CVM still runs; re-pin to it ([ADMIN](ADMIN.md#re-pin-the-enclave-identity)).
+- Rollback before `delete --retired`: the old CVM still runs. Before `enclaves retire`, nothing to do but `retire all#2`, re-pin and restart; after, re-pin to it ([ADMIN](ADMIN.md#re-pin-the-enclave-identity)).
+- A second enclave for uptime, not a rotation: `teeism enclaves up --add`, re-pin, restart, and leave both. The relayer falls back from one to the other; the dashboard and `route-enclaves` notifications say when one fails.
 - A changed `TeeDcapIsm` `VERSION` replaces each EVM ISM from its last state and re-points the routers (`teeism warp evm`). It never redeploys a router: a new router orphans what the old one minted.
 - Then update the enclave section of `README.md`.
 

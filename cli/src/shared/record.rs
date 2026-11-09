@@ -47,10 +47,13 @@ pub struct Celestia {
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Enclaves {
-    /// Phala CVMs by target: `all` for the shared CVM, or a chain deployed alone.
+    /// Phala CVMs by slot. A slot is a target (`all` for the shared CVM, or a chain deployed
+    /// alone), or `<target>#<n>` for an extra CVM `teeism enclaves up --add` started next to it.
     pub cvms: BTreeMap<String, Cvm>,
-    /// Per enclave chain: where it answers and the identity ISMs pin for it.
-    pub chains: BTreeMap<String, Enclave>,
+    /// Per enclave chain: every enclave serving it, where each answers and the identity ISMs
+    /// pin for it. ISMs pin all of them; any one may attest.
+    #[serde(deserialize_with = "one_or_many")]
+    pub chains: BTreeMap<String, Vec<Enclave>>,
     /// CVMs a newer one replaced. They keep running, and billing, until deleted
     /// (`teeism enclaves delete --retired`), which is done once the new one is verified.
     pub retired: Vec<Cvm>,
@@ -75,7 +78,7 @@ pub struct Cvm {
 #[serde(default)]
 pub struct Enclave {
     pub url: String,
-    /// The CVM target it runs in.
+    /// The CVM slot it runs in: a key of `Enclaves::cvms`.
     pub target: String,
     /// What an x/teeism ISM pins: the digest of the identity read from the quote.
     pub identity_digest: Option<String>,
@@ -144,5 +147,48 @@ impl Deployment {
             .teeusd_token
             .as_ref()
             .map(|t| format!("hyperlane/{t}"))
+    }
+}
+
+/// The target a CVM slot runs: `celestia#2` runs `celestia`.
+pub fn slot_target(slot: &str) -> &str {
+    slot.split('#').next().unwrap_or(slot)
+}
+
+/// A record written when each chain had one enclave stores it bare; read it as a list of one.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Vec<Enclave>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        Many(Vec<Enclave>),
+        One(Enclave),
+    }
+    let raw = BTreeMap::<String, OneOrMany>::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .map(|(k, v)| match v {
+            OneOrMany::Many(list) => (k, list),
+            OneOrMany::One(e) => (k, vec![e]),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A record from when each chain had one enclave loads as lists of one; a new one as lists.
+    #[test]
+    fn a_bare_enclave_reads_as_a_list_of_one() {
+        let old = r#"{"enclaves":{"chains":{"celestia":{"url":"https://a-8080.g","target":"all"}}}}"#;
+        let d: Deployment = serde_json::from_str(old).unwrap();
+        assert_eq!(d.enclaves.chains["celestia"].len(), 1);
+        assert_eq!(d.enclaves.chains["celestia"][0].url, "https://a-8080.g");
+
+        let new = r#"{"enclaves":{"chains":{"celestia":[{"url":"u1","target":"all"},{"url":"u2","target":"celestia#2"}]}}}"#;
+        let d: Deployment = serde_json::from_str(new).unwrap();
+        assert_eq!(d.enclaves.chains["celestia"].len(), 2);
+        assert_eq!(slot_target("celestia#2"), "celestia");
+        assert_eq!(slot_target("all"), "all");
     }
 }

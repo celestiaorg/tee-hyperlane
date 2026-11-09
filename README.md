@@ -138,7 +138,8 @@ teeism-gas-oracle  systemd  paymaster upkeep
 
 - Enclave is stateless; its state lives in the ISM.
 - Shared CVM = one identity: any image change re-pins all 8 ISMs. A chain in its own CVM re-pins only its ISMs.
-- Re-pin in place: `TeeDcapIsm.setEnclave` (EVM, revision 3+), `tx teeism update-identity` (Celestia). Address, root, height kept; no router moves. Only a `TeeDcapIsm` `VERSION` change replaces an EVM ISM, from its predecessor's last state, and re-points the routers.
+- Each ISM pins a set of 1 to 8 enclaves, any one of which may attest; the state carries the set's digest. Two enclaves keep a route up while one is down, and a rotation pins old and new together so nothing is refused.
+- Re-pin in place: `TeeDcapIsm.setEnclaves` (EVM), `tx teeism set-identities` (Celestia). Address, root, height kept; no router moves. Only a `TeeDcapIsm` `VERSION` change replaces an EVM ISM, from its predecessor's last state, and re-points the routers.
 - `tx teeism set-verifier-overrides`: trust a rotated Intel root CA. Nothing relaxes Intel's verification.
 - `tx teeism update-owner`: hand an ISM to a multisig. EVM controls sit with the Automata owner. See [ADMIN.md](deploy/ADMIN.md).
 - Rollups: enclave checks the sequencer signature, takes the signed state root, proves the tree. No re-execution, no L1 wait.

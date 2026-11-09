@@ -304,12 +304,14 @@ pub fn coprocessor_toml(ctx: &Ctx, d: &Deployment) -> Result<String> {
         writeln!(w, "mailbox = \"{mailbox}\"\nmerkle_tree_hook = \"{hook}\"")?;
     }
 
-    // A route only once its ISM and its enclave exist.
+    // A route only once its ISM and its enclaves exist. Every enclave serving the origin is
+    // listed; the ISM pins them all and the relayer falls back from one to the next.
     let enclave_url = |origin: &str| {
         d.enclaves
             .chains
             .get(chains::enclave_for(origin))
-            .map(|e| e.url.clone())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.iter().map(|e| e.url.clone()).collect::<Vec<_>>())
     };
     let quote = |v: &[String]| {
         v.iter()
@@ -334,7 +336,8 @@ pub fn coprocessor_toml(ctx: &Ctx, d: &Deployment) -> Result<String> {
         )?;
         writeln!(
             w,
-            "enclave = \"{url}\"\nism = \"{ism}\"\nrouters = [{}]",
+            "enclaves = [{}]\nism = \"{ism}\"\nrouters = [{}]",
+            quote(&url),
             quote(&routers)
         )?;
     }
@@ -353,7 +356,8 @@ pub fn coprocessor_toml(ctx: &Ctx, d: &Deployment) -> Result<String> {
         )?;
         writeln!(
             w,
-            "enclave = \"{url}\"\nism = \"{ism}\"\nrouters = [{}]",
+            "enclaves = [{}]\nism = \"{ism}\"\nrouters = [{}]",
+            quote(&url),
             quote(&routers)
         )?;
         // Sepolia is read from a full node, whose proofs at an old block slow down the further

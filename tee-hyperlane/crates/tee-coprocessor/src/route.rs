@@ -96,7 +96,7 @@ pub struct Route {
     origin: Box<dyn Indexer>,
     destination: Box<dyn Destination>,
     destination_domain: u32,
-    enclave: EnclaveClient,
+    enclaves: EnclavePool,
     dir: PathBuf,
 }
 
@@ -106,6 +106,11 @@ impl Route {
         std::fs::create_dir_all(dir.join("staging"))?;
         std::fs::create_dir_all(dir.join("undelivered"))?;
         std::fs::create_dir_all(dir.join("delivered"))?;
+        anyhow::ensure!(
+            !route.enclaves.is_empty(),
+            "route {} names no enclaves",
+            route.name
+        );
         Ok(Self {
             origin: config
                 .indexer(&route.from)
@@ -114,7 +119,7 @@ impl Route {
                 .destination(&route.to, &route.ism)
                 .with_context(|| format!("route {}", route.name))?,
             destination_domain: config.domain(&route.to)?,
-            enclave: EnclaveClient::new(&route.enclave),
+            enclaves: EnclavePool::new(&route.enclaves, dir.join("enclaves.json")),
             config: route.clone(),
             dir,
         })
@@ -272,7 +277,7 @@ impl Route {
             "tree": step.tree,
             "merkle_tree_address": step.tree_address,
         });
-        let attestation = self.enclave.attest(&request).await?;
+        let (attestation, enclave) = self.enclaves.attest(&request).await?;
         let new_state = tee_node::state::IsmState::decode(&hex::decode(
             attestation.new_state.trim_start_matches("0x"),
         )?)?;
@@ -312,6 +317,7 @@ impl Route {
             "metadata": metadata.iter().map(hex::encode).collect::<Vec<_>>(),
             "from_height": trusted.height,
             "frontier": frontier,
+            "enclave": enclave,
         });
         std::fs::write(self.staged(), serde_json::to_vec_pretty(&record)?)?;
         self.submit_staged().await
@@ -399,6 +405,15 @@ impl Route {
             // re-proves them. The next pass builds from where the ISM actually is.
             Err(e) if e.is::<Stale>() => {
                 warn!(route = %self.config.name, "discarding a batch the ISM has moved past; rebuilding");
+                self.discard(&batch, provenance.as_ref(), &path).await?;
+                return Ok(None);
+            }
+            // The ISM no longer pins the enclave that signed this batch, as after a rotation
+            // dropped it. No retry can land it; the next pass asks another enclave first.
+            Err(e) if refused_enclave(&e) => {
+                let enclave = record["enclave"].as_str().unwrap_or_default().to_string();
+                warn!(route = %self.config.name, %enclave, "the ISM does not pin the enclave that signed this batch; rebuilding with another");
+                self.enclaves.refused(&enclave, &format!("{e:#}"));
                 self.discard(&batch, provenance.as_ref(), &path).await?;
                 return Ok(None);
             }
@@ -979,10 +994,194 @@ impl EnclaveClient {
     }
 }
 
+/// How the ISMs say a quote is not from an enclave they pin: `TeeDcapIsm`'s
+/// `WrongEnclave(bytes32)` (by name, or its selector in raw revert data) and `x/teeism`'s
+/// ErrIdentityMismatch.
+const ENCLAVE_REFUSALS: &[&str] = &[
+    "WrongEnclave",
+    "466bb58c",
+    "quote does not come from a pinned enclave",
+];
+
+fn refused_enclave(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}");
+    ENCLAVE_REFUSALS.iter().any(|r| text.contains(r))
+}
+
+/// One enclave's recent record, as the dashboard and the monitor read it from `enclaves.json`.
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnclaveHealth {
+    pub url: String,
+    pub last_ok_at: Option<u64>,
+    pub last_error_at: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+impl EnclaveHealth {
+    /// Healthy unless its last word was an error.
+    pub fn healthy(&self) -> bool {
+        match (self.last_ok_at, self.last_error_at) {
+            (_, None) => true,
+            (Some(ok), Some(err)) => ok >= err,
+            (None, Some(_)) => false,
+        }
+    }
+}
+
+/// The enclaves that may attest a route. Any one of them is enough, because the ISM pins them
+/// all; they are asked in turn, starting with the last that answered, so one that is down or
+/// being rotated out costs a retry, not the route.
+struct EnclavePool {
+    clients: Vec<EnclaveClient>,
+    preferred: std::sync::atomic::AtomicUsize,
+    health: std::sync::Mutex<Vec<EnclaveHealth>>,
+    file: PathBuf,
+}
+
+impl EnclavePool {
+    fn new(urls: &[String], file: PathBuf) -> Self {
+        let clients: Vec<EnclaveClient> = urls.iter().map(EnclaveClient::new).collect();
+        let health = clients
+            .iter()
+            .map(|c| EnclaveHealth {
+                url: c.url.clone(),
+                ..Default::default()
+            })
+            .collect();
+        let pool = Self {
+            clients,
+            preferred: Default::default(),
+            health: std::sync::Mutex::new(health),
+            file,
+        };
+        pool.write();
+        pool
+    }
+
+    /// Attest with the first enclave that answers, returning its URL with the attestation.
+    async fn attest(&self, request: &serde_json::Value) -> Result<(Attestation, String)> {
+        use std::sync::atomic::Ordering;
+        let n = self.clients.len();
+        let start = self.preferred.load(Ordering::Relaxed) % n;
+        let mut failures = Vec::new();
+        for k in 0..n {
+            let i = (start + k) % n;
+            let client = &self.clients[i];
+            match client.attest(request).await {
+                Ok(a) => {
+                    if k > 0 {
+                        warn!(enclave = %client.url, "attested by a fallback enclave");
+                    }
+                    self.preferred.store(i, Ordering::Relaxed);
+                    self.note(i, None);
+                    return Ok((a, client.url.clone()));
+                }
+                Err(e) => {
+                    let e = format!("{e:#}");
+                    if n > 1 {
+                        warn!(enclave = %client.url, error = %e, "enclave failed; trying the next");
+                    }
+                    self.note(i, Some(e.clone()));
+                    failures.push(format!("{}: {e}", client.url));
+                }
+            }
+        }
+        anyhow::bail!("no enclave attested: {}", failures.join("; "))
+    }
+
+    /// The ISM refused what `url` signed: mark it and move on to the next enclave.
+    fn refused(&self, url: &str, error: &str) {
+        use std::sync::atomic::Ordering;
+        if let Some(i) = self.clients.iter().position(|c| c.url == url) {
+            self.note(
+                i,
+                Some(format!("the ISM does not pin this enclave: {error}")),
+            );
+            self.preferred
+                .store((i + 1) % self.clients.len(), Ordering::Relaxed);
+        }
+    }
+
+    fn note(&self, i: usize, error: Option<String>) {
+        let at = now();
+        if let Ok(mut h) = self.health.lock() {
+            match error {
+                None => h[i].last_ok_at = Some(at),
+                Some(e) => {
+                    h[i].last_error_at = Some(at);
+                    h[i].last_error = Some(e);
+                }
+            }
+        }
+        self.write();
+    }
+
+    fn write(&self) {
+        if let Ok(h) = self.health.lock() {
+            if let Ok(json) = serde_json::to_vec_pretty(&*h) {
+                let _ = std::fs::write(&self.file, json);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use hyperlane_types::{encode_hyperlane_message, HyperlaneMessage};
+
+    #[test]
+    fn both_isms_refusals_of_an_unpinned_enclave_are_recognised() {
+        for text in [
+            "attestation reverted: WrongEnclave(0x12)",
+            "execution reverted, data: \"0x466bb58c0000\"",
+            "tx failed: quote does not come from a pinned enclave: none of 2 pinned identities match",
+        ] {
+            assert!(refused_enclave(&anyhow::anyhow!(text.to_string())), "{text}");
+        }
+        assert!(!refused_enclave(&anyhow::anyhow!("TrustedStateMismatch")));
+    }
+
+    #[test]
+    fn an_enclave_is_healthy_unless_its_last_word_was_an_error() {
+        let h = |ok, err| EnclaveHealth {
+            url: String::new(),
+            last_ok_at: ok,
+            last_error_at: err,
+            last_error: None,
+        };
+        assert!(h(None, None).healthy());
+        assert!(h(Some(5), Some(4)).healthy());
+        assert!(!h(Some(4), Some(5)).healthy());
+        assert!(!h(None, Some(1)).healthy());
+    }
+
+    /// Every enclave is tried before the route gives up, and each failure is recorded.
+    #[tokio::test]
+    async fn the_pool_asks_every_enclave_before_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("enclaves.json");
+        // Nothing listens on port 9: both fail fast.
+        let urls = vec![
+            "http://127.0.0.1:9/a".to_string(),
+            "http://127.0.0.1:9/b".to_string(),
+        ];
+        let pool = EnclavePool::new(&urls, file.clone());
+        let err = pool
+            .attest(&serde_json::json!({}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("/a") && err.contains("/b"), "{err}");
+        let health: Vec<EnclaveHealth> =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(health.len(), 2);
+        assert!(health.iter().all(|h| !h.healthy()));
+
+        pool.refused("http://127.0.0.1:9/a", "WrongEnclave");
+        assert_eq!(pool.preferred.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
 
     fn message(destination: u32, recipient: [u8; 32]) -> Message {
         let bytes = encode_hyperlane_message(&HyperlaneMessage {

@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 use super::quote::*;
-use crate::shared::record::{Cvm, Enclave};
+use crate::shared::record::{slot_target, Cvm, Deployment, Enclave};
 use crate::shared::settings::Ctx;
 use crate::shared::shell::{first_json, Cmd};
 use crate::shared::{chains, print};
@@ -76,6 +76,8 @@ fn check_pins(ctx: &Ctx, targets: &[String]) -> Result<()> {
 
 pub struct Args {
     pub chains: Vec<String>,
+    /// Start another CVM next to the recorded one instead of replacing it.
+    pub add: bool,
     pub unpinned: bool,
     pub os_image: String,
     pub instance_type: String,
@@ -98,47 +100,66 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<()> {
         check_pins(ctx, &targets)?;
     }
     let mut authenticated = false;
+    let mut slots = Vec::new();
     for target in &targets {
+        let slot = if a.add {
+            next_slot(&ctx.deployment()?, target)
+        } else {
+            target.clone()
+        };
         deploy_cvm(
             ctx,
-            target,
+            &slot,
             Some(&a.os_image),
             &a.instance_type,
             &mut authenticated,
         )
         .await?;
+        slots.push(slot);
     }
 
     print::step("reading each enclave's identity from its quote");
     let ident_dir = ctx.state_dir.join("identity");
     std::fs::create_dir_all(&ident_dir)?;
-    for target in &targets {
-        for chain in chains_in(target) {
-            record_identity(ctx, chain).await?;
+    for slot in &slots {
+        for chain in chains_in(slot_target(slot)) {
+            record_identity(ctx, chain, slot).await?;
         }
+    }
+    if a.add {
+        print::info("the ISMs pin the new enclaves only after `teeism isms evm` and `teeism isms celestia`");
     }
     Ok(())
 }
 
+/// The first free `<target>#<n>` slot, for a CVM started next to the existing ones.
+fn next_slot(d: &Deployment, target: &str) -> String {
+    (2..)
+        .map(|n| format!("{target}#{n}"))
+        .find(|s| !d.enclaves.cvms.contains_key(s))
+        .expect("a free slot")
+}
+
 async fn deploy_cvm(
     ctx: &Ctx,
-    target: &str,
+    slot: &str,
     os_image: Option<&str>,
     instance: &str,
     authenticated: &mut bool,
 ) -> Result<()> {
+    let target = slot_target(slot);
     let compose = compose_file(ctx, target);
     let file = std::fs::read_to_string(&compose)
         .with_context(|| format!("no compose for {target} at {}", compose.display()))?;
     let first = chains_in(target)[0];
-    let mut name = format!("teeism-{target}");
+    let mut name = format!("teeism-{}", slot.replace('#', "-"));
     let mut d = ctx.deployment()?;
 
     // Keep a recorded CVM only if it answers, measured this compose file, and runs the OS image
     // (if one was asked for) and instance type asked for. Answering is not enough: after a
     // re-pin the old CVM is still healthy, and keeping it would leave every ISM pinning the old
     // code.
-    if let Some(cvm) = d.enclaves.cvms.get(target).cloned() {
+    if let Some(cvm) = d.enclaves.cvms.get(slot).cloned() {
         let gateway = match &cvm.gateway {
             Some(g) => g.clone(),
             None => cvm_info(&cvm.app_id)?.gateway,
@@ -151,21 +172,21 @@ async fn deploy_cvm(
                 && cvm.instance_type.as_deref().unwrap_or(DEFAULT_INSTANCE) == instance
             {
                 print::info(format!(
-                    "{target} CVM {} already runs this compose on {}, {instance}",
+                    "{slot} CVM {} already runs this compose on {}, {instance}",
                     cvm.app_id,
                     cvm.os_image.as_deref().unwrap_or("its OS image")
                 ));
-                record_urls(&mut d, target, &cvm.app_id, &gateway)?;
+                record_urls(&mut d, slot, &cvm.app_id, &gateway)?;
                 return ctx.save(&d);
             }
             print::warn(format!(
-                "the recorded {target} CVM {} runs a different compose, OS image or instance type; deploying a new one. \
+                "the recorded {slot} CVM {} runs a different compose, OS image or instance type; deploying a new one. \
                  The old one keeps running (and billing) until `teeism enclaves delete --retired`",
                 cvm.app_id
             ));
         } else {
             print::warn(format!(
-                "the recorded {target} CVM {} is not answering; deploying a new one",
+                "the recorded {slot} CVM {} is not answering; deploying a new one",
                 cvm.app_id
             ));
         }
@@ -190,7 +211,7 @@ async fn deploy_cvm(
     ));
     // --no-dev-os matters: with an SSH key on this machine the CLI otherwise provisions a dev
     // image that allows a shell in the CVM, which would make its measurements meaningless.
-    let mut deploy = Cmd::new(format!("deploying the {target} CVM on Phala"), "phala")
+    let mut deploy = Cmd::new(format!("deploying the {slot} CVM on Phala"), "phala")
         .args(["deploy", "--name", &name, "--compose"])
         .arg(&compose)
         .args(["--instance-type", instance, "--no-dev-os", "--wait", "--json"]);
@@ -200,11 +221,11 @@ async fn deploy_cvm(
     let raw = deploy.output()?;
     let app_id = first_json(&raw)
         .and_then(|v| find_key(&v, &["app_id", "appId"]))
-        .with_context(|| format!("could not read the app id for {target} from phala's output; check `phala cvms ls` for a stray {name}:\n{raw}"))?;
+        .with_context(|| format!("could not read the app id for {slot} from phala's output; check `phala cvms ls` for a stray {name}:\n{raw}"))?;
     // Where Phala put it: the node's gateway, and the OS image it actually runs.
     let info = cvm_info(&app_id)?;
     if let Some(old) = d.enclaves.cvms.insert(
-        target.to_string(),
+        slot.to_string(),
         Cvm {
             name: name.clone(),
             app_id: app_id.clone(),
@@ -235,26 +256,30 @@ async fn deploy_cvm(
             bail!("the {chain} enclave did not answer within 10 minutes; check `phala cvms get {app_id}`");
         }
     }
-    record_urls(&mut d, target, &app_id, &info.gateway)?;
+    record_urls(&mut d, slot, &app_id, &info.gateway)?;
     ctx.save(&d)
 }
 
-/// Point every chain this CVM serves at it. A chain deployed alone later takes over its own.
-fn record_urls(
-    d: &mut crate::shared::record::Deployment,
-    target: &str,
-    app_id: &str,
-    gateway: &str,
-) -> Result<()> {
-    for chain in chains_in(target) {
-        let e = d.enclaves.chains.entry(chain.to_string()).or_default();
+/// Record this CVM's enclave for every chain it serves. A CVM in a plain slot takes each chain
+/// over from any other plain slot (a chain deployed alone replaces the shared CVM for it); one
+/// started with `--add` joins the chain's enclaves, and the ones added before it stay.
+fn record_urls(d: &mut Deployment, slot: &str, app_id: &str, gateway: &str) -> Result<()> {
+    let added = slot.contains('#');
+    for chain in chains_in(slot_target(slot)) {
         let url = chains::enclave_url(app_id, gateway, chain)?;
-        if e.url != url {
-            *e = Enclave {
-                url,
-                target: target.to_string(),
-                ..Enclave::default()
-            };
+        let list = d.enclaves.chains.entry(chain.to_string()).or_default();
+        if !added {
+            list.retain(|e| e.target == slot || e.target.contains('#'));
+        }
+        let fresh = Enclave {
+            url: url.clone(),
+            target: slot.to_string(),
+            ..Enclave::default()
+        };
+        match list.iter_mut().find(|e| e.target == slot) {
+            Some(e) if e.url == url => {}
+            Some(e) => *e = fresh,
+            None => list.push(fresh),
         }
     }
     Ok(())
@@ -279,18 +304,19 @@ fn find_key(v: &Value, keys: &[&str]) -> Option<String> {
 
 // ---------------------------------------------------------------- teeism enclaves identity
 
-/// The identity file x/teeism takes, its digest, and the TeeDcapIsm measurements, for one
-/// enclave. Read from the quote, and only after the event log replays to the RTMRs the
-/// hardware signed.
-pub async fn record_identity(ctx: &Ctx, chain: &str) -> Result<()> {
+/// The identity file x/teeism takes, its digest, and the TeeDcapIsm measurements, for the
+/// `chain` enclave in `slot`. Read from the quote, and only after the event log replays to the
+/// RTMRs the hardware signed.
+pub async fn record_identity(ctx: &Ctx, chain: &str, slot: &str) -> Result<()> {
     let mut d = ctx.deployment()?;
     let url = d
         .enclaves
         .chains
         .get(chain)
+        .and_then(|l| l.iter().find(|e| e.target == slot))
         .map(|e| e.url.clone())
-        .with_context(|| format!("no {chain} enclave recorded; run `teeism enclaves up`"))?;
-    let file = identity_file(ctx, chain);
+        .with_context(|| format!("no {chain} enclave recorded in {slot}; run `teeism enclaves up`"))?;
+    let file = identity_file(ctx, chain, slot);
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -318,28 +344,71 @@ pub async fn record_identity(ctx: &Ctx, chain: &str) -> Result<()> {
         .enclaves
         .chains
         .get_mut(chain)
+        .and_then(|l| l.iter_mut().find(|e| e.target == slot))
         .context("enclave vanished from the record")?;
     e.identity_digest = Some(digest.clone());
     e.measurements = Some(measurements(&id.quote)?);
-    print::kv(&format!("{chain} identity"), &digest);
+    print::kv(&format!("{chain} ({slot}) identity"), &digest);
     print::kv(
-        &format!("{chain} measurements"),
+        &format!("{chain} ({slot}) measurements"),
         e.measurements.as_deref().unwrap_or(""),
     );
-    print::kv(&format!("{chain} mr_td"), mr_td(&id.quote)?);
+    print::kv(&format!("{chain} ({slot}) mr_td"), mr_td(&id.quote)?);
     ctx.save(&d)
 }
 
 /// `teeism enclaves identity`: re-read what each recorded enclave's quote says.
 pub async fn identity(ctx: &Ctx, chains: Vec<String>) -> Result<()> {
-    let chains = if chains.is_empty() {
-        ctx.deployment()?.enclaves.chains.keys().cloned().collect()
+    let d = ctx.deployment()?;
+    let chains: Vec<String> = if chains.is_empty() {
+        d.enclaves.chains.keys().cloned().collect()
     } else {
         chains
     };
     for c in chains {
-        record_identity(ctx, &c).await?;
+        let slots: Vec<String> = d
+            .enclaves
+            .chains
+            .get(&c)
+            .map(|l| l.iter().map(|e| e.target.clone()).collect())
+            .unwrap_or_default();
+        for slot in slots {
+            record_identity(ctx, &c, &slot).await?;
+        }
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- teeism enclaves retire
+
+/// `teeism enclaves retire <slot>`: take a CVM's enclaves out of the record, so the next
+/// `teeism isms` stops pinning them and the next `teeism services restart` stops asking them.
+/// The CVM keeps running until `teeism enclaves delete --retired`, so a rotation can still roll
+/// back. Refuses to leave a chain without an enclave.
+pub fn retire(ctx: &Ctx, slot: &str) -> Result<()> {
+    let mut d = ctx.deployment()?;
+    let cvm = d.enclaves.cvms.get(slot).cloned().with_context(|| {
+        format!(
+            "no CVM recorded in slot {slot}; the slots are: {}",
+            d.enclaves.cvms.keys().cloned().collect::<Vec<_>>().join(", ")
+        )
+    })?;
+    for (chain, list) in &d.enclaves.chains {
+        if list.iter().all(|e| e.target == slot) && !list.is_empty() {
+            bail!("retiring {slot} would leave {chain} without an enclave; start another first (`teeism enclaves up --chain {chain} --add`)");
+        }
+    }
+    for list in d.enclaves.chains.values_mut() {
+        list.retain(|e| e.target != slot);
+    }
+    d.enclaves.cvms.remove(slot);
+    print::info(format!(
+        "retired {slot} (CVM {}); it keeps running until `teeism enclaves delete --retired`",
+        cvm.app_id
+    ));
+    d.enclaves.retired.push(cvm);
+    ctx.save(&d)?;
+    print::info("next: `teeism isms evm`, `teeism isms celestia`, `teeism services restart`");
     Ok(())
 }
 

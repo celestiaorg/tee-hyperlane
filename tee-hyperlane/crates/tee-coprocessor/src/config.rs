@@ -43,8 +43,10 @@ pub struct Route {
     pub name: String,
     pub from: String,
     pub to: String,
-    /// The enclave that attests `from`.
-    pub enclave: String,
+    /// The enclaves that may attest `from`, each one the ISM pins. Asked in turn, starting with
+    /// the last that answered, so a second enclave keeps the route alive while the first is
+    /// down or being rotated out.
+    pub enclaves: Vec<String>,
     /// The ISM on `to` that this route advances.
     pub ism: String,
     /// Our warp routers on `to`, as 32-byte Hyperlane addresses. Only a batch carrying a message

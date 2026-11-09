@@ -21,7 +21,7 @@ Schema: `$B/api/v1/openapi.json` (source: `tee-hyperlane/crates/tee-coprocessor/
 |---|---|
 | `GET /api/v1/health` | status and open problem counts; **HTTP 503 unless `ok`** |
 | `GET /api/v1/inbox[?resolved=true]` | open notifications, most severe first; `resolved` adds last week's |
-| `GET /api/v1/routes` | every route: what its loop is doing now (`activity`), ISM height, origin head, its latest attestations with their transactions (`attestations`, heartbeats marked), when the next heartbeat is due, loop failures, staged batch, transfer counts, notifications |
+| `GET /api/v1/routes` | every route: what its loop is doing now (`activity`), its enclaves and how each last fared (`enclaves`), ISM height, origin head, its latest attestations with their transactions (`attestations`, heartbeats marked), when the next heartbeat is due, loop failures, staged batch, transfer counts, notifications |
 | `GET /api/v1/routes/{name}` | one route |
 | `GET /api/v1/chains` | every chain, and the tracker's watch on each origin |
 | `GET /api/v1/wallets` | relayer gas wallet per destination: balance, daily spend (last week), days left, top-up flag |
@@ -60,6 +60,7 @@ Auto-open and auto-resolve; not dismissable. `severity`: `warning` or `critical`
 | `route-failing:<route>` | route loop failing 10m (critical after 1h) |
 | `route-silent:<route>` | route loop silent 45m |
 | `route-staged:<route>` | attested batch submitting 30m |
+| `route-enclaves:<route>` | a route with several enclaves has one failing (critical when all are) |
 | `ism-unreadable:<route>` | ISM unreadable 10m |
 | `watch-failing:<chain>` | tracker can't read origin 10m; transfers unwatched |
 | `wallet-low:<chain>` | below warning level or under 7 days left (critical: empty or under 2 days) |

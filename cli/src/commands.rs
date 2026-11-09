@@ -191,6 +191,10 @@ pub enum EnclavesCmd {
     Up {
         #[arg(long = "chain")]
         chains: Vec<String>,
+        /// Start another CVM next to the recorded one instead of replacing it: a second enclave
+        /// for the same chains, or the new half of a rotation. ISMs pin it after `teeism isms`.
+        #[arg(long)]
+        add: bool,
         /// The dstack OS image (a different one is a different mr_td). It must be a 0.6 image:
         /// the enclave identity has no `mr-kms`, which only 0.5 recorded.
         #[arg(long, default_value = crate::steps::enclaves::quote::DEFAULT_OS_IMAGE)]
@@ -221,6 +225,12 @@ pub enum EnclavesCmd {
     Identity {
         #[arg(long = "chain")]
         chains: Vec<String>,
+    },
+    /// Stop pinning and asking a CVM's enclaves: the old half of a rotation. The CVM keeps
+    /// running until `delete --retired`. Then `teeism isms evm`, `isms celestia`, `services restart`.
+    Retire {
+        /// The CVM slot, as `teeism status` lists it: `all`, a chain, or `<target>#<n>`.
+        slot: String,
     },
     /// Delete a CVM on Phala: one by id, or every CVM a newer one replaced.
     Delete {
@@ -339,6 +349,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Cmd::Enclaves { cmd } => match cmd {
             EnclavesCmd::Up {
                 chains,
+                add,
                 os_image,
                 instance_type,
                 unpinned,
@@ -347,6 +358,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                     &ctx,
                     crate::steps::enclaves::up::Args {
                         chains,
+                        add,
                         unpinned,
                         os_image,
                         instance_type,
@@ -372,6 +384,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 .await
             }
             EnclavesCmd::Identity { chains } => crate::steps::enclaves::up::identity(&ctx, chains).await,
+            EnclavesCmd::Retire { slot } => crate::steps::enclaves::up::retire(&ctx, &slot),
             EnclavesCmd::Delete { app_id, retired } => {
                 crate::steps::enclaves::up::delete_cmd(&ctx, app_id, retired)
             }
