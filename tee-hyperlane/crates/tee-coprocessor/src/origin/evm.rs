@@ -201,8 +201,8 @@ impl Rpc {
         self.call_at(&self.logs_url, method, params).await
     }
 
-    /// Every `Dispatch` from `mailbox` to one of `recipients` over `from..=to`, as the raw logs
-    /// with the message bytes decoded: `(log, message)`.
+    /// Every `Dispatch` from `mailbox` to one of `recipients` over `from..=to`, or to anyone
+    /// with none given, as the raw logs with the message bytes decoded: `(log, message)`.
     pub async fn dispatches_to(
         &self,
         mailbox: Address,
@@ -210,10 +210,14 @@ impl Rpc {
         from: u64,
         to: u64,
     ) -> Result<Vec<(Value, Vec<u8>)>> {
-        let wanted: Vec<String> = recipients
-            .iter()
-            .map(|r| format!("0x{}", hex::encode(r)))
-            .collect();
+        let wanted: Value = if recipients.is_empty() {
+            Value::Null
+        } else {
+            recipients
+                .iter()
+                .map(|r| format!("0x{}", hex::encode(r)))
+                .collect()
+        };
         let topics = json!([DISPATCH_TOPIC, null, null, wanted]);
         let mut out = Vec::new();
         for log in self.logs(mailbox, topics, from, to).await? {

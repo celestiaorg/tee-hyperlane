@@ -562,11 +562,11 @@ pub fn monitor_problem(tracker: &Tracker, at: u64) -> Option<Notification> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::tracker::{Dispatch, Verified};
 
-    struct NoDestination;
+    pub(crate) struct NoDestination;
     #[async_trait::async_trait]
     impl crate::destination::Destination for NoDestination {
         async fn state(&self) -> anyhow::Result<tee_node::state::IsmState> {

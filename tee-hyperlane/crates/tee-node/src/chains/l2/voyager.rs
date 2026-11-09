@@ -6,6 +6,11 @@
 //! root, so the tree proof is the tree itself: its count and branch, rehashed under the root.
 //! Like Base, the sequencer is trusted and its key pinned here; nothing is re-executed.
 //!
+//! The pinned keys are the devnet's, unless the build names others: `VOYAGER_A_SEQUENCER` and
+//! `VOYAGER_B_SEQUENCER` in the build environment, each a 32-byte ed25519 public key as 64 hex
+//! characters, replace them. A devnet whose sequencer seeds are its own builds its enclave
+//! with those set; an image built without them trusts the original keys.
+//!
 //! The byte layout is `hyperlane_types::voyager`, which voyager's bridge lane signs with.
 
 use crate::state::IsmState;
@@ -21,7 +26,10 @@ pub static VOYAGER_A: Chain = Chain {
     domain: 1_987_016_033,
     origin: &Voyager {
         domain: 1_987_016_033,
-        sequencer: hex!("4dc8a5dfc603cd5d6acec6c9745cb8df951ce8dae4fa243f81f14cc3aea45fc7"),
+        sequencer: pinned(
+            option_env!("VOYAGER_A_SEQUENCER"),
+            hex!("4dc8a5dfc603cd5d6acec6c9745cb8df951ce8dae4fa243f81f14cc3aea45fc7"),
+        ),
     },
 };
 
@@ -30,11 +38,26 @@ pub static VOYAGER_B: Chain = Chain {
     domain: 1_987_016_034,
     origin: &Voyager {
         domain: 1_987_016_034,
-        sequencer: hex!("0378e71a1235d4ebfff1efbbda13c1a9c20bfe20889e6f83c25248208ed59423"),
+        sequencer: pinned(
+            option_env!("VOYAGER_B_SEQUENCER"),
+            hex!("0378e71a1235d4ebfff1efbbda13c1a9c20bfe20889e6f83c25248208ed59423"),
+        ),
     },
 };
 
 pub use hyperlane_types::voyager::{header_root, tree_commitment, MERKLE_TREE_ADDRESS};
+
+/// The sequencer key an image pins: `built`, the build environment's, when set and not empty,
+/// else `default`. Checked at compile time, so a malformed key fails the build, not a header.
+const fn pinned(built: Option<&str>, default: [u8; 32]) -> [u8; 32] {
+    match built {
+        Some(key) if !key.is_empty() => match hex::const_decode_to_array(key.as_bytes()) {
+            Ok(key) => key,
+            Err(_) => panic!("a sequencer key in the build environment is 64 hex characters"),
+        },
+        _ => default,
+    }
+}
 
 /// One voyager chain: its domain, and the sequencer key that speaks for it.
 pub struct Voyager {

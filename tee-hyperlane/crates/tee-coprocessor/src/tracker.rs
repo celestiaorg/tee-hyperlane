@@ -64,9 +64,11 @@ pub struct TrackedRoute {
 }
 
 impl TrackedRoute {
-    /// Is `recipient` one of our routers on this route's destination?
+    /// Is `recipient` one of our routers on this route's destination? With no routers
+    /// configured every message for the destination is ours, as the route loop reads it too
+    /// (`worth_attesting`): the dashboard then shows what the route delivers.
     pub fn accepts(&self, recipient: &[u8; 32]) -> bool {
-        self.routers.contains(recipient)
+        self.routers.is_empty() || self.routers.contains(recipient)
     }
 }
 
@@ -318,7 +320,8 @@ impl Watcher {
         }
     }
 
-    /// Every dispatch over `from..=to` to one of `recipients`, with block times.
+    /// Every dispatch over `from..=to` to one of `recipients`, or every dispatch at all with
+    /// none given, with block times.
     async fn scan(&self, recipients: &[[u8; 32]], from: u64, to: u64) -> Result<Vec<(Seen, u64)>> {
         #[cfg(any(
             feature = "ethereum",
@@ -408,7 +411,9 @@ impl Watcher {
                         let recipient = hyperlane_types::decode_hyperlane_message(&message)
                             .map(|d| d.recipient)
                             .ok();
-                        if !recipient.is_some_and(|r| recipients.contains(&r)) {
+                        if !recipient
+                            .is_some_and(|r| recipients.is_empty() || recipients.contains(&r))
+                        {
                             continue;
                         }
                         out.push((
@@ -432,7 +437,8 @@ impl Watcher {
                     let recipient = hyperlane_types::decode_hyperlane_message(&message.bytes)
                         .map(|d| d.recipient)
                         .ok();
-                    if !recipient.is_some_and(|r| recipients.contains(&r)) {
+                    if !recipient.is_some_and(|r| recipients.is_empty() || recipients.contains(&r))
+                    {
                         continue;
                     }
                     out.push((
@@ -729,10 +735,16 @@ impl Tracker {
             return Ok(());
         }
         let to = tip.min(cursor + watcher.span());
-        let recipients: Vec<[u8; 32]> = routes
-            .iter()
-            .flat_map(|r| r.routers.iter().copied())
-            .collect();
+        // A route with no routers takes every recipient (`TrackedRoute::accepts`), so the scan
+        // then keeps every dispatch; otherwise only those for some route's routers.
+        let recipients: Vec<[u8; 32]> = if routes.iter().any(|r| r.routers.is_empty()) {
+            Vec::new()
+        } else {
+            routes
+                .iter()
+                .flat_map(|r| r.routers.iter().copied())
+                .collect()
+        };
         let found = watcher.scan(&recipients, cursor + 1, to).await?;
 
         let mut state = self.lock();
@@ -1080,6 +1092,25 @@ fn load<T: serde::de::DeserializeOwned + Default>(path: &std::path::Path) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_no_routers_every_recipient_is_ours() {
+        let route = |routers: Vec<[u8; 32]>| TrackedRoute {
+            name: "r".into(),
+            from: "a".into(),
+            to: "b".into(),
+            origin_domain: 1,
+            destination_domain: 2,
+            ism: "ism".into(),
+            routers,
+            expected_latency: 0,
+            dir: PathBuf::new(),
+            destination: Box::new(crate::monitor::tests::NoDestination),
+        };
+        assert!(route(vec![]).accepts(&[1; 32]));
+        assert!(route(vec![[7; 32]]).accepts(&[7; 32]));
+        assert!(!route(vec![[7; 32]]).accepts(&[1; 32]));
+    }
 
     #[test]
     fn accounts_are_shown_the_way_their_chain_writes_them() {
