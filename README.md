@@ -26,7 +26,7 @@ deploy/                                 the guides, the measured compose files, 
 
 ## Deployments
 
-First deployed with `teeism` on 2026-10-15; redeployed from a fresh devnet on 2026-10-26 (dstack 0.6.1 enclave, identity v3 pinning RTMR0-2). On 2026-10-30 the enclave moved to root attestation: new CVM, the four EVM ISMs replaced (`TeeDcapIsm` `VERSION` 5) from their predecessors' last state and the routers re-pointed, the four Celestia ISMs re-pinned in place, the chain restarted on celestia-app `1c3d993`. Every id below is from those two days. `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
+First deployed with `teeism` on 2026-10-15; redeployed from a fresh devnet on 2026-10-26 (dstack 0.6.1 enclave, identity v3 pinning RTMR0-2). On 2026-10-30 the enclave moved to root attestation: new CVM, the four EVM ISMs replaced (`TeeDcapIsm` `VERSION` 5) from their predecessors' last state and the routers re-pointed, the four Celestia ISMs re-pinned in place, the chain restarted on celestia-app `1c3d993`. On 2026-11-09 every ISM moved to pinning a set of enclaves: the chain restarted in place on celestia-app `8667a693` and each Celestia ISM was given its set with `tx teeism set-identities`; the four EVM ISMs were replaced (`VERSION` restarts at 1, pre-release) from their predecessors' last state and the routers re-pointed; a new CVM on another Phala node moved the compose hash, so all eight ISMs were re-pinned in place; Eden's routers were put behind a routing ISM and a routing hook of ours, as mainnet will be. Every id below is from those days. `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
 
 **Enclaves.** Phala Cloud (node picked by Phala), `tdx.small`, dstack `0.6.1`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
 
@@ -39,17 +39,19 @@ First deployed with `teeism` on 2026-10-15; redeployed from a fresh devnet on 20
 | `eden` | 8084 | Eden |
 
 ```
-app id         3c591bb6948e53379ca3be4270dd20f292921791
-urls           https://3c591bb6948e53379ca3be4270dd20f292921791-<port>.dstack-pha-prod5.phala.network
+app id         109054f68e353471f9348dc0a074e6448fecd371
+urls           https://109054f68e353471f9348dc0a074e6448fecd371-<port>.dstack-pha1-prod9.phala.network
 mr_td          0x2a674327c50218dba880066b349b8d559d749ed68dce33fd651c184a877d084b07a9e583767a7ad5da13ed91deec2b70
-compose_hash   0x362d94314eaeafc7ade7a4ffe2a78ec53637c9251264a5b9b4e2fe5bd4abb079
+compose_hash   0xcdfba073fdab7311c65f511d388e96e96886159cf82496301114074e632f1b7d
 os_image_hash  0xec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6
 rtmr0          0x68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96
 rtmr1          0x89ef86c5125b986c325f0a94acfa87718a4ef3a4d4f237dbb72dda3cf777fd2c054555fb4407eb53338d7d67329a7333
 rtmr2          0xe9000e338f33233e8f51b7fd031e1c158bdcf8572eab041c0bc8eb7fef48b23259a6a556e6c8e2af99999fc39c793179
-identity       0xe21706c3de5bfee4a04f2e000d3ca48439e680004f8fb522ed5ab2eeea2cece9
-measurements   0x61420e690f48afa6ad93a1fa608ea901fe9cfcdaaf3c16c85106defae339bb0c
+identity       0xd5e3022910cba5eba089d99316704ff1600f5d0fe346d1961636ad1b38faf532
+measurements   0x3e600c51b97b848c6f12169bb5aecb462c149648961d4c3c4816bbb4fad66324
 ```
+
+The previous CVM (`3c591bb6…`, `dstack-pha-prod5`, deleted 2026-11-09) had the same mr_td, RTMR0-2 and OS image; only `compose_hash` moved, because dstack's app compose carries the CVM's name. A new CVM is therefore always a re-pin, even on an unchanged image.
 
 Image digests per chain: `deploy/images.lock`.
 
@@ -69,12 +71,14 @@ igp        0x726f757465725f706f73745f6469737061746368000000040000000000000002
 
 | Celestia-origin, `TeeDcapIsm` on | address |
 |---|---|
-| Ethereum Sepolia | `0x2780675BB83A455F7f3731869933b39339B37D3E` |
-| Arbitrum Sepolia | `0xF77063b029d5F4D962D7f2a8F6623FBaF79190ED` |
-| Base Sepolia | `0x5fdbaD4f8e209601f5F811Ff81BF1162c7Aa066e` |
-| Eden | `0x3616c0b280076Ec2bCb2EAE624D1C99D51c88D76` |
+| Ethereum Sepolia | `0x015ee7e36961E840fC3119B94657703F3cFaD420` |
+| Arbitrum Sepolia | `0xe1e0893ED28AAe38997c5d5eeb9AB7BF3Ce05a4E` |
+| Base Sepolia | `0xA50F8683a5eb315BCc45457C9Ff65c273D60Fa88` |
+| Eden | `0xBaB7AA2F7cCaBD98cEb82EddD1DBe93D60356892` |
 
-Revision 5 (root attestation). Their revision-4 predecessors (`0x888774…`, `0x2E2036…`, `0xB5A922…`, `0x875F62…`) keep their last state and nothing points at them.
+Revision 1 (a pinned set of enclaves; `VERSION` restarted at 1 since nothing has been released). Their predecessors (revision 5: `0x2780675B…`, `0xF77063b0…`, `0x5fdbaD4f…`, `0x3616c0b2…`; revision 6 on Eden: `0x45A9Fd2D…`) keep their last state and nothing points at them.
+
+On Eden the routers do not point at the ISM directly but at a routing ISM of ours, `0xD93E3ff7c961BD0668025B39B2685E333b128371` (Hyperlane `AtomicInitDomainRoutingIsm`, Celestia's domain routed to the ISM above), and dispatch through a routing hook of ours, `0xD5850ae1213d0D1f2C24Bbca030FD5f734d8FedC` (Hyperlane `DomainRoutingHook`, Celestia's domain routed to the merkle tree hook). That is the mainnet shape: a token owner points at the routing contracts once, and the TEE ISM behind them is ours to swap. `teeism warp evm` does not know them and re-points the routers straight at the ISM; after it, `set` the routing ISM to the new ISM and point the routers back ([MAINTAIN](deploy/MAINTAIN.md)).
 
 | EVM-origin, `x/teeism` on `teeism-local` | id |
 |---|---|
