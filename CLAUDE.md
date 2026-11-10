@@ -8,7 +8,7 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 - **No co-author or "generated with" trailers** in commits or PR descriptions. Commits are in the user's name.
 - **No em-dashes in UI copy.**
 - Ask before adding components or changing the stack.
-- This repo: `main` of `celestiaorg/tee-hyperlane` is live (ark runs it); the local remote for it is `celestia`, `origin` is the `jonas089` mirror. Commit requested changes directly to `main`; never create branches. Push only when asked, and to celestiaorg.
+- This repo: `main` of `celestiaorg/tee-hyperlane` is live (ark runs it); `origin` is celestiaorg, `jonas089` is the mirror. Commit requested changes directly to `main`; never create branches. Push only when asked.
 - **Never redeploy routers on an identity rotation; re-point them.** Redeploying orphans what they hold or minted (once stranded real USDC on Sepolia).
 
 ## Secrets
