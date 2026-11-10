@@ -24,13 +24,13 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 
 ## Deployed (ark)
 
-- `chef@178.199.12.26`, Zurich, `~/tee-ism-nonzk`, HTTPS clone of `celestiaorg/tee-hyperlane` `main`, the primary repo since 2026-11-10 (`jonas089/tee-hyperlane` is the mirror it merges from; push work to celestiaorg). Update with `git pull`. `devnet/.env`, `devnet/.state/` gitignored.
+- `chef@178.199.12.26`, Zurich, `~/tee-ism-nonzk`, SSH clone of `celestiaorg/tee-hyperlane` `main`, the primary repo since 2026-11-10 (`jonas089/tee-hyperlane` is the mirror). It pushes image pins itself (`teeism images`, then `git push`). Update with `git pull`. `devnet/.env`, `devnet/.state/` gitignored.
 - systemd: `teeism-relayer` (routes, dashboard + API on :3001), `teeism-gas-oracle`. Gateway serves `bridge-app/dist`.
 - Local celestia-app devnet (not mocha), pruning disabled. `mocha-light` light node, Eden only.
 - nginx gateway `:3000`: `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`.
 - 8 routes: Celestia to/from Sepolia, Arbitrum, Base, Eden.
 - Tokens: TIA (Celestia collateral, synthetic on EVM), teeUSD (fixed 1B minted on Celestia, synthetic everywhere). Bridge only: no trading, pools or token launch.
-- 5 images (`celestia`, `ethereum`, `base`, `arbitrum`, `eden`) in one shared CVM, ports 8080 to 8084. Shared identity: any image change re-pins all 8 ISMs. `teeism enclaves up --chain <chain>` gives a chain its own CVM and identity. A new CVM is always a re-pin: dstack's app compose carries the CVM name, so `compose_hash` moves even on the same image.
+- 5 images (`celestia`, `ethereum`, `base`, `arbitrum`, `eden`) in one shared CVM (slot `all#2`, app `e5600578…`, since 2026-11-10), ports 8080 to 8084. Shared identity: any image change re-pins all 8 ISMs. `teeism enclaves up --chain <chain>` gives a chain its own CVM and identity. A new CVM is always a re-pin: dstack's app compose carries the CVM name, so `compose_hash` moves even on the same image.
 - **Eden's routers sit behind our routing ISM `0xD93E3ff7…` and routing hook `0xD5850ae1…`** (mainnet rehearsal; addresses in `devnet/.state/eden-routing.env`). `teeism warp evm` re-points the routers straight at the ISM; afterwards `set` the routing ISM to the new ISM and point the routers back by hand (README, Deployments).
 - The devnet chain runs celestia-app `aaed6bc` (branch head). `teeism celestia up --new-image` follows the branch; no ISM or identity change.
 
