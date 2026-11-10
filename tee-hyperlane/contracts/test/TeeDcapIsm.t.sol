@@ -3,6 +3,9 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 import {TeeDcapIsm, IDcapAttestation} from "../src/TeeDcapIsm.sol";
+import {MerkleLib} from "@hyperlane-xyz/core/contracts/libs/Merkle.sol";
+import {IInterchainSecurityModule} from "@hyperlane-xyz/core/contracts/interfaces/IInterchainSecurityModule.sol";
+import {AtomicInitDomainRoutingIsm} from "@hyperlane-xyz/core/contracts/isms/routing/AtomicInitDomainRoutingIsm.sol";
 
 /// A stand-in for Automata's verifier, so everything downstream of the signature check can be
 /// exercised without a live quote. The fork test below covers the real one.
@@ -29,8 +32,11 @@ contract TeeDcapIsmTest is Test {
     address constant MAILBOX = address(0xBEEF);
     uint256 constant SKEW = 1 days;
 
+    using MerkleLib for MerkleLib.Tree;
+
     MockDcap dcap;
     TeeDcapIsm ism;
+    MerkleLib.Tree routedTree;
 
     uint64 constant GENESIS_HEIGHT = 100;
     uint64 constant GENESIS_TIME = 1_800_000_000;
@@ -98,7 +104,7 @@ contract TeeDcapIsmTest is Test {
 
     function setUp() public {
         dcap = new MockDcap();
-        ism = new TeeDcapIsm(dcap, MEASUREMENTS, IDENTITY, TREE, MAILBOX, _state(1, GENESIS_HEIGHT, GENESIS_TIME), SKEW);
+        ism = new TeeDcapIsm(dcap, _one(MEASUREMENTS), _one(IDENTITY), TREE, MAILBOX, _state(1, GENESIS_HEIGHT, GENESIS_TIME), SKEW);
         vm.warp(GENESIS_TIME + 60);
     }
 
@@ -194,13 +200,24 @@ contract TeeDcapIsmTest is Test {
         target.submitAttestation(hex"00", payload);
     }
 
+    function _one(bytes32 x) internal pure returns (bytes32[] memory a) {
+        a = new bytes32[](1);
+        a[0] = x;
+    }
+
+    function _two(bytes32 x, bytes32 y) internal pure returns (bytes32[] memory a) {
+        a = new bytes32[](2);
+        a[0] = x;
+        a[1] = y;
+    }
+
     function _zeroMeasurements() internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(new bytes(96), new bytes(144)));
     }
 
     function _fresh() internal returns (TeeDcapIsm) {
         return new TeeDcapIsm(
-            dcap, _zeroMeasurements(), IDENTITY, TREE, MAILBOX, _state(1, GENESIS_HEIGHT, GENESIS_TIME), SKEW
+            dcap, _one(_zeroMeasurements()), _one(IDENTITY), TREE, MAILBOX, _state(1, GENESIS_HEIGHT, GENESIS_TIME), SKEW
         );
     }
 
@@ -347,10 +364,10 @@ contract TeeDcapIsmTest is Test {
             next[i] = VECTOR_PAYLOAD[116 + i];
         }
         bytes32 hook = bytes32(uint256(0xabababababababababababababababababababababababababababababababab));
-        TeeDcapIsm target = new TeeDcapIsm(dcap, _zeroMeasurements(), bytes32(prev[84] == 0x03 ? uint256(0x0303030303030303030303030303030303030303030303030303030303030303) : 0), hook, MAILBOX, prev, SKEW);
+        TeeDcapIsm target = new TeeDcapIsm(dcap, _one(_zeroMeasurements()), _one(bytes32(prev[84] == 0x03 ? uint256(0x0303030303030303030303030303030303030303030303030303030303030303) : 0)), hook, MAILBOX, prev, SKEW);
         // The vector's states carry identity 0x03..03 and 0x05..05: the second differs, as it
         // would after a re-pin, so re-pin to it and let the state follow.
-        target.setEnclave(_zeroMeasurements(), bytes32(uint256(0x0505050505050505050505050505050505050505050505050505050505050505)));
+        target.setEnclaves(_one(_zeroMeasurements()), _one(bytes32(uint256(0x0505050505050505050505050505050505050505050505050505050505050505))));
         // After the re-pin the stored prev carries the new identity, which the vector's prev
         // does not, so this checks the decoder up to the state comparison and then the rest
         // through the fields the mock quote commits to.
@@ -492,7 +509,7 @@ contract TeeDcapIsmTest is Test {
     }
 
     function test_reportsItsRevision() public view {
-        assertEq(ism.VERSION(), 5);
+        assertEq(ism.VERSION(), 1);
     }
 
     // ---------------------------------------------------------------- re-pinning
@@ -501,16 +518,17 @@ contract TeeDcapIsmTest is Test {
         assertEq(ism.owner(), address(this));
         vm.prank(address(0xBAD));
         vm.expectRevert("Ownable: caller is not the owner");
-        ism.setEnclave(_zeroMeasurements(), bytes32(uint256(0xfeed)));
+        ism.setEnclaves(_one(_zeroMeasurements()), _one(bytes32(uint256(0xfeed))));
     }
 
     function test_aRepinSwapsOnlyTheIdentity() public {
         bytes32 next = bytes32(uint256(0xfeed));
         vm.expectEmit(address(ism));
-        emit TeeDcapIsm.EnclaveChanged(MEASUREMENTS, _zeroMeasurements(), IDENTITY, next);
-        ism.setEnclave(_zeroMeasurements(), next);
+        emit TeeDcapIsm.EnclavesChanged(IDENTITY, next, _one(_zeroMeasurements()));
+        ism.setEnclaves(_one(_zeroMeasurements()), _one(next));
 
-        assertEq(ism.enclaveMeasurements(), _zeroMeasurements());
+        assertTrue(ism.pinned(_zeroMeasurements()));
+        assertFalse(ism.pinned(MEASUREMENTS));
         assertEq(ism.identityDigest(), next);
         assertEq(keccak256(ism.state()), keccak256(_stateOf(1, GENESIS_HEIGHT, GENESIS_TIME, next)));
     }
@@ -518,7 +536,7 @@ contract TeeDcapIsmTest is Test {
     /// After a re-pin the new enclave carries on from the same state, and the old one is refused.
     function test_aRepinnedIsmAdmitsTheNewEnclaveOnly() public {
         bytes32 next = bytes32(uint256(0xfeed));
-        ism.setEnclave(_zeroMeasurements(), next);
+        ism.setEnclaves(_one(_zeroMeasurements()), _one(next));
 
         bytes memory stale = _payloadWithLeaves(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp));
         dcap.set(true, _output(stale, 0, false));
@@ -537,15 +555,154 @@ contract TeeDcapIsmTest is Test {
         address multisig = address(0x5AFE);
         ism.transferOwnership(multisig);
         vm.expectRevert("Ownable: caller is not the owner");
-        ism.setEnclave(_zeroMeasurements(), IDENTITY);
+        ism.setEnclaves(_one(_zeroMeasurements()), _one(IDENTITY));
         vm.prank(multisig);
-        ism.setEnclave(_zeroMeasurements(), IDENTITY);
-        assertEq(ism.enclaveMeasurements(), _zeroMeasurements());
+        ism.setEnclaves(_one(_zeroMeasurements()), _one(IDENTITY));
+        assertTrue(ism.pinned(_zeroMeasurements()));
     }
 
-    function test_verifyOnlyFromMailbox() public {
-        vm.expectRevert(TeeDcapIsm.NotMailbox.selector);
-        ism.verify(hex"", hex"00");
+    // ---------------------------------------------------------------- a set of enclaves
+
+    /// The same vectors pin the Celestia module's set digest, so both chains name a set alike.
+    function test_setDigestMatchesTheCelestiaModule() public view {
+        bytes32 a = bytes32(uint256(0x1111111111111111111111111111111111111111111111111111111111111111));
+        bytes32 b = bytes32(uint256(0x2222222222222222222222222222222222222222222222222222222222222222));
+        bytes32 c = bytes32(uint256(0x3333333333333333333333333333333333333333333333333333333333333333));
+        assertEq(ism.identitySetDigest(_one(a)), a);
+        assertEq(ism.identitySetDigest(_two(a, b)), 0xec1daf6eea2286feaecc70758f647a8e318b73f711043bffd2d6bcb0a5b41807);
+        bytes32[] memory three = new bytes32[](3);
+        (three[0], three[1], three[2]) = (a, b, c);
+        assertEq(ism.identitySetDigest(three), 0x2fa9b2f90d7deb2663ea2c8b1bd32985ddac3c536c93656d3cf92ba14676d77e);
+    }
+
+    /// A quote whose compose hash differs, and the measurement it produces: a second enclave.
+    function _otherEnclave(bytes memory payload) internal pure returns (bytes memory out, bytes32 measured) {
+        out = _output(payload, 0, false);
+        out[11 + 185] = bytes1(uint8(0xFF));
+        measured = keccak256(abi.encodePacked(_slice(out, 11 + 136, 96), _slice(out, 11 + 328, 144)));
+    }
+
+    function _twoEnclaveIsm() internal returns (TeeDcapIsm target, bytes32 other, bytes32 digest) {
+        bytes32 idA = bytes32(uint256(0x11));
+        bytes32 idB = bytes32(uint256(0x22));
+        (, other) = _otherEnclave(_oneStepPayload());
+        digest = sha256(abi.encodePacked("teeism/identity-set/v1", uint8(2), idA, idB));
+        target = new TeeDcapIsm(
+            dcap, _two(_zeroMeasurements(), other), _two(idA, idB), TREE, MAILBOX,
+            _stateOf(1, GENESIS_HEIGHT, GENESIS_TIME, digest), SKEW
+        );
+    }
+
+    /// Either pinned enclave advances the same state chain.
+    function test_eitherPinnedEnclaveAttests() public {
+        (TeeDcapIsm target,, bytes32 digest) = _twoEnclaveIsm();
+        assertEq(target.identityDigest(), digest);
+
+        bytes memory first = _payload(
+            _stateOf(1, GENESIS_HEIGHT, GENESIS_TIME, digest), _stateOf(2, GENESIS_HEIGHT + 1, GENESIS_TIME, digest),
+            uint64(block.timestamp), bytes32(uint256(1)), 1
+        );
+        dcap.set(true, _output(first, 0, false));
+        target.submitAttestation(hex"00", first);
+
+        bytes memory second = _payload(
+            _stateOf(2, GENESIS_HEIGHT + 1, GENESIS_TIME, digest), _stateOf(3, GENESIS_HEIGHT + 2, GENESIS_TIME, digest),
+            uint64(block.timestamp), bytes32(uint256(2)), 2
+        );
+        (bytes memory out,) = _otherEnclave(second);
+        dcap.set(true, out);
+        target.submitAttestation(hex"00", second);
+        assertEq(keccak256(target.state()), keccak256(_stateOf(3, GENESIS_HEIGHT + 2, GENESIS_TIME, digest)));
+    }
+
+    /// A rotation ends by pinning the new enclave alone; the old one is then refused.
+    function test_aRotationDropsTheOldEnclave() public {
+        (TeeDcapIsm target, bytes32 other,) = _twoEnclaveIsm();
+        bytes32 idB = bytes32(uint256(0x22));
+        target.setEnclaves(_one(other), _one(idB));
+        assertFalse(target.pinned(_zeroMeasurements()));
+        assertTrue(target.pinned(other));
+        assertEq(target.identityDigest(), idB);
+        (bytes32[] memory m, bytes32[] memory ids) = target.enclaves();
+        assertEq(m.length, 1);
+        assertEq(m[0], other);
+        assertEq(ids[0], idB);
+
+        bytes memory payload = _payload(
+            _stateOf(1, GENESIS_HEIGHT, GENESIS_TIME, idB), _stateOf(2, GENESIS_HEIGHT + 1, GENESIS_TIME, idB),
+            uint64(block.timestamp), SOME_ROOT, 1
+        );
+        dcap.set(true, _output(payload, 0, false));
+        vm.expectRevert(abi.encodeWithSelector(TeeDcapIsm.WrongEnclave.selector, _zeroMeasurements()));
+        target.submitAttestation(hex"00", payload);
+    }
+
+    function test_rejectsMalformedSets() public {
+        bytes32 a = bytes32(uint256(0xa));
+        bytes32 b = bytes32(uint256(0xb));
+        vm.expectRevert(TeeDcapIsm.BadEnclaveSet.selector);
+        ism.setEnclaves(new bytes32[](0), new bytes32[](0));
+        vm.expectRevert(TeeDcapIsm.BadEnclaveSet.selector);
+        ism.setEnclaves(_two(a, b), _two(b, a)); // not ascending
+        vm.expectRevert(TeeDcapIsm.BadEnclaveSet.selector);
+        ism.setEnclaves(_two(a, b), _two(a, a)); // duplicate
+        vm.expectRevert(TeeDcapIsm.BadEnclaveSet.selector);
+        ism.setEnclaves(_one(a), _two(a, b)); // a measurement short
+        bytes32[] memory nine = new bytes32[](9);
+        for (uint256 i = 0; i < 9; i++) nine[i] = bytes32(i + 1);
+        vm.expectRevert(TeeDcapIsm.BadEnclaveSet.selector);
+        ism.setEnclaves(nine, nine);
+    }
+
+    /// The genesis state must name the set, not one of its members.
+    function test_genesisMustCarryTheSetDigest() public {
+        bytes32 idA = bytes32(uint256(0x11));
+        bytes32 idB = bytes32(uint256(0x22));
+        vm.expectRevert(TeeDcapIsm.IdentityChanged.selector);
+        new TeeDcapIsm(
+            dcap, _two(bytes32(uint256(1)), bytes32(uint256(2))), _two(idA, idB), TREE, MAILBOX,
+            _stateOf(1, GENESIS_HEIGHT, GENESIS_TIME, idA), SKEW
+        );
+    }
+
+    /// A view that consumes nothing answers anyone the same way.
+    function test_verifyAnswersAnyCaller() public {
+        TeeDcapIsm target = _fresh();
+        _attestVector(target);
+        bytes memory metadata = _metadata(VECTOR_ROOT, VECTOR_INDEX, _vectorProof());
+        vm.prank(address(0xCAFE));
+        assertTrue(target.verify(metadata, _vectorMessage()));
+        assertFalse(target.verify(_metadata(SOME_ROOT, VECTOR_INDEX, _vectorProof()), _vectorMessage()));
+    }
+
+    /// Behind Hyperlane's routing ISM, as a route whose token owner points at our router: the
+    /// mailbox calls the router, and the router calls this ISM.
+    function test_verifiesBehindARoutingIsm() public {
+        uint32 origin = 1128614981;
+        bytes memory message = abi.encodePacked(
+            uint8(3), uint32(0), origin, bytes32(uint256(0x70c3)), uint32(3735928814), bytes32(uint256(0xed3)), hex"0b0d1e"
+        );
+        routedTree.insert(keccak256(message));
+        bytes32 root = routedTree.root();
+
+        TeeDcapIsm target = _fresh();
+        _submit(
+            target,
+            _payload(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp), root, 1)
+        );
+
+        uint32[] memory domains = new uint32[](1);
+        domains[0] = origin;
+        IInterchainSecurityModule[] memory modules = new IInterchainSecurityModule[](1);
+        modules[0] = IInterchainSecurityModule(address(target));
+        AtomicInitDomainRoutingIsm router = new AtomicInitDomainRoutingIsm(address(this), domains, modules);
+
+        // A one-leaf tree: leaf 0's siblings are the empty subtrees.
+        bytes memory metadata = _metadata(root, 0, MerkleLib.zeroHashes());
+        vm.prank(MAILBOX);
+        assertTrue(router.verify(metadata, message));
+        vm.prank(MAILBOX);
+        assertFalse(router.verify(_metadata(SOME_ROOT, 0, MerkleLib.zeroHashes()), message));
     }
 
     // ---------------------------------------------------------------- refusals
@@ -612,7 +769,7 @@ contract TeeDcapIsmTest is Test {
             _payloadWithLeaves(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp));
         dcap.set(true, _output(payload, 0, false)); // zero measurements, but `ism` pins the real ones
         vm.expectRevert(
-            abi.encodeWithSelector(TeeDcapIsm.WrongEnclave.selector, MEASUREMENTS, _zeroMeasurements())
+            abi.encodeWithSelector(TeeDcapIsm.WrongEnclave.selector, _zeroMeasurements())
         );
         ism.submitAttestation(hex"00", payload);
     }
@@ -651,7 +808,6 @@ contract TeeDcapIsmTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(
                 TeeDcapIsm.WrongEnclave.selector,
-                _zeroMeasurements(),
                 keccak256(abi.encodePacked(_slice(out, 11 + 136, 96), _slice(out, 11 + 328, 144)))
             )
         );

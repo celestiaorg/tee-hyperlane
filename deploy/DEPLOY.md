@@ -198,15 +198,15 @@ The ISMs pin `keccak256(mr_td ++ mr_config_id ++ rtmr0..2)` (EVM) and the identi
 ```sh
 teeism enclaves up                            # a new CVM (dstack-0.6.1, tdx.small); the old one is recorded as retired
 teeism enclaves verify
-teeism isms evm                               # setEnclave on each TeeDcapIsm, signed by EVM_SIGNER
-teeism isms celestia                          # tx teeism update-identity on each, signed by `relayer`
+teeism isms evm                               # setEnclaves on each TeeDcapIsm, signed by EVM_SIGNER
+teeism isms celestia                          # tx teeism set-identities on each, signed by `relayer`
 teeism services restart                       # the relayer moves to the new enclave URLs
 teeism smoke
 teeism enclaves delete --retired              # only once smoke passed
 ```
 
 - `enclaves up` prints the new measurements; `isms evm` and `isms celestia` print `re-pinning <ism>: <old> -> <new>` per ISM. Anything saying `replacing` instead means an ISM this key does not own or an older contract revision: stop and check.
-- Until `services restart`, attestations from the old enclave are refused (`WrongEnclave`); nothing is lost, the relayer retries.
+- Until `services restart`, attestations from the old enclave are refused (`WrongEnclave`); nothing is lost, the relayer retries. `enclaves up --add` avoids even that: the ISMs pin old and new together while the relayer moves ([MAINTAIN](MAINTAIN.md#rotate-the-enclave-re-pin)).
 - Rollback before `delete --retired`: the old CVM still runs; re-pin to it with [ADMIN](ADMIN.md)'s commands.
 
 ## B. Intel root CA and collateral
@@ -243,7 +243,7 @@ openssl x509 -inform der -in Intel_SGX_Provisioning_Certification_RootCA.cer -pu
 | TD_QE identity per evaluation number | `tdx/certification/v4/qe/identity?tcbEvaluationDataNumber=` | 30 days |
 
 - EVM: `teeism pccs seed` uploads all of it; the DAOs verify each signature. Monthly ([MAINTAIN](MAINTAIN.md#monthly-intel-collateral)).
-- Celestia: the relayer fetches the same collateral fresh with every attestation (`teeism-collateral`). Nothing to do.
+- Celestia: the relayer fetches the same collateral fresh with every attestation (`teeism-collateral`). Nothing to do. `x/teeism` refuses collateral older than 14 days, or older than the newest an ISM has accepted, so a revoked platform cannot attest with the collateral from before.
 
 ## C. Signing on a Ledger
 

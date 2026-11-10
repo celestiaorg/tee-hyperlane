@@ -193,8 +193,15 @@ pub async fn healthy(url: &str) -> bool {
     )
 }
 
-pub fn identity_file(ctx: &Ctx, chain: &str) -> std::path::PathBuf {
-    ctx.state_dir.join("identity").join(format!("{chain}.json"))
+/// Where the identity of the `chain` enclave in `slot` is kept: `<chain>.json` for a plain slot,
+/// `<chain>@<target>-<n>.json` for one started with `--add`.
+pub fn identity_file(ctx: &Ctx, chain: &str, slot: &str) -> std::path::PathBuf {
+    let name = if slot.contains('#') {
+        format!("{chain}@{}.json", slot.replace('#', "-"))
+    } else {
+        format!("{chain}.json")
+    };
+    ctx.state_dir.join("identity").join(name)
 }
 
 #[cfg(test)]

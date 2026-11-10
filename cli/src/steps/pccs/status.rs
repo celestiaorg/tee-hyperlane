@@ -168,6 +168,7 @@ pub async fn check_quote_cmd(
                 .enclaves
                 .chains
                 .get(&e)
+                .and_then(|l| l.first())
                 .map(|x| x.url.clone())
                 .with_context(|| format!("no {e} enclave recorded"))?;
             crate::steps::enclaves::quote::fetch_identity(&url).await?.quote

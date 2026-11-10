@@ -277,6 +277,37 @@ fn conditions(tracker: &Tracker, at: u64) -> Vec<Condition> {
             _ => {}
         }
 
+        // Enclaves: a route with several should never be down to one without anyone knowing,
+        // because the next failure is then an outage. A route with one is that by design.
+        let enclaves: Vec<crate::route::EnclaveHealth> =
+            crate::tracker::read_json(&route.dir.join("enclaves.json")).unwrap_or_default();
+        let failing: Vec<&crate::route::EnclaveHealth> =
+            enclaves.iter().filter(|e| !e.healthy()).collect();
+        if enclaves.len() > 1 && !failing.is_empty() {
+            let healthy = enclaves.len() - failing.len();
+            out.push(Condition {
+                key: format!("route-enclaves:{}", route.name),
+                severity: if healthy == 0 {
+                    Severity::Critical
+                } else {
+                    Severity::Warning
+                },
+                subject: Subject::Route,
+                subject_id: route.name.clone(),
+                title: format!(
+                    "{}: {} of {} enclaves failing",
+                    route.name,
+                    failing.len(),
+                    enclaves.len()
+                ),
+                detail: failing
+                    .iter()
+                    .map(|e| format!("{}: {}", e.url, e.last_error.as_deref().unwrap_or("")))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            });
+        }
+
         // A batch that has been trying to land for too long.
         if let Ok(meta) = std::fs::metadata(route.dir.join("staging").join("batch.json")) {
             let age = meta

@@ -949,7 +949,8 @@
           "ismReading",
           "counts",
           "notifications",
-          "attestations"
+          "attestations",
+          "enclaves"
         ],
         "properties": {
           "name": {
@@ -1029,6 +1030,13 @@
                 "type": "null"
               }
             ]
+          },
+          "enclaves": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnclaveHealth"
+            },
+            "description": "Every enclave the route may attest with, in the order configured, and how each last fared. Any one of them is enough: the ISM pins them all."
           },
           "nextHeartbeatAt": {
             "anyOf": [
@@ -1455,6 +1463,54 @@
             ]
           },
           "txUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "EnclaveHealth": {
+        "type": "object",
+        "description": "One enclave a route may attest with.",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "lastOkAt",
+          "lastErrorAt",
+          "lastError"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "lastOkAt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When it last attested."
+          },
+          "lastErrorAt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When it last failed, or the ISM refused what it signed."
+          },
+          "lastError": {
             "anyOf": [
               {
                 "type": "string"
