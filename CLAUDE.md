@@ -8,7 +8,7 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 - **No co-author or "generated with" trailers** in commits or PR descriptions. Commits are in the user's name.
 - **No em-dashes in UI copy.**
 - Ask before adding components or changing the stack.
-- This repo: `main` is live (ark runs it). Commit requested changes directly to `main`; never create branches. Push only when asked.
+- This repo: `main` of `celestiaorg/tee-hyperlane` is live (ark runs it); the local remote for it is `celestia`, `origin` is the `jonas089` mirror. Commit requested changes directly to `main`; never create branches. Push only when asked, and to celestiaorg.
 - **Never redeploy routers on an identity rotation; re-point them.** Redeploying orphans what they hold or minted (once stranded real USDC on Sepolia).
 
 ## Secrets
@@ -24,7 +24,7 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 
 ## Deployed (ark)
 
-- `chef@178.199.12.26`, Zurich, `~/tee-ism-nonzk`, HTTPS clone of `main`. Update with `git pull`. `devnet/.env`, `devnet/.state/` gitignored.
+- `chef@178.199.12.26`, Zurich, `~/tee-ism-nonzk`, HTTPS clone of `celestiaorg/tee-hyperlane` `main`, the primary repo since 2026-11-10 (`jonas089/tee-hyperlane` is the mirror it merges from; push work to celestiaorg). Update with `git pull`. `devnet/.env`, `devnet/.state/` gitignored.
 - systemd: `teeism-relayer` (routes, dashboard + API on :3001), `teeism-gas-oracle`. Gateway serves `bridge-app/dist`.
 - Local celestia-app devnet (not mocha), pruning disabled. `mocha-light` light node, Eden only.
 - nginx gateway `:3000`: `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`.
