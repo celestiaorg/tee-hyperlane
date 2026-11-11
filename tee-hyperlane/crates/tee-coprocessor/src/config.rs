@@ -228,6 +228,7 @@ impl Config {
                         .home
                         .or_else(|| std::env::var("CELHOME").ok())
                         .context("a Celestia destination needs `home` or CELHOME")?,
+                    gas_price: c.gas_price,
                 })
             }
             #[cfg(any(

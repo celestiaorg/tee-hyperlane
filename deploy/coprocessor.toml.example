@@ -33,6 +33,7 @@ merkle_tree_hook = "0x726f757465725f706f73745f6469737061746368000000030000000000
 lag = 1
 chain_id = "teeism-local"
 home = "/home/chef/tee-ism-nonzk/devnet/.state/celestia"
+# gas_price = "0.004utia"   # what the node charges per gas; gas is simulated per transaction
 
 # Mocha, read only as the chain Eden posts its headers to.
 [chains.mocha]

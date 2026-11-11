@@ -167,6 +167,11 @@ mod tests {
     }
 }
 
+/// Margin over the gas a Celestia node simulates for a transaction. An attestation's
+/// verification is metered at a constant and the rest is bytes and stores, so the simulation
+/// is close; the margin covers a block in between moving what a store write costs.
+pub const GAS_ADJUSTMENT: &str = "1.3";
+
 #[cfg(feature = "celestia")]
 mod celestia;
 #[cfg(any(
