@@ -116,7 +116,7 @@ teeism pccs check-quote --enclave celestia
 teeism pccs status
 ```
 
-- `deploy`: per chain, Automata's on-chain PCCS and DCAP verifier through the CREATE2 deployer, salts `keccak256("tee-isms/v2:<NAME>")`: helpers, storage, CRL v2 PCS and PCK DAOs, TCB evaluation DAO, router, entrypoint, v4 and v5 quote verifiers, and per TCB evaluation number (Intel's standard and every newer one it publishes) a QE identity and a TCB info DAO. Then seeds them from Intel.
+- `deploy`: per chain, Automata's on-chain PCCS and DCAP verifier through the CREATE2 deployer (a contract the chain's record already names, with code at that address, is kept rather than recomputed from bytecode), salts `keccak256("tee-isms/v2:<NAME>")`: helpers, storage, CRL v2 PCS and PCK DAOs, TCB evaluation DAO, router, entrypoint, v4 and v5 quote verifiers, and per TCB evaluation number (Intel's standard and every newer one it publishes) a QE identity and a TCB info DAO. Then seeds them from Intel.
 - `check-quote`: the Celestia enclave's quote through each chain's verifier, exactly as its ISM will.
 - `status`: every artifact `ok` and valid for more than 14 days.
 - `--namespace` picks another salt prefix: a new, independent deployment.
@@ -223,7 +223,7 @@ openssl x509 -inform der -in Intel_SGX_Provisioning_Certification_RootCA.cer -no
 ```
 
 - **Celestia (`x/teeism`)** has it built in: go-tdx-guest's `verify/trusted_root.pem`, same fingerprint. Only the ISM owner can add another (`set-verifier-overrides --trusted-root-cert`, [ADMIN](ADMIN.md#update-the-intel-root-ca)).
-- **EVM (PCCS)** hard-codes the hash of its public key, `ROOT_CA_PUBKEY_HASH` in `devnet/automata/pccs/src/bases/PcsDaoV2.sol`, and refuses any other root. Check it:
+- **EVM (PCCS)** hard-codes the hash of its public key, `ROOT_CA_PUBKEY_HASH` in `tee-hyperlane/contracts/vendor/automata/pccs/src/bases/PcsDaoV2.sol`, and refuses any other root. Check it:
 
 ```sh
 openssl x509 -inform der -in Intel_SGX_Provisioning_Certification_RootCA.cer -pubkey -noout \

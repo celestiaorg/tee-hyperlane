@@ -1,7 +1,8 @@
 //! Our Automata on-chain PCCS and DCAP verifier on each EVM chain: deploy, seed with Intel's
 //! collateral, report its expiry, and check a quote against it.
 //!
-//! Deployed from the vendored sources in devnet/automata, through the CREATE2 deployer. Every
+//! Deployed from the vendored sources in tee-hyperlane/contracts/vendor/automata, through the
+//! CREATE2 deployer. Every
 //! salt is `keccak256("<namespace>:<NAME>")`, so the addresses follow from the namespace, the
 //! owner and the code, and a new namespace is a new, independent deployment. Each piece is
 //! checked on chain before it is sent, so a run that stops anywhere is finished by running it
@@ -112,11 +113,11 @@ mod ca {
 }
 
 pub fn pccs_dir(ctx: &Ctx) -> PathBuf {
-    ctx.repo.join("devnet/automata/pccs")
+    ctx.repo.join("tee-hyperlane/contracts/vendor/automata/pccs")
 }
 
 pub fn dcap_dir(ctx: &Ctx) -> PathBuf {
-    ctx.repo.join("devnet/automata/automata/evm")
+    ctx.repo.join("tee-hyperlane/contracts/vendor/automata/dcap/evm")
 }
 
 pub fn pccs_for<'a>(d: &'a Deployment, chain: &EvmChain) -> Result<&'a Pccs> {
