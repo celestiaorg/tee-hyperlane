@@ -21,7 +21,7 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 
 - SP1/Groth16 is gone; only in `main` history (`jonas089/tee-hyperlane`, `e2272a0`). `tee-circuit/programs/state-transition`, SP1 vkeys, Groth16 verifier = old, not what runs.
 - Now DCAP is verified on chain via our Automata PCCS on EVM (CREATE2, salt namespace `tee-isms/v2`), so EVM-destination routes depend on collateral that goes stale (`teeism pccs seed` monthly). Celestia-destination routes carry fresh collateral and don't.
-- The Automata sources are vendored under `tee-hyperlane/contracts/vendor/automata/` (`VENDOR.md` there). `teeism pccs deploy` finds a recorded deployment by its record and on-chain code before computing CREATE2 addresses: the live router, entrypoint and verifiers were built with a metadata hash and do not reproduce from the tree.
+- The Automata sources are not in the repo: `teeism build` fetches `automata-on-chain-pccs@fd799ed` and `automata-dcap-attestation@41aedff` into `tee-hyperlane/contracts/vendor/automata/` (gitignored). Only `PCKHelper.sol` differs from those commits (taken from upstream `4105c6f`), and the DCAP build gets `bytecode_hash = none`, `cbor_metadata = false` from the environment. Pins and reasons: `cli/src/steps/build.rs`. Changing a pin moves CREATE2 addresses. `teeism pccs deploy` finds a recorded deployment by its record and on-chain code before computing CREATE2 addresses: the live router, entrypoint and verifiers were built with a metadata hash and do not reproduce from the tree.
 
 ## Deployed (ark)
 
@@ -49,7 +49,6 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 | `deploy/coprocessor.toml.example` | deployed chains and routes, verbatim but for the one key |
 | `deploy/upstream.toml` | what `teeism upstream check` watches upstream, what we support, the manifest the judge reads |
 | `deploy/images.lock` | Nix build per pinned image; `teeism enclaves up` refuses to deploy on mismatch with code |
-| `tee-hyperlane/contracts/vendor/automata/VENDOR.md` | the vendored Automata trees: upstream commits, our changes, how to refresh without moving the live PCCS addresses |
 
 ## Gotchas
 

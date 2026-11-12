@@ -223,7 +223,7 @@ openssl x509 -inform der -in Intel_SGX_Provisioning_Certification_RootCA.cer -no
 ```
 
 - **Celestia (`x/teeism`)** has it built in: go-tdx-guest's `verify/trusted_root.pem`, same fingerprint. Only the ISM owner can add another (`set-verifier-overrides --trusted-root-cert`, [ADMIN](ADMIN.md#update-the-intel-root-ca)).
-- **EVM (PCCS)** hard-codes the hash of its public key, `ROOT_CA_PUBKEY_HASH` in `tee-hyperlane/contracts/vendor/automata/pccs/src/bases/PcsDaoV2.sol`, and refuses any other root. Check it:
+- **EVM (PCCS)** hard-codes the hash of its public key, `ROOT_CA_PUBKEY_HASH` in `src/bases/PcsDaoV2.sol` of Automata's PCCS (`teeism build` checks it out under `tee-hyperlane/contracts/vendor/automata/pccs`), and refuses any other root. Check it:
 
 ```sh
 openssl x509 -inform der -in Intel_SGX_Provisioning_Certification_RootCA.cer -pubkey -noout \
