@@ -7,8 +7,9 @@ use tokio::process::Command;
 
 #[async_trait]
 pub trait Destination: Send + Sync {
-    /// The ISM's trusted state: the only progress marker a route has, and it lives on chain,
-    /// which is what makes restarting the same as continuing.
+    /// The ISM's trusted state: where the next attestation starts, and it lives on chain, which
+    /// is what makes restarting the same as continuing. It is not how far this relayer has
+    /// delivered: anyone may move it, so the route keeps its own marker for that (`covered.json`).
     async fn state(&self) -> Result<IsmState>;
     /// Land the batch's attestation if the ISM is not already past it, then deliver every
     /// message for this destination.
