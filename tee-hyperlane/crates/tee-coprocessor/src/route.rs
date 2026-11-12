@@ -69,6 +69,18 @@ pub struct Provenance {
     pub frontier: MerkleTree,
 }
 
+/// How far up the origin this relayer has accounted for every leaf, kept in `covered.json`: the
+/// height, and the tree as of it. The ISM's height is not that marker. Anyone can ask the
+/// enclave for an attestation and submit it, so the ISM can move past messages this relayer
+/// never indexed; a relayer that only ever looked forward from the ISM's height would leave
+/// them attested and undelivered for good. Whenever the ISM is found above this height, the
+/// leaves in between are indexed and every message of ours among them is delivered.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+struct Covered {
+    height: u64,
+    frontier: MerkleTree,
+}
+
 /// A delivery this relayer made or saw, kept in `delivered/<id>.json`.
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct Delivered {
@@ -172,6 +184,11 @@ impl Route {
             .state()
             .await
             .context("reading the ISM's trusted state")?;
+        // Never fails the pass: a gap that cannot be read yet is read again next time, and the
+        // route goes on attesting what is new meanwhile.
+        if let Err(e) = self.reconcile(&trusted).await {
+            warn!(route = %self.config.name, error = %format!("{e:#}"), "cannot yet account for the messages below the ISM's height; retrying next pass");
+        }
         let step = self.origin.gather(&trusted).await?;
         self.record_head(step.head);
         // An idle step carries no proofs: the origin has not moved past the trusted height.
@@ -185,6 +202,16 @@ impl Route {
                 ),
             );
             return Ok(None);
+        }
+        // The first pass of a route has nothing to reconcile against. Start from here: the tree
+        // as of the ISM's height, proven under the root the ISM holds.
+        if self.covered().is_none() {
+            match trusted_frontier(&step, &trusted) {
+                Ok(frontier) => self.set_covered(trusted.height, &frontier),
+                Err(e) => {
+                    warn!(route = %self.config.name, error = %format!("{e:#}"), "could not read the tree at the ISM's height")
+                }
+            }
         }
         // Both ISMs refuse a transition that leaves the state root where it is, and the enclave
         // does not check that, so it would attest one anyway. An origin can sit on one root for
@@ -424,6 +451,23 @@ impl Route {
         }
 
         let height = update.new_state.height;
+        // Every leaf of this batch is now delivered or parked, so the relayer has accounted for
+        // the origin up to its height, provided it had up to where the batch starts. If not,
+        // the next pass reconciles the whole gap instead.
+        if let (Some(p), Some(covered)) = (&provenance, self.covered()) {
+            let leaves: Vec<[u8; 32]> = batch
+                .messages
+                .iter()
+                .map(|m| alloy_primitives::keccak256(m).0)
+                .collect();
+            if covered.height == p.from_height {
+                if let Ok(frontier) =
+                    replay(&p.frontier, &leaves, update.tree_root, update.tree_count)
+                {
+                    self.set_covered(height, &frontier);
+                }
+            }
+        }
         // What the dashboard lists for each attestation.
         record["from_height"] = update.prev_state.height.into();
         record["attested_at"] = update.attested_at.into();
@@ -674,6 +718,94 @@ impl Route {
         reprove(&provenance.frontier, &ids, index, want_root, want_count).map(Some)
     }
 
+    fn covered(&self) -> Option<Covered> {
+        std::fs::read(self.dir.join("covered.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+    }
+
+    fn set_covered(&self, height: u64, frontier: &MerkleTree) {
+        let body = Covered {
+            height,
+            frontier: *frontier,
+        };
+        if let Err(e) = write_json(&self.dir.join("covered.json"), &body) {
+            warn!(route = %self.config.name, error = %e, "could not record how far the route is covered");
+        }
+    }
+
+    /// Account for every leaf between the height this relayer has covered and the ISM's. There
+    /// are none when the relayer's own batch moved the ISM. There are some when someone else's
+    /// attestation did, before this relayer indexed them: those messages are covered by a root
+    /// the ISM holds, and nothing else would ever deliver them. Each of ours that the mailbox
+    /// has not processed is parked with a proof against that root, and redelivery lands it.
+    async fn reconcile(&self, trusted: &tee_node::state::IsmState) -> Result<()> {
+        let Some(covered) = self.covered() else {
+            return Ok(());
+        };
+        if covered.height == trusted.height {
+            return Ok(());
+        }
+        if covered.height > trusted.height {
+            // The ISM was replaced by one that starts lower. Start over from it.
+            warn!(route = %self.config.name, covered = covered.height, ism = trusted.height, "the ISM is below the height this route had covered; starting over from the ISM");
+            let _ = std::fs::remove_file(self.dir.join("covered.json"));
+            return Ok(());
+        }
+        let (root, count) = self.destination.tree().await?;
+        anyhow::ensure!(root != [0u8; 32], "the ISM has not attested any root yet");
+        let messages = if count == covered.frontier.count {
+            Vec::new()
+        } else {
+            self.origin
+                .index(covered.height, trusted.height)
+                .await
+                .with_context(|| {
+                    format!(
+                        "indexing heights {} to {} to find messages the ISM was moved past",
+                        covered.height, trusted.height
+                    )
+                })?
+        };
+        let (frontier, owed) = uncovered(
+            &covered.frontier,
+            &messages,
+            root,
+            count,
+            self.destination_domain,
+            &self.config.routers,
+        )?;
+        let provenance = Provenance {
+            from_height: covered.height,
+            frontier: covered.frontier,
+        };
+        for (message, metadata) in owed {
+            let id = hex::encode(alloy_primitives::keccak256(&message));
+            let file = format!("{id}.json");
+            if self.dir.join("delivered").join(&file).exists()
+                || self.dir.join("undelivered").join(&file).exists()
+            {
+                continue;
+            }
+            if self.destination.delivered(&id).await? {
+                self.mark_delivered(&id, None);
+                continue;
+            }
+            warn!(route = %self.config.name, id, from = covered.height, to = trusted.height, "the ISM was moved past a message this relayer had not indexed; parked for delivery");
+            self.park(
+                &id,
+                &message,
+                &metadata,
+                Some(&provenance),
+                "the ISM was moved past this message by an attestation that was not this relayer's"
+                    .into(),
+                None,
+            );
+        }
+        self.set_covered(trusted.height, &frontier);
+        Ok(())
+    }
+
     /// What the route is doing right now, for the dashboard. `since` moves only when the phase
     /// changes, so it says how long the route has been waiting, attesting or submitting.
     fn record_activity(&self, phase: &str, detail: String) {
@@ -780,10 +912,7 @@ fn proofs(
     use hyperlane_types::{get_tree_root, insert_leaf};
     let chain = tee_node::origin::find(step.chain)
         .with_context(|| format!("the enclave registry has no chain `{}`", step.chain))?;
-    let frontier = chain
-        .origin
-        .merkle_tree(step.tree_snapshot.clone(), trusted.state_root.into())?
-        .tree;
+    let frontier = trusted_frontier(step, trusted)?;
     let head = chain
         .origin
         .merkle_tree(step.tree.clone(), step.state_root)?
@@ -820,17 +949,28 @@ fn proofs(
     Ok((frontier, metadata))
 }
 
-/// Prove leaf `index` again, against the tree the ISM holds (`root`, `count` leaves), from the
-/// frontier the original proof came from plus the leaves indexed since. The replay must land
-/// exactly on the ISM's tree: a leaf missed or invented would be a proof against a root nobody
-/// attested.
-fn reprove(
+/// The origin tree as of the ISM's trusted height, read through the enclave's own `merkle_tree`
+/// under the state root the ISM holds.
+fn trusted_frontier(
+    step: &crate::origin::Step,
+    trusted: &tee_node::state::IsmState,
+) -> Result<MerkleTree> {
+    let chain = tee_node::origin::find(step.chain)
+        .with_context(|| format!("the enclave registry has no chain `{}`", step.chain))?;
+    Ok(chain
+        .origin
+        .merkle_tree(step.tree_snapshot.clone(), trusted.state_root.into())?
+        .tree)
+}
+
+/// `frontier` with `leaves` inserted, which must be exactly the tree the ISM holds (`root`,
+/// `count` leaves): a leaf missed or invented would give proofs against a root nobody attested.
+fn replay(
     frontier: &MerkleTree,
     leaves: &[[u8; 32]],
-    index: u32,
     root: [u8; 32],
     count: u32,
-) -> Result<Vec<u8>> {
+) -> Result<MerkleTree> {
     use hyperlane_types::{get_tree_root, insert_leaf};
     let mut replayed = *frontier;
     for leaf in leaves {
@@ -847,6 +987,52 @@ fn reprove(
         count,
         hex::encode(root)
     );
+    Ok(replayed)
+}
+
+/// The messages of ours among `messages`, the leaves between a covered frontier and the tree
+/// the ISM holds, each with a proof against that tree's root; and the tree itself, the next
+/// frontier. Ours means bound for `destination` and, when routers are configured, for one of
+/// them: an origin's tree carries every bridge's traffic, and another bridge's message is not
+/// this relayer's to deliver.
+fn uncovered(
+    frontier: &MerkleTree,
+    messages: &[Message],
+    root: [u8; 32],
+    count: u32,
+    destination: u32,
+    routers: &[String],
+) -> Result<(MerkleTree, Vec<(Vec<u8>, Vec<u8>)>)> {
+    let ids: Vec<[u8; 32]> = messages.iter().map(|m| m.id).collect();
+    let tree = replay(frontier, &ids, root, count)?;
+    let routers = padded(routers);
+    let mut builder = crate::proofs::ProofBuilder::new(frontier, &ids)?;
+    let mut owed = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        if !is_ours(&m.bytes, destination, &routers) {
+            continue;
+        }
+        let index = frontier.count + i as u32;
+        owed.push((
+            m.bytes.clone(),
+            metadata(root, index, &builder.proof(index)?),
+        ));
+    }
+    Ok((tree, owed))
+}
+
+/// Prove leaf `index` again, against the tree the ISM holds (`root`, `count` leaves), from the
+/// frontier the original proof came from plus the leaves indexed since. The replay must land
+/// exactly on the ISM's tree: a leaf missed or invented would be a proof against a root nobody
+/// attested.
+fn reprove(
+    frontier: &MerkleTree,
+    leaves: &[[u8; 32]],
+    index: u32,
+    root: [u8; 32],
+    count: u32,
+) -> Result<Vec<u8>> {
+    replay(frontier, leaves, root, count)?;
     let mut builder = crate::proofs::ProofBuilder::new(frontier, leaves)?;
     Ok(metadata(root, index, &builder.proof(index)?))
 }
@@ -900,7 +1086,15 @@ fn check_index(expected: usize, found: usize) -> Result<()> {
 /// configured, any message for the destination counts. An origin's tree is shared by every
 /// bridge on it, so without this every transfer anywhere starts an attestation here.
 fn worth_attesting(messages: &[Message], destination: u32, routers: &[String]) -> bool {
-    let ours: Vec<[u8; 32]> = routers
+    let ours = padded(routers);
+    messages
+        .iter()
+        .any(|m| is_ours(&m.bytes, destination, &ours))
+}
+
+/// Configured routers as 32-byte Hyperlane addresses, left-padded.
+fn padded(routers: &[String]) -> Vec<[u8; 32]> {
+    routers
         .iter()
         .filter_map(|r| {
             let raw = hex::decode(r.trim_start_matches("0x")).ok()?;
@@ -908,11 +1102,13 @@ fn worth_attesting(messages: &[Message], destination: u32, routers: &[String]) -
             padded[32 - raw.len().min(32)..].copy_from_slice(&raw[raw.len().saturating_sub(32)..]);
             Some(padded)
         })
-        .collect();
-    messages.iter().any(|m| {
-        hyperlane_types::decode_hyperlane_message(&m.bytes).is_ok_and(|d| {
-            d.destination == destination && (ours.is_empty() || ours.contains(&d.recipient))
-        })
+        .collect()
+}
+
+/// Is this message for `destination` and, when routers are configured, for one of them?
+fn is_ours(message: &[u8], destination: u32, routers: &[[u8; 32]]) -> bool {
+    hyperlane_types::decode_hyperlane_message(message).is_ok_and(|d| {
+        d.destination == destination && (routers.is_empty() || routers.contains(&d.recipient))
     })
 }
 
@@ -1334,6 +1530,75 @@ mod tests {
             reprove(&frontier, &leaves[3..12], 2, their_root, 12).is_err(),
             "a leaf before the frontier"
         );
+    }
+
+    /// Someone else attested past messages this relayer never indexed. The leaves between what
+    /// it had covered and the ISM's tree are indexed, and each of ours comes back with a proof
+    /// that lands under the root the ISM holds.
+    #[test]
+    fn messages_the_ism_was_moved_past_are_found_and_proven() {
+        use hyperlane_types::{get_branch_root, get_tree_root, insert_leaf, keccak256};
+        let ours = [7u8; 32];
+        let routers = vec![format!("0x{}", hex::encode(ours))];
+        let with_id = |destination, recipient, nonce: u32| {
+            let mut m = message(destination, recipient);
+            m.bytes.extend_from_slice(&nonce.to_be_bytes());
+            m.id = keccak256(&m.bytes);
+            m
+        };
+        let before: Vec<[u8; 32]> = (0u32..3).map(|i| keccak256(&i.to_be_bytes())).collect();
+        let mut frontier = MerkleTree::default();
+        for l in &before {
+            insert_leaf(&mut frontier, *l).unwrap();
+        }
+        // Leaves 3..7: someone else's, ours, ours for another chain, ours.
+        let gap = vec![
+            with_id(5, [1; 32], 0),
+            with_id(5, ours, 1),
+            with_id(6, ours, 2),
+            with_id(5, ours, 3),
+        ];
+        let mut ism = frontier;
+        for m in &gap {
+            insert_leaf(&mut ism, m.id).unwrap();
+        }
+        let root = get_tree_root(&ism);
+
+        let (tree, owed) = uncovered(&frontier, &gap, root, 7, 5, &routers).unwrap();
+        assert_eq!(
+            get_tree_root(&tree),
+            root,
+            "the next frontier is the ISM's tree"
+        );
+        assert_eq!(tree.count, 7);
+        assert_eq!(
+            owed.len(),
+            2,
+            "only the two for our router on this destination"
+        );
+        for ((bytes, metadata), (index, m)) in owed.iter().zip([(4u32, &gap[1]), (6, &gap[3])]) {
+            assert_eq!(bytes, &m.bytes);
+            assert_eq!(metadata.len(), METADATA_BYTES);
+            assert_eq!(&metadata[..32], &root);
+            assert_eq!(&metadata[32..36], &index.to_be_bytes());
+            assert_eq!(get_branch_root(m.id, &proof_in(metadata), index), root);
+        }
+
+        // With no routers configured, every message for the destination is ours.
+        assert_eq!(
+            uncovered(&frontier, &gap, root, 7, 5, &[]).unwrap().1.len(),
+            3
+        );
+        // Nothing dispatched in the gap: the frontier is already the ISM's tree.
+        let (same, none) =
+            uncovered(&frontier, &[], get_tree_root(&frontier), 3, 5, &routers).unwrap();
+        assert_eq!(same.count, 3);
+        assert!(none.is_empty());
+        // An index that misses a leaf is refused rather than proven against the wrong tree.
+        assert!(uncovered(&frontier, &gap[..3], root, 7, 5, &routers)
+            .unwrap_err()
+            .to_string()
+            .contains("but the ISM holds"));
     }
 
     #[test]
