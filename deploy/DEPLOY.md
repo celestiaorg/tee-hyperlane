@@ -193,7 +193,7 @@ Then copy `teeism status` into `README.md` and refresh `deploy/coprocessor.toml.
 
 ## A. Re-pin with the admin key: a new enclave measurement
 
-The ISMs pin `keccak256(mr_td ++ mr_config_id ++ rtmr0..2)` (EVM) and the identity (Celestia), which cover the dstack OS image, the VM's vCPU and memory shape and the compose. Changing any of them means every ISM is re-pinned by its owner, in place: same address, same state, no router moves. First done on 2026-10-26 (dstack 0.5.12 -> 0.6.1); the full routine, with the image and celestia-app steps, is [MAINTAIN: rotate the enclave](MAINTAIN.md#rotate-the-enclave-re-pin).
+The ISMs pin `keccak256(mr_td ++ mr_config_id ++ rtmr0..2)` (EVM) and the identity (Celestia), which cover the dstack OS image, the VM's vCPU and memory shape and the compose. Changing any of them means every ISM is re-pinned by its owner, in place: same address, same state, no router moves. The full routine, with the image and celestia-app steps, is [MAINTAIN: rotate the enclave](MAINTAIN.md#rotate-the-enclave-re-pin).
 
 ```sh
 teeism enclaves up                            # a new CVM (dstack-0.6.1, tdx.small); the old one is recorded as retired
