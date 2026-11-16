@@ -136,13 +136,8 @@ Celestia (our own chain, celestia-app jonas/tee-ism branch, module x/teeism):
   Intel collateral shipped with each attestation.
 
 Enclave (Phala Cloud, dstack):
-- Runs on the dstack-0.6.5 OS image, guest API v0 (GetQuote, Info over /var/run/dstack.sock).
-  Phala operates the KMS, VMM, gateway and their contracts; we own no DstackApp contract, run no
-  auth-eth and use no launch tickets, so KMS, gateway, auth-eth and contract changes do not
-  reach us. The OS image is chosen by name, never Phala's default, so a new dstack OS image
-  (new mr_td, os_image_hash, RTMR0-2) changes nothing until we adopt it; adopting it is a
-  routine zero-downtime re-pin of the ISMs from a running CVM's quote, not an allowlist edit.
-- The enclave identity pins mr_td and, from the RTMR3 event log (canonical v2 events), os-image-hash,
+- Runs on dstack 0.6.x OS images, guest API v0 (GetQuote, Info over /var/run/dstack.sock). The
+  enclave identity pins mr_td and, from the RTMR3 event log (canonical v2 events), os-image-hash,
   compose-hash and key-provider. A removed or renamed one of these events, a new event log
   format, or a change to GetQuote or Info breaks it. A host VMM change (e.g. qemu_hotplug_off)
   moves RTMR0 and needs a re-pin.
