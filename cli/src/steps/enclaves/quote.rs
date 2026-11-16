@@ -16,7 +16,7 @@ use crate::shared::settings::Ctx;
 /// The dstack OS image the enclave identity is defined for: 0.6, whose event log has no
 /// `mr-kms`. A 0.5 CVM cannot be pinned (x/teeism's identity v2). Asked for explicitly, so a
 /// change of Phala's default never moves the identity unnoticed.
-pub const DEFAULT_OS_IMAGE: &str = "dstack-0.6.1";
+pub const DEFAULT_OS_IMAGE: &str = "dstack-0.6.5";
 pub const DEFAULT_INSTANCE: &str = "tdx.small";
 
 /// The chains a CVM target serves.
