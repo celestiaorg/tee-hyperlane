@@ -102,7 +102,7 @@ teeism enclaves verify
 - Refuses unless every image is what this source builds and the pins are pushed (`--unpinned` skips that; never on ark).
 - One CVM on Phala (`--no-dev-os`); Phala picks the node, and the CLI records its gateway, from which every enclave URL is built running all five enclaves, ports 8080 to 8084. `--chain <name>` runs one alone instead.
 - Then reads each enclave's quote: the identity the Celestia ISMs pin, the measurements the EVM ISMs pin, mr_td.
-- `--instance-type` is the VM shape, default `tdx.small`. `--os-image` is the dstack OS image, default `dstack-0.6.2`. It must be a 0.6 image, and 0.6.2 or later: 0.6.0 and 0.6.1 let the host add partitions the guest mounts (GHSA-c79w-3x5w-gmm5). The enclave identity (`x/teeism` identity v3) pins mr_td, RTMR0-2 and `os-image-hash`, `compose-hash` and `key-provider`, and has no `mr-kms`, which only 0.5 recorded. The node, URL and gateway are plumbing: the ISMs trust only the quote's measurements.
+- `--instance-type` is the VM shape, default `tdx.small`. `--os-image` is the dstack OS image, default `dstack-0.6.4`. It must be a 0.6 image, and 0.6.2 or later (Phala offers 0.6.3 and 0.6.4, not 0.6.2): 0.6.0 and 0.6.1 let the host add partitions the guest mounts (GHSA-c79w-3x5w-gmm5). The enclave identity (`x/teeism` identity v3) pins mr_td, RTMR0-2 and `os-image-hash`, `compose-hash` and `key-provider`, and has no `mr-kms`, which only 0.5 recorded. The node, URL and gateway are plumbing: the ISMs trust only the quote's measurements.
 - `verify` checks compose file -> `compose_hash` -> `mr_config_id` in the signed quote (dstack 0.6 binds the compose hash through a document, `mr_config_id` v3, which `verify` rebuilds and matches). Every line must say `ok`. `--rebuild` also rebuilds the images and compares them.
 - **Never `phala cvms upgrade`: it changes the enclave identity.**
 
@@ -196,7 +196,7 @@ Then copy `teeism status` into `README.md` and refresh `deploy/coprocessor.toml.
 The ISMs pin `keccak256(mr_td ++ mr_config_id ++ rtmr0..2)` (EVM) and the identity (Celestia), which cover the dstack OS image, the VM's vCPU and memory shape and the compose. Changing any of them means every ISM is re-pinned by its owner, in place: same address, same state, no router moves. The full routine, with the image and celestia-app steps, is [MAINTAIN: rotate the enclave](MAINTAIN.md#rotate-the-enclave-re-pin).
 
 ```sh
-teeism enclaves up                            # a new CVM (dstack-0.6.2, tdx.small); the old one is recorded as retired
+teeism enclaves up                            # a new CVM (dstack-0.6.4, tdx.small); the old one is recorded as retired
 teeism enclaves verify
 teeism isms evm                               # setEnclaves on each TeeDcapIsm, signed by EVM_SIGNER
 teeism isms celestia                          # tx teeism set-identities on each, signed by `relayer`
