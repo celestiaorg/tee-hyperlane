@@ -102,6 +102,11 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     /// `VERSION` differs even when it pins the right enclaves.
     uint8 public constant VERSION = 1;
 
+    /// How many of the most recently attested roots stay accepted until the owner sets a
+    /// retention, and the most the owner may set. The Celestia module holds the same bounds.
+    uint256 public constant DEFAULT_ROOT_RETENTION = 32;
+    uint256 public constant MAX_ROOT_RETENTION = 256;
+
     /// The most enclaves one ISM admits. Any of them may attest, so every one added widens what
     /// has to stay honest; the bound keeps the set a handful, and the gas of replacing it fixed.
     uint256 public constant MAX_ENCLAVES = 8;
@@ -155,15 +160,26 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     /// The origin tree's root and leaf count at `state`, as the last attestation proved them.
     bytes32 public treeRoot;
     uint32 public treeCount;
-    /// Every root an attestation has ever carried. A message proves itself against any of
-    /// them, so a proof built against one root stays good after the ISM moves on, and an
-    /// attestation landing ahead of the relayer's costs nobody a delivery.
+    /// The roots in the retention window: the newest `rootRetention()` an attestation carried.
+    /// A message proves itself against any of them, so a proof built against one root stays
+    /// good while the ISM moves on by fewer roots than that, and an attestation landing ahead
+    /// of the relayer's costs nobody a delivery. A proof against a pruned root is refused; the
+    /// relayer re-proves it against a root the ISM holds.
     mapping(bytes32 => bool) public attestedRoots;
+    /// Every distinct root attested so far, numbered in order; the newest is `rootSeq - 1`.
+    uint64 public rootSeq;
+    /// The number of the oldest root still in the window.
+    uint64 private _oldestRoot;
+    /// The owner's retention; zero means DEFAULT_ROOT_RETENTION.
+    uint16 private _rootRetention;
+    /// The roots in the window by number, so the oldest can be pruned.
+    mapping(uint64 => bytes32) private _rootAt;
 
     event StateAdvanced(
         bytes32 indexed stateRoot, uint64 height, uint64 timestamp, bytes32 treeRoot, uint32 treeCount
     );
     event EnclavesChanged(bytes32 previousIdentityDigest, bytes32 identityDigest, bytes32[] measurements);
+    event RootRetentionChanged(uint256 previousRetention, uint256 retention);
 
     /// The verifier refused the quote. `code` is Automata's four-letter reason, kept raw so
     /// the failure path stays cheap; call `describeQuoteError` off chain to expand it.
@@ -188,6 +204,7 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     error AttestationTooOld(uint64 blockTime, uint64 attestedAt, uint256 maxSkew);
     error AttestedBeforeState(uint64 attestedAt, uint64 stateTimestamp);
     error EmptyBatchTooSoon(uint64 previous, uint64 next, uint64 minInterval);
+    error BadRootRetention(uint256 retention);
 
     /// `measurements[i]` and `identities[i]` describe the same enclave; `identities` ascending.
     constructor(
@@ -234,6 +251,21 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
             mstore(add(add(current, 32), 84), digest)
         }
         state = current;
+    }
+
+    /// Keep the newest `retention` attested roots accepted for delivery, 1 to
+    /// MAX_ROOT_RETENTION. Lowering it prunes the oldest at once.
+    function setRootRetention(uint256 retention) external onlyOwner {
+        if (retention == 0 || retention > MAX_ROOT_RETENTION) revert BadRootRetention(retention);
+        emit RootRetentionChanged(rootRetention(), retention);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _rootRetention = uint16(retention); // at most MAX_ROOT_RETENTION
+        _pruneRoots();
+    }
+
+    /// How many of the most recently attested roots stay accepted for delivery.
+    function rootRetention() public view returns (uint256) {
+        return _rootRetention == 0 ? DEFAULT_ROOT_RETENTION : _rootRetention;
     }
 
     /// The pinned enclaves: measurements and identity digests, entry for entry.
@@ -378,9 +410,33 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
         state = next;
         treeRoot = root;
         treeCount = count;
-        attestedRoots[root] = true;
+        _recordRoot(root);
 
         emit StateAdvanced(bytes32(next[0:32]), uint64(bytes8(next[36:44])), uint64(bytes8(next[44:52])), root, count);
+    }
+
+    /// Add `root` to the window as the newest, then prune to the retention. A root the window
+    /// already holds, as on a heartbeat, changes nothing.
+    function _recordRoot(bytes32 root) private {
+        if (attestedRoots[root]) return;
+        attestedRoots[root] = true;
+        _rootAt[rootSeq] = root;
+        rootSeq++;
+        _pruneRoots();
+    }
+
+    /// Drop every root older than the newest `rootRetention()`: one per attestation, at most
+    /// MAX_ROOT_RETENTION after the owner lowers the retention.
+    function _pruneRoots() private {
+        uint256 retention = rootRetention();
+        if (rootSeq <= retention) return;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint64 keep = rootSeq - uint64(retention); // retention is at most MAX_ROOT_RETENTION
+        for (uint64 n = _oldestRoot; n < keep; n++) {
+            delete attestedRoots[_rootAt[n]];
+            delete _rootAt[n];
+        }
+        if (_oldestRoot < keep) _oldestRoot = keep;
     }
 
     /// The rules every attested transition must satisfy, identical to the Celestia module's.

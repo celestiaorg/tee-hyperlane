@@ -16,6 +16,7 @@ Rotations: [MAINTAIN.md](MAINTAIN.md). Multisig before mainnet ([Celestia](#tran
 | Set the pinned enclaves (any one may attest) | `tx teeism set-identities` | `setEnclaves` |
 | Transfer ownership | `tx teeism update-owner` | `transferOwnership` |
 | New Intel root CA | `set-verifier-overrides --trusted-root-cert` | new PCCS `PcsDao` |
+| How many attested roots stay accepted (32 until set, 1 to 256) | `tx teeism set-root-retention` | `setRootRetention` |
 | New quote version | v4, v5 built in; later: celestia-app upgrade | `setQuoteVerifier` (`teeism pccs deploy` registers v4 and v5) |
 | Stop an ISM | pin an unused identity | `setEnclaves` with unused measurements |
 
@@ -86,6 +87,15 @@ $A tx teeism set-verifier-overrides $ISM --trusted-root-cert Intel_SGX_Provision
 $A tx teeism set-verifier-overrides $ISM --clear --from relayer $TX     # back to the built-in root
 ```
 
+### Root retention
+
+An ISM accepts a delivery proof against any of its newest N attested roots; older ones are pruned. N is 32 until set, at most 256. Lowering it prunes at once; a parked message whose root was pruned is re-proved by the relayer against a root the ISM holds.
+
+```sh
+$A tx teeism set-root-retention $ISM 64 --from relayer $TX
+$A q teeism ism $ISM -o json | jq .ism.root_retention     # absent or 0 means the default, 32
+```
+
 ### Stop an ISM
 
 Pin an identity no enclave has; re-pin the real set to resume.
@@ -131,6 +141,15 @@ cast send $ISM "transferOwnership(address)" $SAFE --rpc-url $RPC $SIGN
 ```
 
 **Warning:** `teeism isms evm` only re-pins ISMs its signer owns and replaces the rest. Re-pin from the Safe first.
+
+### Root retention
+
+Same rule as Celestia: the newest N attested roots stay accepted, 32 until set, 1 to 256.
+
+```sh
+cast send $ISM "setRootRetention(uint256)" 64 --rpc-url $RPC $SIGN
+cast call $ISM "rootRetention()(uint256)" --rpc-url $RPC
+```
 
 ### Intel's side on EVM
 

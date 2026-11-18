@@ -148,7 +148,7 @@ teeism-gas-oracle  systemd  paymaster upkeep
 - `tx teeism set-verifier-overrides`: trust a rotated Intel root CA. Nothing relaxes Intel's verification.
 - `tx teeism update-owner`: hand an ISM to a multisig. EVM controls sit with the Automata owner. See [ADMIN.md](deploy/ADMIN.md).
 - Rollups: enclave checks the sequencer signature, takes the signed state root, proves the tree. No re-execution, no L1 wait.
-- The enclave attests the origin tree's root, not a list of messages. Each message proves itself at delivery with a merkle branch in its metadata against any root the ISM has attested, so an origin block of any size is one attestation and a message dispatched during an outage stays deliverable.
+- The enclave attests the origin tree's root, not a list of messages. Each message proves itself at delivery with a merkle branch in its metadata against any root in the ISM's retention window (its newest 32 attested roots by default; the owner sets 1 to 256), so an origin block of any size is one attestation. A message whose root has been pruned is re-proved by the relayer against a root the ISM holds, so a message dispatched during an outage stays deliverable.
 - Anyone may submit an attestation, so the ISM can move past messages the relayer has not indexed. The relayer tracks the origin height it has accounted for separately from the ISM's, and delivers whatever lies between them.
 - Heartbeat: a quiet route attests daily with no new leaves, so its ISM stays near its origin's head. Both ISMs refuse an attestation that leaves the tree root unchanged and moves the origin clock less than 30 minutes.
 

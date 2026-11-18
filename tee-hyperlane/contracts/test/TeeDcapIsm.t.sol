@@ -352,6 +352,133 @@ contract TeeDcapIsmTest is Test {
         assertTrue(target.verify(_metadata(VECTOR_ROOT, VECTOR_INDEX, _vectorProof()), _vectorMessage()));
     }
 
+    // ---------------------------------------------------------------- root retention
+
+    /// Attest `roots` in order, one attestation each, starting from the genesis state.
+    function _attestRoots(TeeDcapIsm target, bytes32[] memory roots) internal {
+        bytes memory prev = _state(1, GENESIS_HEIGHT, GENESIS_TIME);
+        for (uint256 i = 0; i < roots.length; i++) {
+            bytes memory next = _state(uint8(2 + i % 2), GENESIS_HEIGHT + 1 + uint64(i), GENESIS_TIME);
+            _submit(target, _payload(prev, next, uint64(block.timestamp), roots[i], uint32(i + 1)));
+            prev = next;
+        }
+    }
+
+    function _roots(uint256 n, uint256 seed) internal pure returns (bytes32[] memory r) {
+        r = new bytes32[](n);
+        for (uint256 i = 0; i < n; i++) {
+            r[i] = keccak256(abi.encode(seed, i));
+        }
+    }
+
+    function _held(TeeDcapIsm target, bytes32[] memory roots, uint256 from, uint256 to) internal view returns (bool all, bool none) {
+        all = true;
+        none = true;
+        for (uint256 i = from; i < to; i++) {
+            bool h = target.attestedRoots(roots[i]);
+            all = all && h;
+            none = none && !h;
+        }
+    }
+
+    function test_rootRetentionDefaultsTo32() public {
+        TeeDcapIsm target = _fresh();
+        assertEq(target.rootRetention(), 32);
+        bytes32[] memory roots = _roots(40, 1);
+        _attestRoots(target, roots);
+        assertEq(target.rootSeq(), 40);
+        (bool all,) = _held(target, roots, 8, 40);
+        (, bool none) = _held(target, roots, 0, 8);
+        assertTrue(all, "the newest 32 are held");
+        assertTrue(none, "the 8 before them were pruned");
+    }
+
+    /// A message proves against its root while that root is in the window, and is refused once
+    /// it is pruned.
+    function test_aProofIsRefusedOnceItsRootIsPruned() public {
+        TeeDcapIsm target = _fresh();
+        bytes32[] memory roots = _roots(32, 2);
+        roots[0] = VECTOR_ROOT;
+        _attestRoots(target, roots);
+        bytes memory metadata = _metadata(VECTOR_ROOT, VECTOR_INDEX, _vectorProof());
+        vm.prank(MAILBOX);
+        assertTrue(target.verify(metadata, _vectorMessage()), "the oldest of a full window");
+
+        // A heartbeat re-attests the newest root: it takes no slot.
+        bytes memory prev = _state(uint8(2 + 31 % 2), GENESIS_HEIGHT + 32, GENESIS_TIME);
+        bytes memory beat = _state(9, GENESIS_HEIGHT + 33, GENESIS_TIME + 31 minutes);
+        vm.warp(GENESIS_TIME + 31 minutes);
+        _submit(target, _payload(prev, beat, uint64(block.timestamp), roots[31], 32));
+        assertEq(target.rootSeq(), 32);
+        vm.prank(MAILBOX);
+        assertTrue(target.verify(metadata, _vectorMessage()), "still held after a heartbeat");
+
+        // One new root pushes it out.
+        _submit(target, _payload(beat, _state(10, GENESIS_HEIGHT + 34, GENESIS_TIME + 31 minutes), uint64(block.timestamp), SOME_ROOT, 33));
+        assertFalse(target.attestedRoots(VECTOR_ROOT));
+        vm.prank(MAILBOX);
+        assertFalse(target.verify(metadata, _vectorMessage()), "pruned");
+    }
+
+    function test_onlyTheOwnerSetsRootRetention() public {
+        TeeDcapIsm target = _fresh();
+        vm.prank(address(0xBAD));
+        vm.expectRevert("Ownable: caller is not the owner");
+        target.setRootRetention(8);
+    }
+
+    function test_rootRetentionIsBounded() public {
+        TeeDcapIsm target = _fresh();
+        vm.expectRevert(abi.encodeWithSelector(TeeDcapIsm.BadRootRetention.selector, 0));
+        target.setRootRetention(0);
+        vm.expectRevert(abi.encodeWithSelector(TeeDcapIsm.BadRootRetention.selector, 257));
+        target.setRootRetention(257);
+        target.setRootRetention(256);
+        assertEq(target.rootRetention(), 256);
+    }
+
+    function test_loweringRetentionPrunesAtOnce() public {
+        TeeDcapIsm target = _fresh();
+        bytes32[] memory roots = _roots(40, 3);
+        _attestRoots(target, roots);
+
+        vm.expectEmit(address(target));
+        emit TeeDcapIsm.RootRetentionChanged(32, 4);
+        target.setRootRetention(4);
+        (bool all,) = _held(target, roots, 36, 40);
+        (, bool none) = _held(target, roots, 0, 36);
+        assertTrue(all);
+        assertTrue(none);
+
+        // Raising keeps what is held and lets the window grow again.
+        target.setRootRetention(256);
+        (all,) = _held(target, roots, 36, 40);
+        assertTrue(all);
+        target.setRootRetention(1);
+        (all,) = _held(target, roots, 39, 40);
+        (, none) = _held(target, roots, 0, 39);
+        assertTrue(all, "only the newest");
+        assertTrue(none);
+    }
+
+    /// The window at its largest, filled past it: exactly the newest 256 are held.
+    function test_maxRetentionWindow() public {
+        TeeDcapIsm target = _fresh();
+        target.setRootRetention(256);
+        bytes32[] memory roots = _roots(300, 4);
+        _attestRoots(target, roots);
+        (bool all,) = _held(target, roots, 44, 300);
+        (, bool none) = _held(target, roots, 0, 44);
+        assertTrue(all);
+        assertTrue(none);
+        // Dropping to one from a full window prunes 255 in one call.
+        uint256 gasBefore = gasleft();
+        target.setRootRetention(1);
+        emit log_named_uint("gas to prune 255 roots", gasBefore - gasleft());
+        (all,) = _held(target, roots, 299, 300);
+        assertTrue(all);
+    }
+
     // ---------------------------------------------------------------- the payload
 
     /// The vector the Rust encoder produced decodes to the fields it was built from.
