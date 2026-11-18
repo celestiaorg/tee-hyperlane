@@ -260,15 +260,33 @@ impl Destination for Celestia {
         Ok((root, u32::try_from(count).context("ism.tree_count")?))
     }
 
+    /// Pages through every root the ISM holds. Roots are kept sorted by their bytes, not by
+    /// when they were attested, so one page is an arbitrary subset. Paging by offset cannot
+    /// skip a root: roots are never removed, so one attested meanwhile can only shift a root
+    /// already seen onto the next page.
     async fn root_attested(&self, root: [u8; 32]) -> Result<bool> {
-        let roots = self.query(&["teeism", "roots", &self.ism]).await?;
-        let want = hex::encode(root);
-        Ok(roots["roots"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .any(|r| r.trim_start_matches("0x").eq_ignore_ascii_case(&want)))
+        let mut offset = 0usize;
+        loop {
+            let page = self
+                .query(&[
+                    "teeism",
+                    "roots",
+                    &self.ism,
+                    "--limit",
+                    &ROOTS_PAGE.to_string(),
+                    "--offset",
+                    &offset.to_string(),
+                ])
+                .await?;
+            let (found, len) = page_has_root(&page, &root);
+            if found {
+                return Ok(true);
+            }
+            if len < ROOTS_PAGE {
+                return Ok(false);
+            }
+            offset += len;
+        }
     }
 
     async fn wallet(&self) -> Result<Wallet> {
@@ -298,9 +316,43 @@ impl Destination for Celestia {
     }
 }
 
+/// x/teeism's largest page (`MaxPaginationLimit`); it serves no more than this per query.
+const ROOTS_PAGE: usize = 100;
+
+/// Whether one page of `query teeism roots` holds `root`, and how many roots it carried.
+fn page_has_root(page: &Value, root: &[u8; 32]) -> (bool, usize) {
+    let want = hex::encode(root);
+    let roots: Vec<&str> = page["roots"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let found = roots
+        .iter()
+        .any(|r| r.trim_start_matches("0x").eq_ignore_ascii_case(&want));
+    (found, roots.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::simulation_refusal;
+
+    #[test]
+    fn page_has_root_reports_presence_and_size() {
+        use super::page_has_root;
+        let root = [0xab; 32];
+        let page = serde_json::json!({
+            "roots": [format!("0x{}", hex::encode([1u8; 32])), format!("0x{}", hex::encode(root).to_uppercase())]
+        });
+        assert_eq!(page_has_root(&page, &root), (true, 2));
+        assert_eq!(page_has_root(&page, &[2; 32]), (false, 2));
+        assert_eq!(
+            page_has_root(&serde_json::json!({"roots": []}), &root),
+            (false, 0)
+        );
+        assert_eq!(page_has_root(&serde_json::json!({}), &root), (false, 0));
+    }
 
     /// A message the chain will not execute fails the simulation with the SDK's handler
     /// wrapper, and comes back as a refusal naming the chain's reason.
