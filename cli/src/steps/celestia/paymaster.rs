@@ -122,6 +122,28 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
         &["hyperlane", "hooks", "destination-gas-configs", &igp],
     )?;
     print::info(format!("gas configs: {q}"));
+    // A domain without a config refuses every transfer to it ("remote domain is not
+    // supported"), so a round that posted nothing is a failure, not a warning.
+    let configured: Vec<u64> = q["destination_gas_configs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| match &c["remote_domain"] {
+            serde_json::Value::String(s) => s.parse().ok(),
+            v => v.as_u64(),
+        })
+        .collect();
+    let missing: Vec<String> = crate::shared::chains::evm_selection(&[])?
+        .iter()
+        .filter(|c| !configured.contains(&u64::from(c.domain)))
+        .map(|c| format!("{} ({})", c.label, c.domain))
+        .collect();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "the paymaster has no gas price for {}; transfers there are refused. The gas oracle's errors are above",
+            missing.join(", ")
+        );
+    }
     print::ok("paymaster ready");
     Ok(())
 }

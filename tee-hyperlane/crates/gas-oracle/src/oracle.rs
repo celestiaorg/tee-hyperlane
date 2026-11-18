@@ -228,8 +228,11 @@ pub fn set_destination_gas_config(config: &Config, reading: &GasConfigPush) -> R
             &config.celestia_rpc,
             "--gas",
             "auto",
+            // A gas config write is small (about 50k gas) and lands some 12k above what the
+            // node simulates, more than a 30% margin covers. At these prices the headroom
+            // costs a fraction of a utia.
             "--gas-adjustment",
-            "1.3",
+            "2",
             "--gas-prices",
             &gas_price,
             "-y",
