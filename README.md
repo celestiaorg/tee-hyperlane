@@ -27,7 +27,7 @@ deploy/                                 the guides, the measured compose files, 
 
 ## Deployments
 
-`teeism status` prints the live ids. Verify: `teeism enclaves verify`.
+Redeployed from scratch on 2026-11-18 (fresh devnet, CVM, ISMs, routers and PCCS); every id below is from then. `teeism status` prints the live ids. Verify: `teeism enclaves verify`.
 
 **Enclaves.** Phala Cloud (node picked by Phala), `tdx.small`, dstack `0.6.4`, image `ghcr.io/jonas089/tee-node`. All five in one CVM (`deploy/docker-compose.all.yml`); `teeism enclaves up --chain <chain>` runs one alone.
 
@@ -40,19 +40,19 @@ deploy/                                 the guides, the measured compose files, 
 | `eden` | 8084 | Eden |
 
 ```
-app id         e56005780efc9e267b602647684a15196ffa439b
-urls           https://e56005780efc9e267b602647684a15196ffa439b-<port>.dstack-pha1-prod9.phala.network
+app id         62646bc710e60574a073e6a690e9fe504e5dd1d9
+urls           https://62646bc710e60574a073e6a690e9fe504e5dd1d9-<port>.dstack-pha1-prod9.phala.network
 mr_td          0x2a674327c50218dba880066b349b8d559d749ed68dce33fd651c184a877d084b07a9e583767a7ad5da13ed91deec2b70
-compose_hash   0xf440a71354bfba458534cf104fe048afa8eb67fe7481d7dc35611aad82eef373
-os_image_hash  0xec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6
+compose_hash   0xdd5b22deda6bcd8e621ab3b80691691e24bd06d1788f299f31d7814fd251db60
+os_image_hash  0xfeff3645893ad910d4f0e06d8f553cf80a7c9fede2ce0698fa63116283260366
 rtmr0          0x68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96
-rtmr1          0x89ef86c5125b986c325f0a94acfa87718a4ef3a4d4f237dbb72dda3cf777fd2c054555fb4407eb53338d7d67329a7333
-rtmr2          0xe9000e338f33233e8f51b7fd031e1c158bdcf8572eab041c0bc8eb7fef48b23259a6a556e6c8e2af99999fc39c793179
-identity       0x441a9c5698a48dca085b80815549023bb0867ade1c958b1a8952c3ff72fc9f50
-measurements   0x9a2bb5d75308c1da58351dffd9f3d97e9d4e694d6c7d8109ed4f2a7faa081726
+rtmr1          0x0d390cdff163d981adbe90bb1d3666463be9de93a83de9b09ad0fe233974fdddc475731ba40d0bdc523efe8887cf82b8
+rtmr2          0xdf939336955fec7a8d316b4ee4fe7b7e0810194c6911aa61c559882ad17984bfb4a7fc7c3112d25a4968f23bd6b907be
+identity       0xa03fe78c186b5badc7cd2d5d52540a877470bd9e959c898d434d1d3ac03274c3
+measurements   0xf5dda62549cd9fc7465b45e7aef8d341b7164577bdae11f1cba38f8dd7e86561
 ```
 
-The previous CVMs (`3c591bb6…` on `dstack-pha-prod5`, deleted 2026-11-09; `109054f6…` on `dstack-pha1-prod9`, retired 2026-11-10) had the same mr_td, RTMR0-2 and OS image; only `compose_hash` moved, because dstack's app compose carries the CVM's name and the image digests. A new CVM is therefore always a re-pin, even on an unchanged image.
+A new CVM is always a re-pin, even on an unchanged image: dstack's app compose carries the CVM's name and the image digests, so `compose_hash` moves.
 
 Image digests per chain: `deploy/images.lock`.
 
@@ -72,14 +72,12 @@ igp        0x726f757465725f706f73745f6469737061746368000000040000000000000002
 
 | Celestia-origin, `TeeDcapIsm` on | address |
 |---|---|
-| Ethereum Sepolia | `0x015ee7e36961E840fC3119B94657703F3cFaD420` |
-| Arbitrum Sepolia | `0xe1e0893ED28AAe38997c5d5eeb9AB7BF3Ce05a4E` |
-| Base Sepolia | `0xA50F8683a5eb315BCc45457C9Ff65c273D60Fa88` |
-| Eden | `0xBaB7AA2F7cCaBD98cEb82EddD1DBe93D60356892` |
+| Ethereum Sepolia | `0xB37ea65A1379d013752f6e1976740c58bca9Bfa4` |
+| Arbitrum Sepolia | `0xE2CED40FD618Bd78A0b34Fef37b491d20D3e9Cfc` |
+| Base Sepolia | `0xDE2f4FFc5BE037c7fA463e875Ef774B6eBF28B91` |
+| Eden | `0x0056C714170B4B69CDb4B80fA12BCEdb1BaA3443` |
 
-Revision 1 (a pinned set of enclaves; `VERSION` restarted at 1 since nothing has been released). Their predecessors (revision 5: `0x2780675B…`, `0xF77063b0…`, `0x5fdbaD4f…`, `0x3616c0b2…`; revision 6 on Eden: `0x45A9Fd2D…`) keep their last state and nothing points at them.
-
-On Eden the routers do not point at the ISM directly but at a routing ISM of ours, `0xD93E3ff7c961BD0668025B39B2685E333b128371` (Hyperlane `AtomicInitDomainRoutingIsm`, Celestia's domain routed to the ISM above), and dispatch through a routing hook of ours, `0xD5850ae1213d0D1f2C24Bbca030FD5f734d8FedC` (Hyperlane `DomainRoutingHook`, Celestia's domain routed to the merkle tree hook). That is the mainnet shape: a token owner points at the routing contracts once, and the TEE ISM behind them is ours to swap. `teeism warp evm` does not know them and re-points the routers straight at the ISM; after it, `set` the routing ISM to the new ISM and point the routers back ([MAINTAIN](deploy/MAINTAIN.md)).
+Revision 1. Every router points straight at its chain's ISM and dispatches through the mailbox's default hook.
 
 | EVM-origin, `x/teeism` on `teeism-local` | id |
 |---|---|
@@ -93,15 +91,15 @@ On Eden the routers do not point at the ISM directly but at a routing ISM of our
 
 | | collateral | synthetic |
 |---|---|---|
-| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x2022b3702c5ab233ce9Da34197ee9b5942AD11fD`<br>Arbitrum `0x7a09FC80cAFaff73335811B431a41dE3d06d0CC2`<br>Base `0x0068917588ceE1afCe257422A6Ee10eAef445f10`<br>Eden `0x62AD8dEbAE1895aEdB0f4Fc2AcaB1B3FAE67Fe02` |
-| teeUSD | none: minted on Celestia, as the synthetic `0x726f757465725f61707000000000000000000000000000020000000000000001` (denom `hyperlane/<that id>`) | Sepolia `0xc381f89241D03C7DD62eFe7E9c1e456Cf9f0904f`<br>Arbitrum `0x316006Ed5A096E1F1Ab32b436696B576A7645F0c`<br>Base `0xB151c781c0DfB74807Aa67b7198eB0a0A55e142A`<br>Eden `0x4592f8D742E8b3881B3B94C00260C95aFcc298c0` |
+| TIA | Celestia `0x726f757465725f61707000000000000000000000000000010000000000000000` | Sepolia `0x079ffCD6D8b4EBCee45dc6CFf21cE8bDE6b312bf`<br>Arbitrum `0x57bc2BeE5E77d41E5eAc454085c0Fa01Cca242d6`<br>Base `0x1379A7dcC7cb39F9B3c2370cACe5EBed6cdc6116`<br>Eden `0xC155A1Ad822Ec25E2251cB5CCB2a2b07c265d5b8` |
+| teeUSD | none: minted on Celestia, as the synthetic `0x726f757465725f61707000000000000000000000000000020000000000000001` (denom `hyperlane/<that id>`) | Sepolia `0x0d9CDDe969C3dE77B404904F1cfB07978A16636c`<br>Arbitrum `0x3acacD5c4A4017F90710ed9957D7932Af95B2988`<br>Base `0x541de526c22795117054bE44a00b94584ecb52Cd`<br>Eden `0xA05038CDcD5552A5FAc03AF2324b1DC3e0C9bb86` |
 
 **Eden.** Evolve-stack; mailbox and hook are ours.
 
 ```
 chain id     3735928814      ~10 blocks/s
-mailbox      0xbFbc80F66CD2E3534779d4952CC669c86F298479
-merkle hook  0x7fE7582d7BE76f4053c291C30d38284cb4935A1a   (tree at slot 151)
+mailbox      0x0F6E896Cd58f2B296224B40487A52cC110F525fb
+merkle hook  0x27aBE755196D607ad0faE9846d75629e628a24F4
 DA           mocha-5, namespace 0000000000000000000000000000000000005d2e074163aa3b4d9818
 sequencer    ed25519 4366433b4309d4f077f0cc1f4370a525736df9a1dc9a205b8d2db1d630b68d51
 ```
@@ -116,10 +114,10 @@ arbitrum   0x9396c22161c821231ad4ae8fcf991b4beee39990   SequencerInbox 0x6c97864
 **Intel collateral (PCCS).** Ours, Automata's contracts at the same CREATE2 addresses on all four EVM chains (namespace `tee-isms/v2`, owner `0x318d22faa1e0f29eac7ef644a8fac676f6688d1e`):
 
 ```
-entrypoint   0x1AeAc1f7280fb57c1A2d82bD7f76875a7C32A9d3
-router       0x46ccfafa9413dc904eb6dd07e5b3ef1ad6dc8cee
-v4 verifier  0xbdde242942c2c6dbd8194235d4011d8296aa6b08
-v5 verifier  0xccc63af1c2ed8777c31ed90a1acec8ef1c08e83f
+entrypoint   0xdd3bEbec40398671D053AF7ACa6AC601F7f15b76
+router       0x27fbb1f96ec0dda0b1052c49a9a118fdec7a264f
+v4 verifier  0xc4cef0bf439998add1d845c674921d128a987e08
+v5 verifier  0xf04869c04328d1f8e2742479e915a3f4aafbcf90
 storage      0x7a58de47eb15fa9bcac84e1d917046c3792e85c9
 ```
 

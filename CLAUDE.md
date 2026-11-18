@@ -31,9 +31,8 @@ Hyperlane bridge between Celestia and EVM testnets; messages authorised by a lig
 - nginx gateway `:3000`: `/rpc`, `/rest`, `/api`, `/evm/{chain}/`, `/tx/<hash>`.
 - 8 routes: Celestia to/from Sepolia, Arbitrum, Base, Eden.
 - Tokens: TIA (Celestia collateral, synthetic on EVM), teeUSD (fixed 1B minted on Celestia, synthetic everywhere). Bridge only: no trading, pools or token launch.
-- 5 images (`celestia`, `ethereum`, `base`, `arbitrum`, `eden`) in one shared CVM (slot `all#2`, app `e5600578…`, since 2026-11-10), ports 8080 to 8084. Shared identity: any image change re-pins all 8 ISMs. `teeism enclaves up --chain <chain>` gives a chain its own CVM and identity. A new CVM is always a re-pin: dstack's app compose carries the CVM name, so `compose_hash` moves even on the same image.
-- **Eden's routers sit behind our routing ISM `0xD93E3ff7…` and routing hook `0xD5850ae1…`** (mainnet rehearsal; addresses in `devnet/.state/eden-routing.env`). `teeism warp evm` re-points the routers straight at the ISM; afterwards `set` the routing ISM to the new ISM and point the routers back by hand (README, Deployments).
-- The devnet chain runs celestia-app `aaed6bc` (branch head). `teeism celestia up --new-image` follows the branch; no ISM or identity change.
+- 5 images (`celestia`, `ethereum`, `base`, `arbitrum`, `eden`) in one shared CVM (app `62646bc7…`, since the 2026-11-18 redeploy), ports 8080 to 8084. Shared identity: any image change re-pins all 8 ISMs. `teeism enclaves up --chain <chain>` gives a chain its own CVM and identity. A new CVM is always a re-pin: dstack's app compose carries the CVM name, so `compose_hash` moves even on the same image.
+- The devnet chain runs celestia-app `84ca176` (branch head). `teeism celestia up --new-image` follows the branch; no ISM or identity change.
 
 ## Docs
 

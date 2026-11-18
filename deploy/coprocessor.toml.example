@@ -1,5 +1,5 @@
 # The ark deployment: five origins, eight routes, one shared CVM running an enclave per origin.
-# As of 2026-11-10 (CVM e5600578…, revision-1 TeeDcapIsms).
+# As of 2026-11-18 (fresh redeploy, CVM 62646bc7…, revision-1 TeeDcapIsms).
 # `teeism config` writes the live file from devnet/.state/deployment.json.
 #
 # Chains are declared once and routes name them. A chain's fields are documented on its
@@ -81,8 +81,8 @@ da_rpc = "http://localhost:26658"
 rpc = "https://ev-reth-eden-testnet.binarybuilders.services:8545/"
 logs_rpc = "https://rpc.testnet.eden.gateway.fm/"
 send_rpc = "https://rpc.testnet.eden.gateway.fm/"
-mailbox = "0xbFbc80F66CD2E3534779d4952CC669c86F298479"
-merkle_tree_hook = "0x7fE7582d7BE76f4053c291C30d38284cb4935A1a"
+mailbox = "0x0F6E896Cd58f2B296224B40487A52cC110F525fb"
+merkle_tree_hook = "0x27aBE755196D607ad0faE9846d75629e628a24F4"
 
 # ---------------------------------------------------------------- routes
 #
@@ -98,40 +98,40 @@ merkle_tree_hook = "0x7fE7582d7BE76f4053c291C30d38284cb4935A1a"
 name = "celestia-to-sepolia"
 from = "celestia"
 to = "sepolia"
-enclaves = ["https://e56005780efc9e267b602647684a15196ffa439b-8080.dstack-pha1-prod9.phala.network"]
-ism = "0x015ee7e36961E840fC3119B94657703F3cFaD420"
-routers = ["0x2022b3702c5ab233ce9Da34197ee9b5942AD11fD", "0xc381f89241D03C7DD62eFe7E9c1e456Cf9f0904f"]
+enclaves = ["https://62646bc710e60574a073e6a690e9fe504e5dd1d9-8080.dstack-pha1-prod9.phala.network"]
+ism = "0xB37ea65A1379d013752f6e1976740c58bca9Bfa4"
+routers = ["0x079ffCD6D8b4EBCee45dc6CFf21cE8bDE6b312bf", "0x0d9CDDe969C3dE77B404904F1cfB07978A16636c"]
 
 [[routes]]
 name = "celestia-to-arbitrum"
 from = "celestia"
 to = "arbitrum"
-enclaves = ["https://e56005780efc9e267b602647684a15196ffa439b-8080.dstack-pha1-prod9.phala.network"]
-ism = "0xe1e0893ED28AAe38997c5d5eeb9AB7BF3Ce05a4E"
-routers = ["0x7a09FC80cAFaff73335811B431a41dE3d06d0CC2", "0x316006Ed5A096E1F1Ab32b436696B576A7645F0c"]
+enclaves = ["https://62646bc710e60574a073e6a690e9fe504e5dd1d9-8080.dstack-pha1-prod9.phala.network"]
+ism = "0xE2CED40FD618Bd78A0b34Fef37b491d20D3e9Cfc"
+routers = ["0x57bc2BeE5E77d41E5eAc454085c0Fa01Cca242d6", "0x3acacD5c4A4017F90710ed9957D7932Af95B2988"]
 
 [[routes]]
 name = "celestia-to-base"
 from = "celestia"
 to = "base"
-enclaves = ["https://e56005780efc9e267b602647684a15196ffa439b-8080.dstack-pha1-prod9.phala.network"]
-ism = "0xA50F8683a5eb315BCc45457C9Ff65c273D60Fa88"
-routers = ["0x0068917588ceE1afCe257422A6Ee10eAef445f10", "0xB151c781c0DfB74807Aa67b7198eB0a0A55e142A"]
+enclaves = ["https://62646bc710e60574a073e6a690e9fe504e5dd1d9-8080.dstack-pha1-prod9.phala.network"]
+ism = "0xDE2f4FFc5BE037c7fA463e875Ef774B6eBF28B91"
+routers = ["0x1379A7dcC7cb39F9B3c2370cACe5EBed6cdc6116", "0x541de526c22795117054bE44a00b94584ecb52Cd"]
 
 [[routes]]
 name = "celestia-to-eden"
 from = "celestia"
 to = "eden"
-enclaves = ["https://e56005780efc9e267b602647684a15196ffa439b-8080.dstack-pha1-prod9.phala.network"]
-ism = "0xBaB7AA2F7cCaBD98cEb82EddD1DBe93D60356892"
-routers = ["0x62AD8dEbAE1895aEdB0f4Fc2AcaB1B3FAE67Fe02", "0x4592f8D742E8b3881B3B94C00260C95aFcc298c0"]
+enclaves = ["https://62646bc710e60574a073e6a690e9fe504e5dd1d9-8080.dstack-pha1-prod9.phala.network"]
+ism = "0x0056C714170B4B69CDb4B80fA12BCEdb1BaA3443"
+routers = ["0xC155A1Ad822Ec25E2251cB5CCB2a2b07c265d5b8", "0xA05038CDcD5552A5FAc03AF2324b1DC3e0C9bb86"]
 
 # Attested by the ethereum, arbitrum and base enclaves, ports 8081, 8083 and 8082.
 [[routes]]
 name = "sepolia-to-celestia"
 from = "sepolia"
 to = "celestia"
-enclaves = ["https://e56005780efc9e267b602647684a15196ffa439b-8081.dstack-pha1-prod9.phala.network"]
+enclaves = ["https://62646bc710e60574a073e6a690e9fe504e5dd1d9-8081.dstack-pha1-prod9.phala.network"]
 ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000001"
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
 max_lag = 300
@@ -140,7 +140,7 @@ max_lag = 300
 name = "arbitrum-to-celestia"
 from = "arbitrum"
 to = "celestia"
-enclaves = ["https://e56005780efc9e267b602647684a15196ffa439b-8083.dstack-pha1-prod9.phala.network"]
+enclaves = ["https://62646bc710e60574a073e6a690e9fe504e5dd1d9-8083.dstack-pha1-prod9.phala.network"]
 ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000002"
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
 
@@ -148,7 +148,7 @@ routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000",
 name = "base-to-celestia"
 from = "base"
 to = "celestia"
-enclaves = ["https://e56005780efc9e267b602647684a15196ffa439b-8082.dstack-pha1-prod9.phala.network"]
+enclaves = ["https://62646bc710e60574a073e6a690e9fe504e5dd1d9-8082.dstack-pha1-prod9.phala.network"]
 ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000003"
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
 
@@ -157,6 +157,6 @@ routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000",
 name = "eden-to-celestia"
 from = "eden"
 to = "celestia"
-enclaves = ["https://e56005780efc9e267b602647684a15196ffa439b-8084.dstack-pha1-prod9.phala.network"]
+enclaves = ["https://62646bc710e60574a073e6a690e9fe504e5dd1d9-8084.dstack-pha1-prod9.phala.network"]
 ism = "0x726f757465725f69736d000000000000000000000000002b0000000000000004"
 routers = ["0x726f757465725f61707000000000000000000000000000010000000000000000", "0x726f757465725f61707000000000000000000000000000020000000000000001"]
