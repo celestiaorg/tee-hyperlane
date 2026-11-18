@@ -156,6 +156,7 @@ teeism-gas-oracle  systemd  paymaster upkeep
 
 - **Trusted:** Intel TDX, pinned identity and its re-pin key, each ISM's starting state, our Automata contracts (EVM), Base/Arbitrum/Eden sequencer keys.
 - **Not trusted:** RPCs, the relayer (can stall, not forge), Phala beyond uptime, enclave inputs.
+- **Launch:** both ISMs refuse a quote from a TD launched in debug mode or migratable, or with a service TD bound (non-zero `mr_servicetd`): its host, or the migration TD that holds its export keys, could read and change it while it keeps quoting our measurements. Our enclave launches with only `SEPT_VE_DISABLE` set.
 - **Risks:** a TDX break forges anything. The owner can re-pin any ISM to an enclave of its choice. One EOA owns ISMs, routers and Automata roles. Moves to a multisig before mainnet (`update-owner` on Celestia, `transferOwnership` on EVM).
 
 ## Tests

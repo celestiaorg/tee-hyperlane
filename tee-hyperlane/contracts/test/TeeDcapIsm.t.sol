@@ -182,8 +182,10 @@ contract TeeDcapIsmTest is Test {
         for (uint256 i = 0; i < 32; i++) {
             body[520 + i] = h[i];
         }
-        for (uint256 i = 584; i < bodyLen; i++) {
-            body[i] = 0xee; // tee_tcb_svn2 and mr_servicetd, which nothing here reads
+        // tee_tcb_svn2, which nothing here reads; mr_servicetd (600..648) stays zero, as on a
+        // TD with no service TD bound.
+        for (uint256 i = 584; i < bodyLen && i < 600; i++) {
+            body[i] = 0xee;
         }
         return abi.encodePacked(version, bodyType, tcbStatus, bytes6(0), body);
     }
@@ -879,6 +881,44 @@ contract TeeDcapIsmTest is Test {
             _payloadWithLeaves(_state(1, GENESIS_HEIGHT, GENESIS_TIME), _state(2, GENESIS_HEIGHT + 1, GENESIS_TIME), uint64(block.timestamp));
         dcap.set(true, _output(payload, 4, false)); // TCB_OUT_OF_DATE
         vm.expectRevert(abi.encodeWithSelector(TeeDcapIsm.TcbNotAcceptable.selector, uint8(4)));
+        target.submitAttestation(hex"00", payload);
+    }
+
+    function test_rejectsAMigratableEnclave() public {
+        TeeDcapIsm target = _fresh();
+        bytes memory payload = _oneStepPayload();
+        bytes memory out = _output(payload, 0, false);
+        out[11 + 120 + 3] = bytes1(uint8(0x20)); // TD_ATTRIBUTES bit 29
+        dcap.set(true, out);
+        vm.expectRevert(TeeDcapIsm.MigratableEnclave.selector);
+        target.submitAttestation(hex"00", payload);
+    }
+
+    /// Our enclave's own attributes (SEPT_VE_DISABLE, bit 28) and bits we take no view on pass.
+    function test_acceptsOurLaunchAttributes() public {
+        TeeDcapIsm target = _fresh();
+        bytes memory payload = _oneStepPayload();
+        bytes memory out = _output(payload, 0, false);
+        out[11 + 120 + 3] = bytes1(uint8(0x10 | 0x40)); // SEPT_VE_DISABLE, PKS
+        dcap.set(true, out);
+        target.submitAttestation(hex"00", payload);
+    }
+
+    function test_rejectsABoundServiceTd() public {
+        TeeDcapIsm target = _fresh();
+        bytes memory payload = _oneStepPayload();
+        bytes memory out = _outputAs(5, 3, 648, payload, 0, false);
+        out[11 + 647] = 0x01; // last byte of mr_servicetd
+        dcap.set(true, out);
+        vm.expectRevert(TeeDcapIsm.ServiceTdBound.selector);
+        target.submitAttestation(hex"00", payload);
+    }
+
+    function test_rejectsATruncatedTd15Body() public {
+        TeeDcapIsm target = _fresh();
+        bytes memory payload = _oneStepPayload();
+        dcap.set(true, _outputAs(5, 3, 600, payload, 0, false));
+        vm.expectRevert(TeeDcapIsm.MalformedOutput.selector);
         target.submitAttestation(hex"00", payload);
     }
 

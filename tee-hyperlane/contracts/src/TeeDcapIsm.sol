@@ -62,6 +62,9 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     uint256 private constant LEN_RTMR = 144;
     uint256 private constant OFF_REPORT_DATA = BODY + 520;
     uint256 private constant MIN_OUTPUT = BODY + 584;
+    /// A TD 1.5 body appends tee_tcb_svn2 (16) and mr_servicetd (48) to the TD 1.0 body.
+    uint256 private constant OFF_MRSERVICETD = BODY + 600;
+    uint256 private constant LEN_MRSERVICETD = 48;
 
     uint16 private constant QUOTE_VERSION_4 = 4;
     uint16 private constant QUOTE_VERSION_5 = 5;
@@ -79,6 +82,12 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     /// bit 0 of TD_ATTRIBUTES. A debug TD is transparent to its host, so its measurements
     /// prove nothing about what actually ran.
     uint8 private constant TD_DEBUG = 0x01;
+    /// bit 29 of TD_ATTRIBUTES, in byte 3 of the little-endian field: the host launched the TD
+    /// so it can be live-migrated. A migration TD then holds the keys its memory is exported
+    /// under; whoever controls that TD can read and change the state in transit and import it
+    /// elsewhere, where it still quotes the same measurements. The Celestia module refuses the
+    /// same, and a non-zero mr_servicetd (a service TD bound).
+    uint8 private constant TD_MIGRATABLE = 0x20;
 
     // ---------------------------------------------------------------- ism state
     uint256 private constant STATE_BYTES = 116;
@@ -188,6 +197,8 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     error UnsupportedQuote(uint16 version, uint16 bodyType);
     error TcbNotAcceptable(uint8 status);
     error DebugEnclave();
+    error MigratableEnclave();
+    error ServiceTdBound();
     error WrongEnclave(bytes32 measured);
     error BadEnclaveSet();
     error PayloadNotAttested();
@@ -358,6 +369,13 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     /// Our verdict on the software.
     function _requireOurEnclave(bytes memory out) private view {
         if (uint8(out[OFF_TD_ATTRIBUTES]) & TD_DEBUG != 0) revert DebugEnclave();
+        if (uint8(out[OFF_TD_ATTRIBUTES + 3]) & TD_MIGRATABLE != 0) revert MigratableEnclave();
+        if (uint16(bytes2(_slice(out, 2, 2))) == BODY_TYPE_TD15) {
+            if (out.length < OFF_MRSERVICETD + LEN_MRSERVICETD) revert MalformedOutput();
+            if (keccak256(_slice(out, OFF_MRSERVICETD, LEN_MRSERVICETD)) != keccak256(new bytes(LEN_MRSERVICETD))) {
+                revert ServiceTdBound();
+            }
+        }
 
         bytes32 measured = keccak256(
             abi.encodePacked(_slice(out, OFF_MRTD, LEN_MRTD), _slice(out, OFF_RTMR0, LEN_RTMR))
