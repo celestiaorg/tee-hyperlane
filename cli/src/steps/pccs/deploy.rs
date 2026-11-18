@@ -165,9 +165,7 @@ pub async fn deploy(
     let p256 = p256(c).await?;
     print::info(format!("P-256 verifier {p256}, owner {owner}, namespace {ns}"));
     // A contract this namespace has recorded is taken from the record once the chain has code
-    // at that address. The DCAP tree's artifacts used to carry a metadata hash that depended
-    // on the build environment, so the live router, entrypoint and verifiers do not reproduce
-    // from this tree; the PCCS tree's never carried one, and now neither does the DCAP tree's.
+    // at that address, rather than from a CREATE2 address computed from today's build.
     let recorded = existing.filter(|p| p.namespace == ns);
     let rec = |field: fn(&Pccs) -> Address| recorded.map(field);
 

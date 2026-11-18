@@ -41,8 +41,8 @@ pub struct Step {
     pub chain: &'static str,
     pub input: Value,
     pub tree: Value,
-    /// The same tree as of the trusted height. The enclave no longer reads it: the relayer does,
-    /// to build each message's merkle branch from the frontier it proves and the leaves it indexes.
+    /// The same tree as of the trusted height. Read by the relayer, not the enclave, to build
+    /// each message's merkle branch from the frontier it proves and the leaves it indexes.
     pub tree_snapshot: Value,
     /// The merkle tree hook, as the ISM pins it.
     pub tree_address: [u8; 32],

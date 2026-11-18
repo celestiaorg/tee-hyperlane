@@ -20,10 +20,13 @@ teeism pccs seed            # republish all of it; --dry-run checks and fetches 
 Intel's standard evaluation number moves twelve months after release: **21 on about 10 Feb 2027, 22 on about 11 Aug 2027**. `teeism pccs deploy` covers every number Intel already publishes; for a newer one, weeks before:
 
 ```sh
+curl -s https://api.trustedservices.intel.com/tdx/certification/v4/tcbevaluationdatanumbers \
+  | jq '.tcbEvaluationDataNumbers.tcbEvalNumbers[] | {n: .tcbEvaluationDataNumber, released: .tcbRecoveryEventDate}'
+curl -s "https://api.trustedservices.intel.com/tdx/certification/v4/tcb?fmspc=20a06f000000" | jq .tcbInfo.tcbEvaluationDataNumber   # standard today
 teeism pccs tcb-eval 23      # its QE identity and TCB info contracts on every chain, registered, seeded
 ```
 
-- Check the enclaves' host passes the new number, or ask Phala to patch it ([ADMIN](ADMIN.md#tcb-recovery)).
+- Hosts that do not pass the new number go `OutOfDate` and routes stop; a re-pin does not help. Phala patches the host or the CVM moves: ask early.
 - Celestia needs nothing.
 
 ## Heartbeat

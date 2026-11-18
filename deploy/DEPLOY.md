@@ -193,21 +193,7 @@ Then copy `teeism status` into `README.md` and refresh `deploy/coprocessor.toml.
 
 ## A. Re-pin with the admin key: a new enclave measurement
 
-The ISMs pin `keccak256(mr_td ++ mr_config_id ++ rtmr0..2)` (EVM) and the identity (Celestia), which cover the dstack OS image, the VM's vCPU and memory shape and the compose. Changing any of them means every ISM is re-pinned by its owner, in place: same address, same state, no router moves. The full routine, with the image and celestia-app steps, is [MAINTAIN: rotate the enclave](MAINTAIN.md#rotate-the-enclave-re-pin).
-
-```sh
-teeism enclaves up                            # a new CVM (dstack-0.6.4, tdx.small); the old one is recorded as retired
-teeism enclaves verify
-teeism isms evm                               # setEnclaves on each TeeDcapIsm, signed by EVM_SIGNER
-teeism isms celestia                          # tx teeism set-identities on each, signed by `relayer`
-teeism services restart                       # the relayer moves to the new enclave URLs
-teeism smoke
-teeism enclaves delete --retired              # only once smoke passed
-```
-
-- `enclaves up` prints the new measurements; `isms evm` and `isms celestia` print `re-pinning <ism>: <old> -> <new>` per ISM. Anything saying `replacing` instead means an ISM this key does not own or an older contract revision: stop and check.
-- Until `services restart`, attestations from the old enclave are refused (`WrongEnclave`); nothing is lost, the relayer retries. `enclaves up --add` avoids even that: the ISMs pin old and new together while the relayer moves ([MAINTAIN](MAINTAIN.md#rotate-the-enclave-re-pin)).
-- Rollback before `delete --retired`: the old CVM still runs; re-pin to it with [ADMIN](ADMIN.md)'s commands.
+A new image, OS image, instance type or CVM changes what the ISMs pin; each owner re-pins in place (same address, state and routers). Procedure: [MAINTAIN: rotate the enclave](MAINTAIN.md#rotate-the-enclave-re-pin).
 
 ## B. Intel root CA and collateral
 

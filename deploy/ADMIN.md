@@ -158,19 +158,6 @@ cast call $ISM "rootRetention()(uint256)" --rpc-url $RPC
 - **Collateral:** PCCS `upsert*`, monthly (`teeism pccs seed`, [MAINTAIN](MAINTAIN.md#monthly-intel-collateral)). Needs `ATTESTER_ROLE` on each versioned DAO and the TCB evaluation DAO; `teeism pccs deploy` grants it to `EVM_PRIVATE_KEY`'s address.
 - **TCB status:** only `UpToDate`, `SWHardeningNeeded`; else new ISM version.
 
-## <a name="tcb-recovery"></a>TCB recovery (Intel moves to a new evaluation number)
-
-```sh
-curl -s https://api.trustedservices.intel.com/tdx/certification/v4/tcbevaluationdatanumbers \
-  | jq '.tcbEvaluationDataNumbers.tcbEvalNumbers[] | {n: .tcbEvaluationDataNumber, released: .tcbRecoveryEventDate}'
-curl -s "https://api.trustedservices.intel.com/tdx/certification/v4/tcb?fmspc=20a06f000000" | jq .tcbInfo.tcbEvaluationDataNumber   # standard today
-```
-
-Unpatched hosts go `OutOfDate`, routes stop. Re-pin won't help.
-
-- **Both:** Phala patches the host, or move CVM. Ask early.
-- **EVM, beforehand:** `teeism pccs tcb-eval <number>` (owner), which also seeds ([MAINTAIN](MAINTAIN.md)).
-
 ## When something breaks live
 
 | What happens | Celestia | EVM |
@@ -178,7 +165,7 @@ Unpatched hosts go `OutOfDate`, routes stop. Re-pin won't help.
 | New image, platform update, new CVM | re-pin (`teeism isms celestia`) | re-pin (`teeism isms evm`) |
 | Fresh collateral | nothing | monthly `teeism pccs seed` |
 | PCS down, collateral expires | routes stop until Intel publishes again | routes stop 30 days after the last seed; seed when back |
-| [TCB recovery](#tcb-recovery) | patch host | patch host, new DAOs |
+| [TCB recovery](MAINTAIN.md#before-each-tcb-recovery-the-next-evaluation-number) | patch host | patch host, new DAOs |
 | PCK certificate revoked | new CVM, re-pin | same |
 | Root CA rotated, same name/key type | `--trusted-root-cert` | a new PCCS: change `ROOT_CA_PUBKEY_HASH`, `teeism pccs deploy --namespace tee-isms/v3`; `teeism isms evm` replaces each ISM from its last state, `teeism warp evm` re-points the routers |
 | Other root/name change; new collateral format (TCB info v4, QE identity v3) | **not fixable live:** celestia-app upgrade | new Automata verifier/DAOs |

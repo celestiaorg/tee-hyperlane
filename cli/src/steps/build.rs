@@ -276,9 +276,8 @@ pub fn automata(ctx: &Ctx) -> Result<()> {
 
 /// Put a gitignored dependency checkout at exactly `rev`. The commit is fetched by its hash,
 /// which works on a shallow or stale clone too. A checkout that still cannot reach it, or a
-/// directory that is not a checkout at all (an uninitialised submodule, or build output left
-/// where a vendored copy used to be), is deleted and cloned again: the directory only ever holds
-/// a fetched copy.
+/// directory that is not a checkout at all, is deleted and cloned again: the directory only ever
+/// holds a fetched copy.
 fn pin_dependency(path: &Path, url: &str, rev: &str) -> Result<()> {
     let git = |what: &str| Cmd::new(what, "git").arg("-C").arg(path);
     if path.join(".git").exists() {

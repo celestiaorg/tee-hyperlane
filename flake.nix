@@ -29,15 +29,9 @@
           rustc = toolchain;
         };
 
-        # Exactly what `cargo build -p tee-node` reads, and nothing else.
-        #
-        # This filter used to take both workspaces whole, which quietly made the enclave's
-        # identity a function of every file in them. The derivation is input-addressed, so a
-        # one-character edit to the coprocessor, the gas oracle or a test moved the image
-        # digest - and a moved image digest means a new compose hash, a new RTMR3, a new
-        # enclave identity, and a new ISM for every route that image attests, with every
-        # warp router repointed.
-        # That is a large bill for changing a comment in code the enclave never runs.
+        # Exactly what `cargo build -p tee-node` reads, and nothing else. The derivation is
+        # input-addressed, so any other file let in here would move the image digest, and with
+        # it the enclave identity every ISM pins.
         keep = [
           "tee-hyperlane/Cargo.toml"
           "tee-hyperlane/Cargo.lock"
@@ -57,8 +51,7 @@
         # Feature gates alone are not enough for this. buildRustPackage is input-addressed and
         # rustc writes the source path into the binary, so any edit anywhere in the shared tree
         # gives every image a new store path and therefore a new digest, even when the compiled
-        # code is identical. Measured, not assumed: changing one error string in Eden's old
-        # executor moved every digest before this filter existed.
+        # code is identical.
         #
         # So a change to `chains/l2/base.rs` moves only the base image. The shared files -
         # attest.rs, origin.rs, evm.rs, main.rs - genuinely are shared and move all of them, as
