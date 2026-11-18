@@ -37,6 +37,8 @@ sol! {
         function mailbox() external view returns (address);
         function merkleTreeAddress() external view returns (bytes32);
         function setEnclaves(bytes32[] calldata measurements, bytes32[] calldata identities) external;
+        function rootRetention() external view returns (uint256);
+        function setRootRetention(uint256 retention) external;
         function transferOwnership(address newOwner) external;
     }
 
@@ -421,9 +423,14 @@ async fn own_mailbox(
 
 // ---------------------------------------------------------------- teeism isms celestia
 
+/// x/teeism's retention when the owner has not set one (`DefaultRootRetention`).
+const DEFAULT_ROOT_RETENTION: u64 = 32;
+
 struct CelestiaIsm {
     state: Vec<u8>,
     owner: String,
+    /// How many attested roots it keeps; unset on chain means the default.
+    retention: u64,
 }
 
 fn query_ism(appd: &Appd, id: &str) -> Result<CelestiaIsm> {
@@ -438,6 +445,18 @@ fn query_ism(appd: &Appd, id: &str) -> Result<CelestiaIsm> {
     Ok(CelestiaIsm {
         state,
         owner: v["ism"]["owner"].as_str().unwrap_or("").to_string(),
+        // Protobuf JSON leaves a zero out, and zero means the default.
+        retention: match &v["ism"]["root_retention"] {
+            serde_json::Value::String(s) => s.parse().unwrap_or(0),
+            serde_json::Value::Number(n) => n.as_u64().unwrap_or(0),
+            _ => 0,
+        },
+    })
+    .map(|mut ism| {
+        if ism.retention == 0 {
+            ism.retention = DEFAULT_ROOT_RETENTION;
+        }
+        ism
     })
 }
 
@@ -623,6 +642,111 @@ pub async fn celestia(ctx: &Ctx, selection: &[String]) -> Result<()> {
         )?;
     }
     print::info(format!("mailbox {mailbox}"));
+    if !incomplete.is_empty() {
+        return Err(Incomplete(incomplete).into());
+    }
+    Ok(())
+}
+
+/// `teeism isms retention [N]`: how many attested roots each ISM keeps accepting for delivery.
+/// Sets it where this key owns the ISM (the EVM signer, or the relayer on Celestia) and says
+/// which it could not; without N, only prints.
+pub async fn retention(
+    ctx: &Ctx,
+    selection: &[String],
+    want: Option<u32>,
+    evm: bool,
+    celestia: bool,
+) -> Result<()> {
+    let d = ctx.deployment()?;
+    let mut incomplete = Vec::new();
+
+    if evm {
+        for chain in chains::evm_selection(selection)? {
+            let Some(addr) = d.evm(chain.name).and_then(|e| e.ism) else {
+                print::info(format!("{}: no TeeDcapIsm recorded", chain.label));
+                continue;
+            };
+            let c = Chain::connect(ctx, chain).await?;
+            let ism = ITeeDcapIsm::new(addr, &c.p);
+            let now = ism
+                .rootRetention()
+                .call()
+                .await
+                .with_context(|| format!("reading {addr}'s root retention"))?;
+            let Some(want) = want else {
+                print::kv(&format!("{} TeeDcapIsm {addr}", chain.label), now);
+                continue;
+            };
+            if now == U256::from(want) {
+                print::info(format!("{} {addr} already keeps {want}", chain.label));
+                continue;
+            }
+            let owner = ism.owner().call().await?;
+            if owner != c.from {
+                print::warn(format!(
+                    "{} {addr} is owned by {owner}, not {}; its owner sets it",
+                    chain.label, c.from
+                ));
+                incomplete.push(format!("{} TeeDcapIsm {addr}: owned by {owner}", chain.label));
+                continue;
+            }
+            let data = ITeeDcapIsm::setRootRetentionCall {
+                retention: U256::from(want),
+            }
+            .abi_encode();
+            c.send("setRootRetention", addr, data.into()).await?;
+            if ism.rootRetention().call().await? != U256::from(want) {
+                bail!("{addr} does not keep {want} roots after setting it");
+            }
+            print::ok(format!("{} {addr}: {now} -> {want}", chain.label));
+        }
+    }
+
+    if celestia {
+        let appd = Appd::new(ctx)?;
+        let relayer = appd.address("relayer")?;
+        for chain in chains::evm_selection(selection)? {
+            let Some(id) = d.celestia.isms.get(chain.name) else {
+                print::info(format!("{} origin: no x/teeism ISM recorded", chain.label));
+                continue;
+            };
+            let ism = query_ism(&appd, id)?;
+            let Some(want) = want else {
+                print::kv(&format!("{} origin x/teeism {id}", chain.label), ism.retention);
+                continue;
+            };
+            if ism.retention == u64::from(want) {
+                print::info(format!("{} origin {id} already keeps {want}", chain.label));
+                continue;
+            }
+            if ism.owner != relayer {
+                print::warn(format!(
+                    "{} origin {id} is owned by {}, not the relayer {relayer}; its owner sets it",
+                    chain.label, ism.owner
+                ));
+                incomplete.push(format!(
+                    "{} origin x/teeism {id}: owned by {}",
+                    chain.label, ism.owner
+                ));
+                continue;
+            }
+            appd.tx(
+                &format!("setting the {} ISM's root retention", chain.name),
+                "relayer",
+                &["teeism", "set-root-retention", id, &want.to_string()],
+            )?;
+            let after = query_ism(&appd, id)?;
+            if after.retention != u64::from(want) {
+                bail!("{id} does not keep {want} roots after setting it");
+            }
+            print::ok(format!(
+                "{} origin {id}: {} -> {want}",
+                chain.label, ism.retention
+            ));
+        }
+    }
+
     if !incomplete.is_empty() {
         return Err(Incomplete(incomplete).into());
     }

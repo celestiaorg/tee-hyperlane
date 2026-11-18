@@ -91,6 +91,8 @@ $A tx teeism set-verifier-overrides $ISM --clear --from relayer $TX     # back t
 
 An ISM accepts a delivery proof against any of its newest N attested roots; older ones are pruned. N is 32 until set, at most 256. Lowering it prunes at once; a parked message whose root was pruned is re-proved by the relayer against a root the ISM holds.
 
+`teeism isms retention 64` sets it on every ISM this deployment owns, EVM and Celestia (`--chain`, `--evm`, `--celestia` narrow it); `teeism isms retention` prints it. By hand:
+
 ```sh
 $A tx teeism set-root-retention $ISM 64 --from relayer $TX
 $A q teeism ism $ISM -o json | jq .ism.root_retention     # absent or 0 means the default, 32

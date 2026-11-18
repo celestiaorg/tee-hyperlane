@@ -253,6 +253,21 @@ pub enum IsmsCmd {
         #[arg(long = "chain")]
         chains: Vec<String>,
     },
+    /// How many attested roots each ISM keeps accepting for delivery (32 until set). With a
+    /// number, sets it on the EVM and Celestia ISMs of the chosen chains; without, prints it.
+    Retention {
+        /// 1 to 256. Lowering it prunes the oldest roots at once.
+        #[arg(value_parser = clap::value_parser!(u32).range(1..=256))]
+        retention: Option<u32>,
+        #[arg(long = "chain")]
+        chains: Vec<String>,
+        /// Only the TeeDcapIsm on each EVM chain.
+        #[arg(long, conflicts_with = "celestia")]
+        evm: bool,
+        /// Only the x/teeism ISM for each EVM origin.
+        #[arg(long)]
+        celestia: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -421,6 +436,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Cmd::Isms { cmd } => match cmd {
             IsmsCmd::Evm { chains } => crate::steps::isms::evm(&ctx, &chains).await,
             IsmsCmd::Celestia { chains } => crate::steps::isms::celestia(&ctx, &chains).await,
+            IsmsCmd::Retention {
+                retention,
+                chains,
+                evm,
+                celestia,
+            } => crate::steps::isms::retention(&ctx, &chains, retention, !celestia, !evm).await,
         },
         Cmd::Warp {
             cmd: WarpCmd::Evm { chains },
