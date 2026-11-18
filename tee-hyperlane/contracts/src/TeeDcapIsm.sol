@@ -71,7 +71,9 @@ contract TeeDcapIsm is IInterchainSecurityModule, Ownable {
     uint16 private constant BODY_TYPE_TD10 = 2;
     uint16 private constant BODY_TYPE_TD15 = 3;
 
-    /// TCB levels this bridge accepts, matching the Celestia module's allowlist.
+    /// TCB levels this ISM accepts. Looser than the Celestia module, which takes UpToDate only
+    /// (go-tdx-guest has no other policy); accepted, since it only decides when a platform
+    /// Intel downgrades stops attesting to each side, not what an attestation may carry.
     /// 0 is OK, 1 is SW_HARDENING_NEEDED. Anything higher means Intel has published a reason
     /// the platform may be compromised, and a bridge that keeps minting against such a
     /// platform is trading other people's funds for its own uptime. That includes v5's
