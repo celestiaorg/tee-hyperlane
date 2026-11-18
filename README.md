@@ -14,6 +14,8 @@ Hyperlane bridging between Celestia and EVM chains. Messages are authorised by a
 ```
 tee-hyperlane/crates/tee-node/          the enclave
 tee-hyperlane/crates/tee-coprocessor/   the service: every route, the API, the faucet
+tee-hyperlane/crates/hyperlane-types/   Hyperlane's message, merkle tree and delivery metadata, shared by enclave and relayer
+tee-hyperlane/crates/gas-oracle/        keeps the Celestia paymaster's gas prices current
 tee-hyperlane/contracts/                TeeDcapIsm.sol; Automata's PCCS and DCAP verifier are fetched at pinned commits by `teeism build`
 cli/                                    teeism: deploys, rotates, inspects and tears down everything
 bridge-app/                             React UI, MetaMask + Keplr

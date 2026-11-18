@@ -20,12 +20,12 @@
 
 ## Test funds
 
-**Faucet** tab: 1000 TIA, once per address. CLI:
+**Faucet** tab: 5000 TIA and 20000 teeUSD on ark (`[faucet] grants` in the relayer config), once per address. CLI:
 
 ```sh
-curl -s $B/api/faucet                                   # {"enabled":true,"amountTia":1000}
+curl -s $B/api/faucet                                   # {"enabled":true,"amountTia":5000,"grants":[...],"paused":null}
 curl -s -X POST $B/api/faucet -H 'content-type: application/json' \
-  -d '{"address":"celestia1..."}'                       # {"tx_hash":"...","amount_tia":1000}
+  -d '{"address":"celestia1..."}'                       # {"address":"celestia1...","grants":[...],"tx_hash":"..."}
 ```
 
 ## Sending
