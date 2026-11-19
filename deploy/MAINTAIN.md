@@ -165,7 +165,7 @@ Base or Arbitrum waiting more than a few minutes: stuck, see below. `leaves=N` c
 | Sepolia deliveries: `ClockBehindAttest` | `SEPOLIA_SEND_RPC` must be at the head |
 | `error decoding response body` once | nothing, unless it repeats |
 | Eden: `no celestia header in the last 400 rebuilds this ISM's store` | restore `.state/proofs/chains/eden/` from a backup |
-| Eden: `no celestia block ... carries an eden header at a height we hold a proof for` | wait a few minutes; if it persists, check mocha-light is synced |
+| Eden: `no celestia block ... carries an eden header at a height we hold a proof for` | wait a few minutes; if it persists, check mocha-light is synced (`docker logs mocha-light`). Stuck at a mocha upgrade height: set `MOCHA_LIGHT_IMAGE` (`cli/src/shared/chains.rs`) to the celestia-node `-mocha` release for the new app version, then `teeism mocha up` |
 | Base: `nothing from the base sequencer on p2p in Ns` | `RUST_LOG=debug` shows `base gossip peers=... received=...`; check outbound TCP and UDP 9222 |
 | Arbitrum: `nothing from the arbitrum sequencer feed in Ns` | check `ARBITRUM_FEED` |
 | `signed by 0x..., not the pinned sequencer 0x...` | set the new key in `tee-node/src/chains/l2/<chain>.rs` and roll out new enclave code |

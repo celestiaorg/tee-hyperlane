@@ -174,4 +174,4 @@ pub fn enclave_url(app_id: &str, gateway: &str, chain: &str) -> Result<String> {
 pub const IMAGE_REPO: &str = "ghcr.io/jonas089/tee-node";
 
 /// The mocha light node Eden's headers are read through.
-pub const MOCHA_LIGHT_IMAGE: &str = "ghcr.io/celestiaorg/celestia-node:v0.34.2-mocha";
+pub const MOCHA_LIGHT_IMAGE: &str = "ghcr.io/celestiaorg/celestia-node:v0.36.0-mocha";

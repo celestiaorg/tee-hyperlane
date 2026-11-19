@@ -72,20 +72,29 @@ pub async fn up(ctx: &Ctx) -> Result<()> {
         tv("800h0m0s"),
     )?;
 
-    // A container that is not running, or was created without the light node type, is
-    // recreated rather than restarted: a restart keeps whatever it was created with. Its data
-    // is the bind mount, so nothing is lost.
+    // A container that is not running, was created without the light node type, or runs
+    // another image (a network upgrade needs the node that follows it) is recreated rather
+    // than restarted: a restart keeps whatever it was created with. Its data is the bind
+    // mount, so nothing is lost.
     let state = container_state()?;
-    let env = Cmd::new("reading the light node's settings", "docker")
-        .args(["inspect", "-f", "{{.Config.Env}}", CONTAINER])
-        .capture()?
-        .1;
-    let right = state.as_deref() == Some("running") && env.contains(NODE_TYPE);
+    let inspect = |what: &str, format: &str| -> Result<String> {
+        Ok(Cmd::new(what, "docker")
+            .args(["inspect", "-f", format, CONTAINER])
+            .capture()?
+            .1)
+    };
+    let env = inspect("reading the light node's settings", "{{.Config.Env}}")?;
+    let image = inspect("reading the light node's image", "{{.Config.Image}}")?;
+    let right =
+        state.as_deref() == Some("running") && env.contains(NODE_TYPE) && image.trim() == MOCHA_LIGHT_IMAGE;
     if right {
-        print::info(format!("{CONTAINER} already running"));
+        print::info(format!("{CONTAINER} already running {MOCHA_LIGHT_IMAGE}"));
     } else {
         if let Some(other) = state {
-            print::step(format!("recreating {CONTAINER} (it was {other})"));
+            print::step(format!(
+                "recreating {CONTAINER} on {MOCHA_LIGHT_IMAGE} (it was {other}, on {})",
+                image.trim()
+            ));
             Cmd::new("removing the old mocha light node container", "docker")
                 .args(["rm", "-f", CONTAINER])
                 .output()?;
